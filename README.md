@@ -29,10 +29,10 @@ MySQL · PostgreSQL · MariaDB · SQLite · SQL Server
 
 ```bash
 # 方式一：使用本机已安装的 dsh
-dsh plugin --profile web add github:mr-mihu/dsh-dbhub-live
+dsh plugin --profile web add dsh-dbhub-live
 
 # 方式二：通过 npx 调用 dsh（无需本机全局安装 dsh）
-npx @deepseek-ai/dsh plugin --profile web add github:mr-mihu/dsh-dbhub-live
+npx @deepseek-ai/dsh plugin --profile web add dsh-dbhub-live
 ```
 
 安装后**重启 `dsh web`** 生效。
