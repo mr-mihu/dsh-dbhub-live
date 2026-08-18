@@ -1,0 +1,39 @@
+{
+  "name": "dsh-dbhub-live",
+  "version": "2.0.0",
+  "description": "DBHub database MCP bridge for DSH: persistent multi-source server + per-workspace tools + ad-hoc temporary connections.",
+  "type": "module",
+  "main": "lib/index.mjs",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "dsh",
+    "dbhub",
+    "mcp",
+    "database",
+    "mysql",
+    "postgres",
+    "sqlite",
+    "mariadb",
+    "sqlserver",
+    "plugin"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mr-mihu/dsh-dbhub-live.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mr-mihu/dsh-dbhub-live/issues"
+  },
+  "homepage": "https://github.com/mr-mihu/dsh-dbhub-live#readme",
+  "license": "MIT"
+}

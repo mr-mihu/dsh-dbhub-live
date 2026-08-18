@@ -1,0 +1,5 @@
+# Runtime data is stored outside this repo (in $DSH_HOME/storages/dsh-dbhub-live).
+# Nothing sensitive should live here, but keep the tree clean anyway.
+node_modules/
+*.log
+.DS_Store

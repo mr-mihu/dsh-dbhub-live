@@ -1,0 +1,8 @@
+# dsh-dbhub-live bundle patch — declares the plugin row this package mounts.
+# `dsh plugin --profile web add dsh-dbhub-live` installs this package into the
+# profile; reconcilePlugins sees `dsh.bundle.patch` and appends the package to
+# `dsh.profile.bundles`, then this patch layer inserts the row. The bare name
+# resolves the package's main (lib/index.mjs) from the profile's node_modules.
+- insert:
+    - id: dbhub-live
+      name: 'dsh-dbhub-live'
