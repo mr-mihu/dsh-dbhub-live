@@ -1,7 +1,7 @@
 {
   "name": "dsh-dbhub-live",
   "version": "2.0.0",
-  "description": "DBHub database MCP bridge for DSH: persistent multi-source server + per-workspace tools + ad-hoc temporary connections.",
+  "description": "DSH 数据库 MCP 桥接插件：常驻多源 dbhub 服务 + 按工作区工具 + 临时动态连接。",
   "type": "module",
   "main": "lib/index.mjs",
   "files": [
