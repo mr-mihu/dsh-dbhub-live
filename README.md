@@ -1,6 +1,6 @@
 # dsh-dbhub-live
 
-> 让 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/DeepSeek-Harness) 直接、安全地操作数据库：常驻多源连接 + 按工作区工具 + 临时动态连接。
+> 让 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/DeepSeek-Harness) 直接、安全地操作数据库：常驻多源连接 + 按工作区工具 + 临时动态连接 + 懒加载与浏览器状态卡片。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![DSH](https://img.shields.io/badge/DSH-plugin-blue.svg)](#安装)
@@ -13,6 +13,9 @@
 - **常驻多源服务** — 后台一个 dbhub 服务同时接入多个数据源，连接复用、查询更快。
 - **按工作区工具** — `dbhub_execute_sql_<工作区>` / `dbhub_search_objects_<工作区>`，工具名即工作区，多工作区不混淆，连接标注（密码打码）清晰可见。
 - **临时动态连接** — `dbhub_query` / `dbhub_query_objects` 每次独立连任意库，可并行查多个不同库，便于跨环境排查。
+- **懒加载启动** — 插件启动不阻塞 GUI，工具立即可用；环境初始化推迟到首次调用（初始化期间查询自动等待就绪）。
+- **启用 / 禁用开关** — 关闭后所有 dbhub 工具立即返回「插件已禁用」友好提示，无需重启；再次开启立即可用。
+- **浏览器状态卡片** — 设置 → 插件 → dsh-dbhub-live 面板实时展示：运行状态徽章（🟢 运行中 / 🟡 初始化中 / 🔴 异常）、已注册工具数、工作模式、最近错误（红色），并提供启用/禁用开关。
 - **开箱即用** — 未安装 `dbhub` 时首次使用自动安装，之后自动保持更新，无需手动处理。
 - **多种配置方式** — 显式 DSN / 填写分项 / 授权扫描项目配置文件，凭据仅存本机用户目录，密码全程脱敏。
 
@@ -35,7 +38,7 @@ dsh plugin --profile web add dsh-dbhub-live
 npx @deepseek-ai/dsh plugin --profile web add dsh-dbhub-live
 ```
 
-安装后**重启 `dsh web`** 生效。
+安装后**重启 `dsh web`** 生效（重启后到 设置 → 插件 → dsh-dbhub-live 可看到状态卡片）。
 
 ## 快速开始
 
@@ -70,6 +73,15 @@ dbhub_query  dsn=mysql://root:pass@192.168.77.6:3306/tx_sd_jinengshu  sql="SHOW 
 
 工作区若已有 `mise env` 或 `.env`（`DSN` / `DB_*`），插件会自动发现，无需手动配置。
 
+## 状态卡片
+
+设置 → 插件 → dsh-dbhub-live（依赖 Web 端设置面板，Host 半侧的 `dsh-dbhub-live` 设置命名空间会实时镜像插件状态）：
+
+- 🟢 运行中 / 🟡 初始化中 / 🔴 异常（异常时展示最近错误，红色）。
+- 已注册工具数（随工作区配置 / 服务同步实时变化）。
+- 工作模式：懒加载（首次调用时初始化）。
+- **启用 / 禁用开关**：关闭后所有 dbhub 工具立即返回「插件已禁用」，不消耗任何进程资源；重新开启后按需自动初始化。开关状态持久化，重启后保留。
+
 ## 🔄 dbhub 自动安装与更新
 
 - **首次使用自动安装**：本机没有 `dbhub` 时，插件会在第一次查询时自动安装，之后离线也可用。
@@ -100,10 +112,20 @@ dsh plugin --profile web remove dsh-dbhub-live
 | 现象 | 处理 |
 | --- | --- |
 | 首次使用报「无法获取 dbhub」 | 确认本机有 npm 且能联网；离线可手动安装 `dbhub` 并加入 PATH。 |
-| 工具显示「dbhub 服务不可用」 | 查看 `dsh web` 日志；进程异常退出时插件会在下次调用自动重启。 |
+| 状态卡片显示 🔴 异常 | 查看状态卡片中的「最近错误」与 `dsh web` 日志；进程异常退出时插件会在下次调用自动重启。 |
+| 工具显示「插件已禁用」 | 打开 设置 → 插件 → dsh-dbhub-live 卡片，点击「启用」。 |
+| 看不到状态卡片 | 确认插件已安装并重启 `dsh web`；Host 半侧未注册状态命名空间时卡片不显示（无设置面板的环境不影响工具使用）。 |
 | 扫描不到配置文件 | 默认跳过 `node_modules` / `.git` / `target` / `dist` 等目录，可改用「输入 DSN」或「填写分项」。 |
 | 需要自定义 dbhub 版本 | 删除 `~/.dsh/storages/dsh-dbhub-live` 后设置 `DSH_DBHUB_PACKAGE` 指定包/版本。 |
 | 不希望自动更新 dbhub | 设置环境变量 `DSH_DBHUB_UPDATE_DAYS=0`。 |
+
+## 开发与测试（不影响主进程）
+
+开发说明见 [AGENTS.md](./AGENTS.md)。推荐的调试路径（详见测试方案 `/插件开发文档/DSH插件测试方案.md`）：
+
+- **日常改代码** → 静态校验（`npm run check`）+ 单元测试（`npm test`），零风险；
+- **会话内跑通逻辑** → 动态插件 `cordis_define/run` 快速迭代，不重启 Harness；
+- **冷启动验证** → 隔离 `DSH_HOME` 起一个测试实例（如 `dsh web --port 3081`）安装本插件验证启动与客户端 bundle，主实例零影响。
 
 ## 许可证
 

@@ -1,13 +1,22 @@
 {
   "name": "dsh-dbhub-live",
-  "version": "2.0.0",
-  "description": "DSH 数据库 MCP 桥接插件：常驻多源 dbhub 服务 + 按工作区工具 + 临时动态连接。",
+  "version": "3.0.0",
+  "description": "DSH 数据库 MCP 桥接插件：常驻多源 dbhub 服务 + 按工作区工具 + 临时动态连接 + 懒加载与浏览器状态卡片。",
   "type": "module",
   "main": "lib/index.mjs",
+  "exports": {
+    ".": "./lib/index.mjs",
+    "./client": "./lib/client.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
   "files": [
     "lib",
+    "doc",
+    "test",
     "cordis.patch.yml",
     "README.md",
+    "AGENTS.md",
     "LICENSE"
   ],
   "keywords": [
@@ -22,10 +31,22 @@
     "sqlserver",
     "plugin"
   ],
+  "scripts": {
+    "check": "node --check ./lib/index.mjs && node --check ./lib/config.mjs && node --check ./lib/state.mjs && node --check ./lib/runtime.mjs && node --check ./lib/mcp.mjs && node --check ./lib/adhoc.mjs && node --check ./lib/collect.mjs && node --check ./lib/tools.mjs && node --check ./lib/client.js",
+    "test": "node --test test/"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web"
     }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "4.0.1",
+    "@deepseek-ai/dsh-settings": "^0.1.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.1"
   },
   "repository": {
     "type": "git",

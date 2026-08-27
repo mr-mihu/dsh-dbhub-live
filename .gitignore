@@ -2,4 +2,8 @@
 # Nothing sensitive should live here, but keep the tree clean anyway.
 node_modules/
 *.log
+*.tgz
 .DS_Store
+
+# Local isolated test home (see AGENTS.md debug workflow).
+.dsh-test/
