@@ -38,3 +38,15 @@ test('client bundle registers the settings.plugin.item card keyed to the namespa
   assert.match(source, /name:\s*"settings\.plugin\.item", key:\s*NS/)
   assert.match(source, /settingsScope\.bind\(\{ namespace: NS \}\)/)
 })
+
+test('client bundle exposes the config editor (saveConfig + editable fields)', () => {
+  assert.match(source, /saveConfig:\s*function/)
+  assert.match(source, /dbhubPackage/)
+  assert.match(source, /updateIntervalDays/)
+  assert.match(source, /idleMinutes/)
+  assert.match(source, /保存配置/)
+})
+
+test('client bundle still hard-injects slots and settingsScope', () => {
+  assert.match(source, /var inject = \["slots", "settingsScope"\];/)
+})

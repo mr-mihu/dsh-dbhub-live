@@ -10,15 +10,16 @@ DSH host 插件（Node/E SM）+ Web client 插件（浏览器半）：把 dbhub�
 
 ```
 lib/
-  index.mjs    入口：name/inject/apply、状态命名空间(schemastery+dsh-settings)接线、懒加载编排
+  index.mjs    入口：name/inject/apply、状态命名空间(schemastery)接线、懒加载编排、配置变更应用
   config.mjs   路径/持久化(store,runtime)/DSN 解析/工作区发现/小工具（纯函数）
   state.mjs    运行时状态机：enabled/phase/toolCount/lastError/mode + 订阅发布
+  options.mjs  可配置参数：dbhubPackage/updateIntervalDays/idleMinutes（设置UI > 环境默认）
   runtime.mjs  dbhub 可执行文件发现、按需自动安装、定期自动更新、孤儿进程清理
   mcp.mjs      MCP JSON-RPC 客户端 + 常驻多源 dbhub 服务生命周期 + 按工作区工具同步
   adhoc.mjs    临时连接（每次调用一条一次性 dbhub 进程）
   collect.mjs  授权扫描项目配置文件并提取 DSN 候选（含 askUser 桥接）
   tools.mjs    host 自有工具定义与注册（dbhub_configure/dbhub_query/dbhub_query_objects）
-  client.js    Web 半（手写 lazy-CJS bundle，无构建步骤）
+  client.js    Web 半（手写 lazy-CJS bundle，无构建步骤）：状态徽章 + 启用开关 + 配置编辑器
 test/          node:test 单元测试（纯逻辑 + client bundle 格式契约）
 doc/           需求文档
 cordis.patch.yml   bundle patch：`name: dsh-dbhub-live` 挂载本包
@@ -28,7 +29,8 @@ cordis.patch.yml   bundle patch：`name: dsh-dbhub-live` 挂载本包
 
 - **模块依赖只进不出**：`config ← state ← runtime ← mcp ← tools ← index`，`adhoc ← mcp`，`collect ← tools`；禁止反向 or 循环 import（HMR/装载顺序依赖它）。
 - **状态单一来源**：`state.mjs` 是唯一事实源；`index.mjs` 订阅它来启动/停止 dbhub 进程、并向 settings 命名空间发布快照；卡片只能通过命名空间的 `enabled` 字段写回。
-- **状态命名空间**：Host 注册 `dsh-dbhub-live` 命名空间（通过 `ctx.inject(['settings'], …)` + schema）；Web 端 Plugins 选项卡按“Host 服务的命名空间”分发 `settings.plugin.item` 卡片（key = 命名空间）。命名空间值 = `{enabled, phase, toolCount, lastError, mode}`。
+- **状态命名空间**：Host 注册 `dsh-dbhub-live` 命名空间（通过 `ctx.inject(['settings'], …)` + schema）；Web 端 Plugins 选项卡按“Host 服务的命名空间”分发 `settings.plugin.item` 卡片（key = 命名空间）。命名空间值 = 状态 `{enabled, phase, toolCount, lastError, mode}` **合并** 配置 `{dbhubPackage, updateIntervalDays, idleMinutes}`。
+- **可配置参数**：`options.mjs` 只此一处持有三个部署开关；`index.mjs` 的 watch 把卡片写入的字段经 `options.applyPatch`（带校验兜底）应用到运行时（安装包、更新间隔、空闲回收时长即时生效）。**优先级：用户设置 > 进程环境变量 > 内置默认**——首次注册时读取 settings `describe()` 的原始 user 层，仅对用户显式保存过的字段覆盖环境种子；首次 publish 会把字段写进用户层（此后归设置 UI 所有，环境变更不再覆盖，除非在设置中清除）。不要绕过 `applyPatch` 直接改 `options` 内部值。
 - **schema 弹性依赖**：优先用真实 `@deepseek-ai/schemastery` schema（`await import`）；解析失败时降级为 `lib/index.mjs` 内建的最小 callable schema（`schema(v)` 合默认值 + `toJSON()`），保证**链路安装（`dsh plugin add <本地目录>`，Node ESM 按源码真实路径解析裸导入）下插件照样启动、卡片照常工作**。tarball/npm 安装（真实目录在 profile node_modules 下）走真实 schemastery 路径。不要把这个 import 改回静态顶层 import——会重新引入链路安装时启动失败。
 - **懒加载**：`apply()` 只注册核心工具 + 后台异步初始化（`startLazyInit`）；任何工具调用先 `ensureRunning`（共享 `server.starting`，并发调用自动排队等待）；启动失败进入 `phase:'error'` 并记录 `lastError`，下次调用自动重试。**无工作区数据源时恒不拉起 dbhub 进程**（空 `[[sources]]` toml 对 dbhub 是致命的；空指纹若被当成“已同步”会在二次调用时绕过 toml 直接 spawn——`ensureRunning` 的 `sources.length === 0` 早退必须在指纹判断之外）。
 - **启用/禁用**：`state.setEnabled` 持久化到 `credentials.json`（权威值）；禁用时立即 `terminateServer()` 释放进程，所有工具 execute 首行返回「插件已禁用」；重新启用触发懒加载初始化。

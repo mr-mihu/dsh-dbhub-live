@@ -1,7 +1,7 @@
 {
   "name": "dsh-dbhub-live",
-  "version": "3.0.0",
-  "description": "DSH 数据库 MCP 桥接插件：常驻多源 dbhub 服务 + 按工作区工具 + 临时动态连接 + 懒加载与浏览器状态卡片。",
+  "version": "3.1.0",
+  "description": "DSH 数据库 MCP 桥接插件：常驻多源 dbhub 服务 + 按工作区工具 + 临时动态连接 + 懒加载、浏览器状态卡片与可配置参数。",
   "type": "module",
   "main": "lib/index.mjs",
   "exports": {
@@ -32,7 +32,7 @@
     "plugin"
   ],
   "scripts": {
-    "check": "node --check ./lib/index.mjs && node --check ./lib/config.mjs && node --check ./lib/state.mjs && node --check ./lib/runtime.mjs && node --check ./lib/mcp.mjs && node --check ./lib/adhoc.mjs && node --check ./lib/collect.mjs && node --check ./lib/tools.mjs && node --check ./lib/client.js",
+    "check": "node --check ./lib/index.mjs && node --check ./lib/config.mjs && node --check ./lib/state.mjs && node --check ./lib/options.mjs && node --check ./lib/runtime.mjs && node --check ./lib/mcp.mjs && node --check ./lib/adhoc.mjs && node --check ./lib/collect.mjs && node --check ./lib/tools.mjs && node --check ./lib/client.js",
     "test": "node --test test/"
   },
   "dsh": {
