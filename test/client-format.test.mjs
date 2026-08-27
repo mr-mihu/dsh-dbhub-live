@@ -39,12 +39,30 @@ test('client bundle registers the settings.plugin.item card keyed to the namespa
   assert.match(source, /settingsScope\.bind\(\{ namespace: NS \}\)/)
 })
 
-test('client bundle exposes the config editor (saveConfig + editable fields)', () => {
+test('client bundle exposes the config editor (saveConfig + editable options)', () => {
   assert.match(source, /saveConfig:\s*function/)
-  assert.match(source, /dbhubPackage/)
   assert.match(source, /updateIntervalDays/)
   assert.match(source, /idleMinutes/)
   assert.match(source, /保存配置/)
+  // the auto-install package is NOT a settings field anymore
+  assert.doesNotMatch(source, /dbhubPackage/)
+})
+
+test('client bundle renders collapsible sections', () => {
+  assert.match(source, /function Section\(props\)/)
+  assert.match(source, /title: "状态"/)
+  assert.match(source, /title: "配置"/)
+  assert.match(source, /title: "工作区连接"/)
+  assert.match(source, /▼/)
+  assert.match(source, /▶/)
+})
+
+test('client bundle manages workspace connections through configOp', () => {
+  assert.match(source, /configOp:\s*function/)
+  assert.match(source, /op: "add"/)
+  assert.match(source, /op: "remove"/)
+  assert.match(source, /workspacesOf\(value\)/)
+  assert.match(source, /已保存|自动/)
 })
 
 test('client bundle still hard-injects slots and settingsScope', () => {

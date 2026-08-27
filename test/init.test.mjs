@@ -24,11 +24,11 @@ function prepareHome() {
   return home
 }
 
-test('normalizeStore drops legacy junk and preserves forward fields', async () => {
+test('normalizeStore migrates v1 entries and drops legacy junk', async () => {
   const home = prepareHome()
   const storeDir = join(home, 'storages', 'dsh-dbhub-live')
   mkdirSync(storeDir, { recursive: true })
-  // A hand-edited / older-version document:
+  // A hand-edited / older-version document (v1 bare-dsn entries):
   writeFileSync(join(storeDir, 'credentials.json'), JSON.stringify({
     enabled: 'yes',                                  // non-boolean -> dropped
     'C:\\ws\\bad': { dsn: '   ' },                   // empty dsn -> dropped
@@ -39,17 +39,74 @@ test('normalizeStore drops legacy junk and preserves forward fields', async () =
   const config = await freshConfig()
   try {
     assert.equal(Object.getPrototypeOf(config.store), Object.prototype)
-    assert.equal(config.store.__proto__.dsn, 'mysql://evil@x/y') // own data prop, not Object.prototype
+    assert.equal(config.store.__proto__.environments.default.dsn, 'mysql://evil@x/y') // own data prop
     assert.equal(config.store.enabled, undefined) // dropped -> default true downstream
     assert.equal(config.store['C:\\ws\\bad'], undefined)
     assert.equal(config.store['C:\\ws\\junk'], undefined)
-    assert.equal(config.store['C:\\ws\\good'].dsn, 'mysql://u:p@h/d')   // trimmed
-    assert.deepEqual(config.store['C:\\ws\\good'].extra, { future: true }) // preserved
+    const good = config.store['C:\\ws\\good']
+    assert.equal(good.environments.default.dsn, 'mysql://u:p@h/d')   // v1 -> environments.default, trimmed
+    assert.deepEqual(good.environments.default.extra, { future: true }) // preserved
     // one-time migration already wrote the normalized document back
     const onDisk = JSON.parse(readFileSync(join(storeDir, 'credentials.json'), 'utf8'))
     assert.equal(Object.hasOwn(onDisk, 'enabled'), false)
     assert.equal(Object.hasOwn(onDisk, 'C:\\ws\\bad'), false)
-    assert.equal(onDisk['C:\\ws\\good'].dsn, 'mysql://u:p@h/d')
+    assert.equal(onDisk['C:\\ws\\good'].environments.default.dsn, 'mysql://u:p@h/d')
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('normalizeStore keeps v2 multi-environment entries and lists rows', async () => {
+  const home = prepareHome()
+  const storeDir = join(home, 'storages', 'dsh-dbhub-live')
+  mkdirSync(storeDir, { recursive: true })
+  writeFileSync(join(storeDir, 'credentials.json'), JSON.stringify({
+    enabled: true,
+    'C:\\ws\\multi': {
+      environments: {
+        default: { dsn: 'mysql://u:p@h/d', source: 'user' },
+        prod: { dsn: 'postgres://u:p@prod/db', source: 'user', updatedAt: 1 },
+        '': { dsn: 'mysql://x@y/z' },              // empty env name is kept as-is (host normalizes on write)
+        broken: { dsn: '   ' },                    // dropped
+      },
+    },
+  }, null, 2))
+  const config = await freshConfig()
+  try {
+    const envs = config.store['C:\\ws\\multi'].environments
+    assert.deepEqual(Object.keys(envs).sort(), ['', 'default', 'prod'])
+    assert.equal(envs.default.dsn, 'mysql://u:p@h/d')
+    assert.equal(envs.prod.dsn, 'postgres://u:p@prod/db')
+    const rows = config.listWorkspaceEnvironments(config.store)
+    assert.equal(rows.length, 3)
+    assert.equal(rows.find((r) => r.env === 'prod').wsPath, 'C:\\ws\\multi')
+    assert.ok(rows.every((r) => r.persisted === true))
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('setWorkspaceEnv / removeWorkspaceEnv persist and drop entries', async () => {
+  const home = prepareHome()
+  const storeDir = join(home, 'storages', 'dsh-dbhub-live')
+  const config = await freshConfig()
+  try {
+    const envName = config.setWorkspaceEnv('C:\\ws\\a', 'prod', ' mysql://u:p@h/prod ', 'user')
+    assert.equal(envName, 'prod')
+    let onDisk = JSON.parse(readFileSync(join(storeDir, 'credentials.json'), 'utf8'))
+    assert.equal(onDisk['C:\\ws\\a'].environments.prod.dsn, 'mysql://u:p@h/prod')
+    config.setWorkspaceEnv('C:\\ws\\a', '', 'mysql://u:p@h/dev', 'collected')
+    onDisk = JSON.parse(readFileSync(join(storeDir, 'credentials.json'), 'utf8'))
+    assert.equal(Object.keys(onDisk['C:\\ws\\a'].environments).sort().join(','), 'default,prod')
+    assert.equal(config.removeWorkspaceEnv('C:\\ws\\a', 'prod'), true)
+    onDisk = JSON.parse(readFileSync(join(storeDir, 'credentials.json'), 'utf8'))
+    assert.equal(Object.keys(onDisk['C:\\ws\\a'].environments).join(','), 'default')
+    // removing the last environment drops the whole workspace entry
+    assert.equal(config.removeWorkspaceEnv('C:\\ws\\a', 'default'), true)
+    onDisk = JSON.parse(readFileSync(join(storeDir, 'credentials.json'), 'utf8'))
+    assert.equal(Object.hasOwn(onDisk, 'C:\\ws\\a'), false)
+    // removing a never-persisted env is a no-op
+    assert.equal(config.removeWorkspaceEnv('nope', 'default'), false)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

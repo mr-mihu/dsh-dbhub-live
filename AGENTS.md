@@ -11,15 +11,15 @@ DSH host 插件（Node/E SM）+ Web client 插件（浏览器半）：把 dbhub�
 ```
 lib/
   index.mjs    入口：name/inject/apply、状态命名空间(schemastery)接线、懒加载编排、配置变更应用
-  config.mjs   路径/持久化(store,runtime)/DSN 解析/工作区发现/小工具（纯函数）
+  config.mjs   路径/持久化(store,runtime)/DSN 解析/工作区发现/store v2（environments）助手/小工具
   state.mjs    运行时状态机：enabled/phase/toolCount/lastError/mode + 订阅发布
-  options.mjs  可配置参数：dbhubPackage/updateIntervalDays/idleMinutes（设置UI > 环境默认）
+  options.mjs  可配置参数：updateIntervalDays/idleMinutes（设置UI > 环境默认；dbhubPackage 仅内部环境knob）
   runtime.mjs  dbhub 可执行文件发现、按需自动安装、定期自动更新、孤儿进程清理
-  mcp.mjs      MCP JSON-RPC 客户端 + 常驻多源 dbhub 服务生命周期 + 按工作区工具同步
+  mcp.mjs      MCP JSON-RPC 客户端 + 常驻多源 dbhub 服务生命周期 + collectSources(工作区×环境) + 摘要缓存
   adhoc.mjs    临时连接（每次调用一条一次性 dbhub 进程）
   collect.mjs  授权扫描项目配置文件并提取 DSN 候选（含 askUser 桥接）
-  tools.mjs    host 自有工具定义与注册（dbhub_configure/dbhub_query/dbhub_query_objects）
-  client.js    Web 半（手写 lazy-CJS bundle，无构建步骤）：状态徽章 + 启用开关 + 配置编辑器
+  tools.mjs    host 自有工具定义与注册（dbhub_configure 支持 env 参数）
+  client.js    Web 半（手写 lazy-CJS bundle）：折叠分区卡片（状态/配置/工作区连接）
 test/          node:test 单元测试（纯逻辑 + client bundle 格式契约）
 doc/           需求文档
 cordis.patch.yml   bundle patch：`name: dsh-dbhub-live` 挂载本包
@@ -28,9 +28,9 @@ cordis.patch.yml   bundle patch：`name: dsh-dbhub-live` 挂载本包
 ## 关键架构事实
 
 - **模块依赖只进不出**：`config ← state ← runtime ← mcp ← tools ← index`，`adhoc ← mcp`，`collect ← tools`；禁止反向 or 循环 import（HMR/装载顺序依赖它）。
-- **状态单一来源**：`state.mjs` 是唯一事实源；`index.mjs` 订阅它来启动/停止 dbhub 进程、并向 settings 命名空间发布快照；卡片只能通过命名空间的 `enabled` 字段写回。
-- **状态命名空间**：Host 注册 `dsh-dbhub-live` 命名空间（通过 `ctx.inject(['settings'], …)` + schema）；Web 端 Plugins 选项卡按“Host 服务的命名空间”分发 `settings.plugin.item` 卡片（key = 命名空间）。命名空间值 = 状态 `{enabled, phase, toolCount, lastError, mode}` **合并** 配置 `{dbhubPackage, updateIntervalDays, idleMinutes}`。
-- **可配置参数**：`options.mjs` 只此一处持有三个部署开关；`index.mjs` 的 watch 把卡片写入的字段经 `options.applyPatch`（带校验兜底）应用到运行时（安装包、更新间隔、空闲回收时长即时生效）。**优先级：用户设置 > 进程环境变量 > 内置默认**——首次注册时读取 settings `describe()` 的原始 user 层，仅对用户显式保存过的字段覆盖环境种子；首次 publish 会把字段写进用户层（此后归设置 UI 所有，环境变更不再覆盖，除非在设置中清除）。不要绕过 `applyPatch` 直接改 `options` 内部值。
+- **状态命名空间**：Host 注册 `dsh-dbhub-live` 命名空间（`ctx.inject(['settings'], …)` + schema）；Web 端 Plugins 选项卡按命名空间分发 `settings.plugin.item` 卡片。命名空间值 = 状态 `{enabled, phase, toolCount, lastError, mode}` + 配置 `{updateIntervalDays, idleMinutes}` + `{serverUp}` + `{workspaces(JSON 掩码摘要)}` + `{configOp}`（主机消费后自动清空）。
+- **可配置参数**：`options.mjs` 只此一处持有部署开关（`dbhubPackage` 仅环境变量/内部，不进设置）；watch 把卡片写入的字段经 `options.applyPatch` 应用到运行时。**优先级：用户设置 > 进程环境变量 > 内置默认**。不要绕过 `applyPatch` 直接改 `options` 内部值。
+- **工作区连接管理（configOp 通道）**：store v2 = `{ [wsPath]: { environments: { [env]: {dsn, source, updatedAt} } } }`（v1 单 dsn 条目自动迁移进 `environments.default`）。卡片只读**掩码**摘要（`collectSources` → `latestSummaries`，密码永不出 Host）；增/改/删通过命名空间 `configOp` 单向命令下发，`index.mjs` 用 `setWorkspaceEnv`/`removeWorkspaceEnv` 落盘后重扫摘要并发布（configOp 随发布清空，天然防环）。同一工作区多环境：`default` 源 id 保持 `标题_hash` 兼容名，其余环境 `标题_hash_<envSlug>`，工具名随之区分。自动发现（mise/.env）只提供未覆盖的 `default`，不持久化。
 - **schema 弹性依赖**：优先用真实 `@deepseek-ai/schemastery` schema（`await import`）；解析失败时降级为 `lib/index.mjs` 内建的最小 callable schema（`schema(v)` 合默认值 + `toJSON()`），保证**链路安装（`dsh plugin add <本地目录>`，Node ESM 按源码真实路径解析裸导入）下插件照样启动、卡片照常工作**。tarball/npm 安装（真实目录在 profile node_modules 下）走真实 schemastery 路径。不要把这个 import 改回静态顶层 import——会重新引入链路安装时启动失败。
 - **懒加载**：`apply()` 只注册核心工具 + 后台异步初始化（`startLazyInit`）；任何工具调用先 `ensureRunning`（共享 `server.starting`，并发调用自动排队等待）；启动失败进入 `phase:'error'` 并记录 `lastError`，下次调用自动重试。**无工作区数据源时恒不拉起 dbhub 进程**（空 `[[sources]]` toml 对 dbhub 是致命的；空指纹若被当成“已同步”会在二次调用时绕过 toml 直接 spawn——`ensureRunning` 的 `sources.length === 0` 早退必须在指纹判断之外）。
 - **启用/禁用**：`state.setEnabled` 持久化到 `credentials.json`（权威值）；禁用时立即 `terminateServer()` 释放进程，所有工具 execute 首行返回「插件已禁用」；重新启用触发懒加载初始化。
@@ -39,8 +39,8 @@ cordis.patch.yml   bundle patch：`name: dsh-dbhub-live` 挂载本包
 ## 存储与容错（初始化即处理）
 
 - **实例隔离**：所有持久化都在 `$DSH_HOME/storages/dsh-dbhub-live/`（`credentials.json` 凭据+enabled、`runtime.json`、`dbhub.toml`、`dbhub-runtime/` 自动安装前缀）。隔离粒度 = `DSH_HOME`（同一 home 的多个 profile 共享，与 dsh 自身 workspace.json 约定一致）；dbhub 进程、状态机、工具注册天然按进程隔离。**进程环境变量不参与连接解析**。
-- **升级/手改遗留兼容**：`loadStore`/`loadRuntime` 先用纯函数 `normalizeStore`/`normalizeRuntime` 清洗：丢弃非布尔 `enabled`、非对象/空 dsn 条目、非法 `dbhubExe`/`dbhubInstallAt`；`dsn` 统一 trim；**未知字段保留**（向前兼容，不因旧版加载剥离新版写入）。清洗结果与原文不同时**一次性回写迁移**，之后每次启动都是规范化文件。
-- **空值安全**：解析器对缺失/空值全部有兜底（`resolveWorkspaceDsn` 判空、`maskDsn` 对不可解析 DSN 正则兜底、状态 schema 默认值、settings 镜像的 `enabled` 只认布尔），清洗后不存在半吊子条目。
+- **升级/手改遗留兼容**：`loadStore`/`loadRuntime` 先用纯函数 `normalizeStore`/`normalizeRuntime` 清洗：丢弃非布尔 `enabled`、非对象/空 dsn 条目、非法 `dbhubExe`/`dbhubInstallAt`；`dsn` 统一 trim；v1 单 dsn 条目自动迁移为 `environments.default`；**未知字段保留**（向前兼容）。清洗结果与原文不同时**一次性回写迁移**，之后每次启动都是规范化文件。
+- **空值安全**：解析器对缺失/空值全部有兜底（`resolveWorkspaceEnvs` 判空、`maskDsn` 对不可解析 DSN 正则兜底、状态 schema 默认值、settings 镜像的 `enabled` 只认布尔），清洗后不存在半吊子条目。
 - **运行目录被删 / 写入被拦截**：每次 JSON/toml 写入前自动 `mkdirSync` 重建目录；写入失败**不抛致命**，`warnOnce` 一次性告警并继续内存态运行（凭据持久化失效但工具可用）；`dbhub.toml` 写入失败按**初始化错误**记录（状态卡片 🔴 + `lastError`）并下次调用自动重试；npm 自动安装前同样重建目录。注意：以上全是 best-effort，被拦截时重启会丢「仅内存态」的修改，属预期。
 
 ## 调试方法（不影响正在运行的 Harness）
