@@ -34,6 +34,13 @@ cordis.patch.yml   bundle patch：`name: dsh-dbhub-live` 挂载本包
 - **启用/禁用**：`state.setEnabled` 持久化到 `credentials.json`（权威值）；禁用时立即 `terminateServer()` 释放进程，所有工具 execute 首行返回「插件已禁用」；重新启用触发懒加载初始化。
 - **密码脱敏**：`maskDsn` 是唯一出口——工具描述、结果前缀、扫描候选一律走它。
 
+## 存储与容错（初始化即处理）
+
+- **实例隔离**：所有持久化都在 `$DSH_HOME/storages/dsh-dbhub-live/`（`credentials.json` 凭据+enabled、`runtime.json`、`dbhub.toml`、`dbhub-runtime/` 自动安装前缀）。隔离粒度 = `DSH_HOME`（同一 home 的多个 profile 共享，与 dsh 自身 workspace.json 约定一致）；dbhub 进程、状态机、工具注册天然按进程隔离。**进程环境变量不参与连接解析**。
+- **升级/手改遗留兼容**：`loadStore`/`loadRuntime` 先用纯函数 `normalizeStore`/`normalizeRuntime` 清洗：丢弃非布尔 `enabled`、非对象/空 dsn 条目、非法 `dbhubExe`/`dbhubInstallAt`；`dsn` 统一 trim；**未知字段保留**（向前兼容，不因旧版加载剥离新版写入）。清洗结果与原文不同时**一次性回写迁移**，之后每次启动都是规范化文件。
+- **空值安全**：解析器对缺失/空值全部有兜底（`resolveWorkspaceDsn` 判空、`maskDsn` 对不可解析 DSN 正则兜底、状态 schema 默认值、settings 镜像的 `enabled` 只认布尔），清洗后不存在半吊子条目。
+- **运行目录被删 / 写入被拦截**：每次 JSON/toml 写入前自动 `mkdirSync` 重建目录；写入失败**不抛致命**，`warnOnce` 一次性告警并继续内存态运行（凭据持久化失效但工具可用）；`dbhub.toml` 写入失败按**初始化错误**记录（状态卡片 🔴 + `lastError`）并下次调用自动重试；npm 自动安装前同样重建目录。注意：以上全是 best-effort，被拦截时重启会丢「仅内存态」的修改，属预期。
+
 ## 调试方法（不影响正在运行的 Harness）
 
 DSH 启动是 fail-loud：任一插件激活失败整树拒绝启动、GUI 打不开。因此**永远不要在配置/源码上直接动主实例**，按下面阶梯来：

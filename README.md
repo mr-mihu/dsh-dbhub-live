@@ -101,6 +101,8 @@ dbhub_query  dsn=mysql://root:pass@192.168.77.6:3306/tx_sd_jinengshu  sql="SHOW 
 ~/.dsh/storages/dsh-dbhub-live/
 ```
 
+按 `DSH_HOME` 实例隔离，同一实例的多个 profile 共享（与 dsh 自身 `workspace.json` 同一约定）。插件对升级/手改遗留的旧格式配置自动清洗并一次性迁移；运行目录被误删或写入被系统拦截时不会崩溃——自动重建目录、写入失败仅告警并继续内存态运行，`dbhub.toml` 写入失败则显示为初始化错误并自动重试。
+
 ## 卸载
 
 ```bash
