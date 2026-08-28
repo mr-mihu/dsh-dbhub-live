@@ -61,11 +61,13 @@ dbhub_query  dsn=mysql://user:pass@127.0.0.1:3306/mydb  sql="SHOW TABLES;"
 | 工具 | 说明 |
 | --- | --- |
 | `dbhub_configure(workspace?, env?, dsn?)` | 为工作区配置/持久化数据库连接（可指定环境名，默认 `default`）。 |
-| `dbhub_list_sources()` | 列出当前已注册的全部连接源（工作区 × 环境、打码连接串、来源与对应工具名），便于确认测试/生产等环境是否存在；**打码连接串仅供识别，不可用于直连**。 |
-| `dbhub_execute_sql_<工作区>[_<环境>]` | 在指定工作区、指定环境的常驻连接上执行 SQL。 |
-| `dbhub_search_objects_<工作区>[_<环境>]` | 在指定工作区/环境搜索数据库对象（表/视图/列/索引等）。 |
+| `dbhub_list_sources()` | 列出当前已注册的全部连接源（工作区 × 环境、打码连接串、来源与对应 **source 值**）；**打码连接串仅供识别，不可用于直连**。 |
+| `dbhub_execute_sql(source, sql)` | 在指定数据源的常驻连接上执行 SQL；`source` 见 `dbhub_list_sources`（默认环境不带后缀，命名环境如 `…_test`）。 |
+| `dbhub_search_objects(source, object_type, ...)` | 在指定数据源搜索数据库对象（表/视图/列/索引等）。 |
 | `dbhub_query(dsn, sql)` | 临时连接任意库执行 SQL（多语句用 `;` 分隔）；**检测到 `****` 脱敏密码会直接拒绝**并引导使用常驻工具。 |
 | `dbhub_query_objects(dsn, ...)` | 临时连接任意库搜索数据库对象；同样拒绝脱敏密码。 |
+
+> 常驻工具**声明数量恒定**（不随工作区/环境数量增长）：全部工作区 × 环境通过 `dbhub_execute_sql` / `dbhub_search_objects` 的 `source` 参数选择，语义等价于每个工作区×环境一个工具，但**不占据多余上下文空间**。
 
 > 注：`search_objects` 仅对 SQLite 开放；MySQL / PostgreSQL 等请用 `dbhub_query` 直接查（如 `SHOW TABLES`）。
 
