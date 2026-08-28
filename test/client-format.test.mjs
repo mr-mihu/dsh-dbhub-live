@@ -22,7 +22,7 @@ test('client bundle factory is lazy CJS with module/exports boilerplate', () => 
 
 test('client bundle requires only baseline platform modules', () => {
   const requires = [...source.matchAll(/require\(\s*"([^"]+)"\s*\)/g)].map((m) => m[1])
-  assert.deepEqual(requires, ['react'])
+  assert.deepEqual(requires, ['react', '@deepseek-ai/dsh-client-ui-primitives'])
 })
 
 test('client bundle exports name/inject/apply and returns module.exports', () => {
@@ -48,18 +48,17 @@ test('client bundle exposes the config editor (saveConfig + editable options)', 
   assert.doesNotMatch(source, /dbhubPackage/)
 })
 
-test('client bundle renders a single collapsible card (status header, expand to manage)', () => {
+test('client bundle renders a native single-collapse card (theme tokens, primitives chevron)', () => {
   assert.match(source, /var openState = react\.useState\(false\)/)
-  assert.match(source, /headRowStyle/)
-  assert.match(source, /▼/)
-  assert.match(source, /▶/)
-  assert.match(source, /blockTitleStyle/)
+  assert.match(source, /--dsw-alias-bg-layer-2/)
+  assert.match(source, /--dsw-alias-label-primary/)
+  assert.match(source, /IconChevronDownOutline14/)
+  assert.match(source, /ChevronIcon/)
+  assert.match(source, /rotate\(180deg\)/)
+  assert.match(source, /e\.stopPropagation\(\)/)
   assert.match(source, /"状态"/)
   assert.match(source, /"配置"/)
   assert.match(source, /"工作区连接"/)
-  // the header keeps the toggle reachable while collapsed
-  assert.match(source, /props\.setEnabled\(!enabled\)/)
-  assert.match(source, /e\.stopPropagation\(\)/)
 })
 
 test('client bundle shows the source value per workspace row', () => {
