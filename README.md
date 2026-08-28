@@ -1,5 +1,7 @@
 # dsh-dbhub-live
 
+**简体中文** · [English](README.en.md)
+
 > 让 [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/DeepSeek-Harness) 直接、安全地操作数据库：常驻多源连接 + 按工作区工具 + 临时动态连接 + 懒加载与浏览器状态卡片。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)

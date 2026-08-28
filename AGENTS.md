@@ -94,3 +94,4 @@ npm test        # 单元测试（node:test；沙箱内请逐个文件跑：node 
 - 产品文案中文、代码注释英文；密码脱敏不可绕过；扫描必须经 `askUser` 授权。
 - `state.*` 之外不要直接改 `store`/`runtime` 之外的持久化。
 - 增加行为时同步更新本文件、README（用户侧）与 doc/REQUIREMENTS.md（业务侧）。
+- README 双语同步：`README.md`（中文）为唯一真源，`README.en.md` 由 AI 从最新中文派生——改动任一侧必须同次更新另一侧，章节结构一一对应。
