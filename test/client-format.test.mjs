@@ -48,13 +48,23 @@ test('client bundle exposes the config editor (saveConfig + editable options)', 
   assert.doesNotMatch(source, /dbhubPackage/)
 })
 
-test('client bundle renders collapsible sections', () => {
-  assert.match(source, /function Section\(props\)/)
-  assert.match(source, /title: "状态"/)
-  assert.match(source, /title: "配置"/)
-  assert.match(source, /title: "工作区连接"/)
+test('client bundle renders a single collapsible card (status header, expand to manage)', () => {
+  assert.match(source, /var openState = react\.useState\(false\)/)
+  assert.match(source, /headRowStyle/)
   assert.match(source, /▼/)
   assert.match(source, /▶/)
+  assert.match(source, /blockTitleStyle/)
+  assert.match(source, /"状态"/)
+  assert.match(source, /"配置"/)
+  assert.match(source, /"工作区连接"/)
+  // the header keeps the toggle reachable while collapsed
+  assert.match(source, /props\.setEnabled\(!enabled\)/)
+  assert.match(source, /e\.stopPropagation\(\)/)
+})
+
+test('client bundle shows the source value per workspace row', () => {
+  assert.match(source, /w\.srcId/)
+  assert.match(source, /source: /)
 })
 
 test('client bundle manages workspace connections through configOp', () => {
