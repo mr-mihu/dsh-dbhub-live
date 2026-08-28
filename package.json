@@ -1,6 +1,6 @@
 {
   "name": "dsh-dbhub-live",
-  "version": "3.1.1-dev.6",
+  "version": "3.1.1-dev.7",
   "description": "DSH 数据库 MCP 桥接插件：常驻多源 dbhub 服务 + source 参数化常驻工具 + 临时动态连接 + 懒加载、浏览器状态卡片与可配置参数。",
   "type": "module",
   "main": "lib/index.mjs",

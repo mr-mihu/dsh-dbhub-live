@@ -5,8 +5,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![DSH](https://img.shields.io/badge/DSH-plugin-blue.svg)](#安装)
 [![DBHub](https://img.shields.io/badge/Built_on-DBHub-22a05a)](https://github.com/bytebase/dbhub)
-[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/mr-mihu/dsh-dbhub-live)
-[![dshfind](https://dshfind.com/api/badge/mr-mihu/dsh-dbhub-live?lang=zh)](https://dshfind.com/zh/plugins/mr-mihu/dsh-dbhub-live?ref=badge)
+[![npm version](https://img.shields.io/npm/v/dsh-dbhub-live)](https://www.npmjs.com/package/dsh-dbhub-live)
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/zh/plugins/mr-mihu/dsh-dbhub-live)
 
 `dsh-dbhub-live` 是一个 DSH 插件，基于 [DBHub](https://dbhub.ai)（数据库 MCP 服务器）让模型直接查询数据库：既能在已配置的工作区上复用常驻连接，也能临时连任意库做一次性排查。
 
