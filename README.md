@@ -61,11 +61,11 @@ dbhub_query  dsn=mysql://user:pass@127.0.0.1:3306/mydb  sql="SHOW TABLES;"
 | 工具 | 说明 |
 | --- | --- |
 | `dbhub_configure(workspace?, env?, dsn?)` | 为工作区配置/持久化数据库连接（可指定环境名，默认 `default`）。 |
-| `dbhub_list_sources()` | 列出当前已注册的全部连接源（工作区 × 环境、打码连接串、来源与对应工具名），便于确认测试/生产等环境是否存在。 |
+| `dbhub_list_sources()` | 列出当前已注册的全部连接源（工作区 × 环境、打码连接串、来源与对应工具名），便于确认测试/生产等环境是否存在；**打码连接串仅供识别，不可用于直连**。 |
 | `dbhub_execute_sql_<工作区>[_<环境>]` | 在指定工作区、指定环境的常驻连接上执行 SQL。 |
 | `dbhub_search_objects_<工作区>[_<环境>]` | 在指定工作区/环境搜索数据库对象（表/视图/列/索引等）。 |
-| `dbhub_query(dsn, sql)` | 临时连接任意库执行 SQL（多语句用 `;` 分隔）。 |
-| `dbhub_query_objects(dsn, ...)` | 临时连接任意库搜索数据库对象。 |
+| `dbhub_query(dsn, sql)` | 临时连接任意库执行 SQL（多语句用 `;` 分隔）；**检测到 `****` 脱敏密码会直接拒绝**并引导使用常驻工具。 |
+| `dbhub_query_objects(dsn, ...)` | 临时连接任意库搜索数据库对象；同样拒绝脱敏密码。 |
 
 > 注：`search_objects` 仅对 SQLite 开放；MySQL / PostgreSQL 等请用 `dbhub_query` 直接查（如 `SHOW TABLES`）。
 
