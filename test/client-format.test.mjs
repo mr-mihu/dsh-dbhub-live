@@ -56,14 +56,23 @@ test('client bundle renders a native single-collapse card (theme tokens, primiti
   assert.match(source, /ChevronIcon/)
   assert.match(source, /rotate\(180deg\)/)
   assert.match(source, /e\.stopPropagation\(\)/)
-  assert.match(source, /"状态"/)
-  assert.match(source, /"配置"/)
-  assert.match(source, /"工作区连接"/)
+  assert.match(source, /t\("block\.status"\)/)
+  assert.match(source, /t\("block\.config"\)/)
+  assert.match(source, /t\("block\.workspaces"\)/)
+})
+
+test('client bundle localizes copy through ctx.locale (zh/en dictionaries)', () => {
+  assert.match(source, /localeSvc\.register\(NS, \{ zh: LOCALE_ZH, en: LOCALE_EN \}\)/)
+  assert.match(source, /face\.t = t|t: t,/)
+  assert.match(source, /var LOCALE_ZH = \{/)
+  assert.match(source, /var LOCALE_EN = \{/)
+  assert.match(source, /"block\.status": "状态"/)
+  assert.match(source, /"block\.config": "Configuration"/)
 })
 
 test('client bundle shows the source value per workspace row', () => {
   assert.match(source, /w\.srcId/)
-  assert.match(source, /source: /)
+  assert.match(source, /t\("ws\.srcVal"\) \+ ": "/)
 })
 
 test('client bundle manages workspace connections through configOp', () => {
