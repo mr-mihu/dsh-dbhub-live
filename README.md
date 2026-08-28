@@ -60,9 +60,10 @@ dbhub_query  dsn=mysql://user:pass@127.0.0.1:3306/mydb  sql="SHOW TABLES;"
 
 | 工具 | 说明 |
 | --- | --- |
-| `dbhub_configure(workspace?, dsn?)` | 为工作区配置/持久化数据库连接。 |
-| `dbhub_execute_sql_<工作区>` | 在指定工作区的常驻连接上执行 SQL。 |
-| `dbhub_search_objects_<工作区>` | 在指定工作区搜索数据库对象（表/视图/列/索引等）。 |
+| `dbhub_configure(workspace?, env?, dsn?)` | 为工作区配置/持久化数据库连接（可指定环境名，默认 `default`）。 |
+| `dbhub_list_sources()` | 列出当前已注册的全部连接源（工作区 × 环境、打码连接串、来源与对应工具名），便于确认测试/生产等环境是否存在。 |
+| `dbhub_execute_sql_<工作区>[_<环境>]` | 在指定工作区、指定环境的常驻连接上执行 SQL。 |
+| `dbhub_search_objects_<工作区>[_<环境>]` | 在指定工作区/环境搜索数据库对象（表/视图/列/索引等）。 |
 | `dbhub_query(dsn, sql)` | 临时连接任意库执行 SQL（多语句用 `;` 分隔）。 |
 | `dbhub_query_objects(dsn, ...)` | 临时连接任意库搜索数据库对象。 |
 
