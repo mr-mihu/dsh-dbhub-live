@@ -43,8 +43,10 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-dbhub-live
 
 ## 快速开始
 
+以下工具由 DSH 的 AI 自动调用，你不用手动执行——直接用自然语言提出需求即可（如「查一下 users 表」），AI 会按需完成配置与查询：
+
 ```text
-# 1) 为当前工作区配置数据库连接（三种方式任选其一）
+# 1) 若当前工作区还没有连接，AI 先为其配置数据库连接（三种方式见下方「配置方式」）
 dbhub_configure
 
 # 2) 在已配置工作区的常驻连接上执行查询
@@ -144,14 +146,6 @@ dsh plugin --profile web remove dsh-dbhub-live
 | 扫描不到配置文件 | 默认跳过 `node_modules` / `.git` / `target` / `dist` 等目录，可改用「输入 DSN」或「填写分项」。 |
 | 需要自定义 dbhub 版本 | 设置环境变量 `DSH_DBHUB_PACKAGE`（如 `@bytebase/dbhub@1.2.1`）后重启；或删除 `~/.dsh/storages/dsh-dbhub-live` 重新自动安装。 |
 | 不希望自动更新 dbhub | 状态卡片「自动更新间隔(天)」填 `0` 并保存；或设置环境变量 `DSH_DBHUB_UPDATE_DAYS=0`。 |
-
-## 开发与测试（不影响主进程）
-
-开发说明见 [AGENTS.md](./AGENTS.md)。推荐的调试路径（详见测试方案 `/插件开发文档/DSH插件测试方案.md`）：
-
-- **日常改代码** → 静态校验（`npm run check`）+ 单元测试（`npm test`），零风险；
-- **会话内跑通逻辑** → 动态插件 `cordis_define/run` 快速迭代，不重启 Harness；
-- **冷启动验证** → 隔离 `DSH_HOME` 起一个测试实例（如 `dsh web --port 3081`）安装本插件验证启动与客户端 bundle，主实例零影响。
 
 ## 许可证
 
