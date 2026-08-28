@@ -28,7 +28,7 @@ cordis.patch.yml   bundle patch：`name: dsh-dbhub-live` 挂载本包
 ## 关键架构事实
 
 - **模块依赖只进不出**：`config ← state ← runtime ← mcp ← tools ← index`，`adhoc ← mcp`，`collect ← tools`；禁止反向 or 循环 import（HMR/装载顺序依赖它）。
-- **状态命名空间**：Host 注册 `dsh-dbhub-live` 命名空间（`ctx.inject(['settings'], …)` + schema）；Web 端 Plugins 选项卡按命名空间分发 `settings.plugin.item` 卡片。命名空间值 = 状态 `{enabled, phase, toolCount, lastError, mode}` + 配置 `{updateIntervalDays, idleMinutes}` + `{serverUp}` + `{workspaces(JSON 掩码摘要)}` + `{configOp}`（主机消费后自动清空）。
+- **状态命名空间**：Host 注册 `dsh-dbhub-live` 命名空间（`ctx.inject(['settings'], …)` + schema）；Web 端 Plugins 选项卡按命名空间分发 `settings.plugin.item` 卡片。命名空间值 = 状态 `{enabled, phase, toolCount, lastError, mode}` + 配置 `{updateIntervalDays, idleMinutes}` + `{serverUp}` + `{workspaces(JSON 掩码摘要)}` + `{configOp}`（主机消费后自动清空）。**注入回调是独立作用域：内部需要的服务（如 `subprocess`）必须用 `ctx.get('subprocess')` 就地获取，绝不能引用 `apply()` 的局部变量——否则 ReferenceError 会静默杀死整条发布/配置链路（卡片只剩静态值、工作区连接不刷新）**。回调整体套 `wrap()` 防护，异常必须打日志。
 - **可配置参数**：`options.mjs` 只此一处持有部署开关（`dbhubPackage` 仅环境变量/内部，不进设置）；watch 把卡片写入的字段经 `options.applyPatch` 应用到运行时。**优先级：用户设置 > 进程环境变量 > 内置默认**。不要绕过 `applyPatch` 直接改 `options` 内部值。
 - **工作区连接管理（configOp 通道）**：store v2 = `{ [wsPath]: { environments: { [env]: {dsn, source, updatedAt} } } }`（v1 单 dsn 条目自动迁移进 `environments.default`）。卡片只读**掩码**摘要（`collectSources` → `latestSummaries`，密码永不出 Host）；增/改/删通过命名空间 `configOp` 单向命令下发，`index.mjs` 用 `setWorkspaceEnv`/`removeWorkspaceEnv` 落盘后重扫摘要并发布（configOp 随发布清空，天然防环）。同一工作区多环境：`default` 源 id 保持 `标题_hash` 兼容名，其余环境 `标题_hash_<envSlug>`，工具名随之区分。自动发现（mise/.env）只提供未覆盖的 `default`，不持久化。
 - **schema 弹性依赖**：优先用真实 `@deepseek-ai/schemastery` schema（`await import`）；解析失败时降级为 `lib/index.mjs` 内建的最小 callable schema（`schema(v)` 合默认值 + `toJSON()`），保证**链路安装（`dsh plugin add <本地目录>`，Node ESM 按源码真实路径解析裸导入）下插件照样启动、卡片照常工作**。tarball/npm 安装（真实目录在 profile node_modules 下）走真实 schemastery 路径。不要把这个 import 改回静态顶层 import——会重新引入链路安装时启动失败。
@@ -80,6 +80,13 @@ npm test        # 单元测试（node:test；沙箱内请逐个文件跑：node 
 ```
 
 发布前：按「调试方法」第 3 步在隔离实例完整冷启动一遍，确认 Host 无报错、`/plugins/dsh-dbhub-live/client.js` 可访问。
+
+## 版本号策略（内部调试 ≠ 发布）
+
+- **每次内部调试迭代都升小版本**（如 `3.1.1-dev.1`、`3.1.1-dev.2`、`3.1.1-dev.3`…），`pnpm pack` 产物随之换名；
+- 原因：pnpm 对 `dsh plugin add <同名同版本 tarball>` 会判「Already up to date」跳过、**不换包**；升版本号才能保证调试包真正部署（曾因同版本 tgz 导致连换两轮都没生效）。
+- `dsh plugin add` 后务必用 `dsh plugin ls` 或核对 `node_modules/<pkg>/package.json` 的版本号确认已替换。
+- **发布时**再升级发布版本（如调试到 `3.1.1-dev.N` 后，正式版打 `3.1.2`），tag/npm 一律用正式版本号。
 
 ## 约定
 

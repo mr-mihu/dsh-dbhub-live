@@ -5,6 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![DSH](https://img.shields.io/badge/DSH-plugin-blue.svg)](#安装)
 [![DBHub](https://img.shields.io/badge/Built_on-DBHub-22a05a)](https://github.com/bytebase/dbhub)
+[![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/mr-mihu/dsh-dbhub-live)
 
 `dsh-dbhub-live` 是一个 DSH 插件，基于 [DBHub](https://dbhub.ai)（数据库 MCP 服务器）让模型直接查询数据库：既能在已配置的工作区上复用常驻连接，也能临时连任意库做一次性排查。
 
@@ -50,7 +51,7 @@ dbhub_configure
 dbhub_execute_sql_myapp  SELECT * FROM users LIMIT 10;
 
 # 3) 临时连任意库做一次性排查
-dbhub_query  dsn=mysql://root:pass@192.168.77.6:3306/tx_sd_jinengshu  sql="SHOW TABLES;"
+dbhub_query  dsn=mysql://user:pass@127.0.0.1:3306/mydb  sql="SHOW TABLES;"
 ```
 
 ## 工具
@@ -75,7 +76,7 @@ dbhub_query  dsn=mysql://root:pass@192.168.77.6:3306/tx_sd_jinengshu  sql="SHOW 
 
 ## 状态卡片
 
-设置 → 插件 → dsh-dbhub-live（依赖 Web 端设置面板，Host 半侧的 `dsh-dbhub-live` 设置命名空间实时镜像插件状态与配置）。卡片为**折叠分区**：状态 / 配置 / 工作区连接。
+设置 → 插件 → dsh-dbhub-live：插件会把运行状态与配置实时同步到 Web 设置面板（仅 `dsh web` 端可见）。卡片为**折叠分区**：状态 / 配置 / 工作区连接。
 
 **状态区**（默认展开）：
 
@@ -139,7 +140,7 @@ dsh plugin --profile web remove dsh-dbhub-live
 | 首次使用报「无法获取 dbhub」 | 确认本机有 npm 且能联网；离线可手动安装 `dbhub` 并加入 PATH。 |
 | 状态卡片显示 🔴 异常 | 查看状态卡片中的「最近错误」与 `dsh web` 日志；进程异常退出时插件会在下次调用自动重启。 |
 | 工具显示「插件已禁用」 | 打开 设置 → 插件 → dsh-dbhub-live 卡片，点击「启用」。 |
-| 看不到状态卡片 | 确认插件已安装并重启 `dsh web`；Host 半侧未注册状态命名空间时卡片不显示（无设置面板的环境不影响工具使用）。 |
+| 看不到状态卡片 | 确认插件已安装并重启 `dsh web`；状态卡片只在 Web 设置面板（`dsh web`）显示，在无设置面板的终端环境下不影响工具使用。 |
 | 扫描不到配置文件 | 默认跳过 `node_modules` / `.git` / `target` / `dist` 等目录，可改用「输入 DSN」或「填写分项」。 |
 | 需要自定义 dbhub 版本 | 设置环境变量 `DSH_DBHUB_PACKAGE`（如 `@bytebase/dbhub@1.2.1`）后重启；或删除 `~/.dsh/storages/dsh-dbhub-live` 重新自动安装。 |
 | 不希望自动更新 dbhub | 状态卡片「自动更新间隔(天)」填 `0` 并保存；或设置环境变量 `DSH_DBHUB_UPDATE_DAYS=0`。 |
