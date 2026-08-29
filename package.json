@@ -51,7 +51,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/mr-mihu/dsh-dbhub-live.git"
+    "url": "git+https://github.com/mr-mihu/dsh-dbhub-live.git"
   },
   "bugs": {
     "url": "https://github.com/mr-mihu/dsh-dbhub-live/issues"
