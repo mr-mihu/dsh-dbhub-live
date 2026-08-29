@@ -40,6 +40,9 @@ dsh plugin --profile web add dsh-dbhub-live
 
 # 方式二：通过 npx 调用 dsh（无需本机全局安装 dsh）
 npx @deepseek-ai/dsh plugin --profile web add dsh-dbhub-live
+
+# 更新到指定版本（推荐写明当前发布的版本号，避免 pnpm 判「Already up to date」跳过）
+dsh plugin --profile web update dsh-dbhub-live@3.1.3
 ```
 
 安装后**重启 `dsh web`** 生效（重启后到 设置 → 插件 → dsh-dbhub-live 可看到状态卡片）。

@@ -40,6 +40,9 @@ dsh plugin --profile web add dsh-dbhub-live
 
 # Option 2: invoke dsh via npx (no global dsh installation required)
 npx @deepseek-ai/dsh plugin --profile web add dsh-dbhub-live
+
+# Update to a specific version (pin the currently published version so pnpm doesn't skip with "Already up to date")
+dsh plugin --profile web update dsh-dbhub-live@3.1.3
 ```
 
 After installing, **restart `dsh web`** for it to take effect (you can then see the status card at Settings → Plugins → dsh-dbhub-live).
