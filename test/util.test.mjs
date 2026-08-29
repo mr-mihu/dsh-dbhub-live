@@ -73,7 +73,23 @@ test('generateToml and fingerprintOf', () => {
   assert.match(toml, /^# Auto-generated/)
   assert.match(toml, /id = "ws_abc"/)
   assert.match(toml, /dsn = "mysql:\/\/u@h\/d"/)
+  assert.match(toml, /lazy = true/)
   assert.notEqual(cfg.fingerprintOf(sources), cfg.fingerprintOf([{ id: 'ws_abc', dsn: 'other' }]))
+})
+
+test('generateToml emits lazy = true for EVERY source (one dead env must not kill the server)', () => {
+  const sources = [
+    { id: 'hbtx_1hn7yaw', dsn: 'mysql://root:pw@10.253.0.3:3307/tx_zdsf_main_pro' },
+    { id: 'hbtx_1hn7yaw_test', dsn: 'mysql://root:pw@10.253.0.6:1688/db_zdsf' },
+    { id: 'other_2', dsn: 'sqlite:///C:/data/x.db' },
+  ]
+  const blocks = cfg.generateToml(sources).split('[[sources]]').slice(1)
+  assert.equal(blocks.length, 3)
+  for (const b of blocks) {
+    assert.match(b, /id = ".+"/)
+    assert.match(b, /dsn = ".+"/)
+    assert.match(b, /lazy = true/)
+  }
 })
 
 test('collect: walkForCandidates skips noise dirs and finds config files', async () => {

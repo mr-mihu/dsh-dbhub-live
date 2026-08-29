@@ -14,7 +14,7 @@
 
 ## ✨ Features
 
-- **Persistent multi-source service** — a single background dbhub service connects to multiple sources; connections are reused and queries are faster.
+- **Persistent multi-source service** — a single background dbhub service connects to multiple sources; connections are reused and queries are faster. Each source connects lazily, so one unreachable environment never takes the others down (fault isolation).
 - **Per-workspace tools** — `dbhub_execute_sql_<workspace>` / `dbhub_search_objects_<workspace>`; the tool name is the workspace, multiple workspaces never mix up, and connections are clearly labeled (passwords masked).
 - **Ad-hoc dynamic connections** — `dbhub_query` / `dbhub_query_objects` connect to any database independently on each call and can query several databases in parallel, handy for cross-environment diagnosis.
 - **Lazy-load startup** — plugin startup does not block the GUI and tools are available immediately; environment initialization is deferred to the first call (queries during initialization automatically wait until ready).
@@ -152,6 +152,7 @@ dsh plugin --profile web remove dsh-dbhub-live
 | Symptom | Fix |
 | --- | --- |
 | "Cannot locate dbhub" on first use | Make sure npm is present and online; offline, install `dbhub` manually and add it to PATH. |
+| A query to one environment fails with `SOURCE_UNREACHABLE` / connection refused | Persistent connections are established lazily **per source with fault isolation**: one unreachable environment (test DB down, VPN off) only makes that environment's queries fail — other environments and the plugin keep working. Fix host/port/network and retry. |
 | Status card shows 🔴 error | Check "Most recent error" in the status card and the `dsh web` logs; a crashed process is auto-restarted on the next call. |
 | Tools say "plugin disabled" | Open Settings → Plugins → dsh-dbhub-live and click "Enable". |
 | Status card not visible | Confirm the plugin is installed and restart `dsh web`; the card only shows in the Web settings panel (`dsh web`) — on terminal environments without the panel, tool usage is unaffected. |
