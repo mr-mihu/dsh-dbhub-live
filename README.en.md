@@ -86,6 +86,8 @@ If a workspace already has `mise env` or `.env` (`DSN` / `DB_*`), the plugin dis
 
 Settings → Plugins → dsh-dbhub-live: the plugin syncs its running state and configuration to the Web settings panel in real time (only visible on the `dsh web` side). The card uses the **single-row collapsible** style (consistent with the other plugin settings cards):
 
+> All card copy (name, status, config fields, buttons, connection rows) follows the dsh UI language (Chinese / English — Settings → General → Language); model-facing errors, feedback and the host logs follow it as well.
+
 **Collapsed (default)**: one row shows the status badge (🟢 running / 🟡 initializing / 🔴 error / ⚪ disabled), environment count, and the **enable/disable switch** — you can check the status and toggle without expanding.
 
 **Expanded** shows three blocks —
