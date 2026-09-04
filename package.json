@@ -1,6 +1,6 @@
 {
   "name": "dsh-dbhub-live",
-  "version": "4.0.0-dev.8",
+  "version": "4.0.0",
   "description": "DSH 数据库 MCP 桥接插件：零知识凭据管理（密码永不进模型）+ 按 source 的一次性进程执行（无常驻服务、天然并发与多实例安全）+ 自动安装 dbhub 与浏览器状态卡片。",
   "type": "module",
   "main": "lib/index.mjs",
