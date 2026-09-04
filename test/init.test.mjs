@@ -148,15 +148,15 @@ test('saveStore recreates a deleted storage directory', async () => {
   }
 })
 
-test('writeToml returns false (never throws) when the storage path is blocked', async () => {
+test('saveStore returns false (never throws) when the storage path is blocked', async () => {
   const home = prepareHome()
   try {
     // Occupy the storage path with a plain file so mkdir/write must fail.
     mkdirSync(join(home, 'storages'), { recursive: true })
     writeFileSync(join(home, 'storages', 'dsh-dbhub-live'), 'i am a file')
     const config = await freshConfig()
-    assert.equal(config.writeToml('[[sources]]\n'), false)
     assert.equal(config.ensureStorageDir(), false)
+    assert.equal(config.saveStore({ enabled: true }), false)
   } finally {
     rmSync(home, { recursive: true, force: true })
   }

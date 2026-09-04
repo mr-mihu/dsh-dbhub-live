@@ -42,7 +42,6 @@ test('client bundle registers the settings.plugin.item card keyed to the namespa
 test('client bundle exposes the config editor (saveConfig + editable options)', () => {
   assert.match(source, /saveConfig:\s*function/)
   assert.match(source, /updateIntervalDays/)
-  assert.match(source, /idleMinutes/)
   assert.match(source, /保存配置/)
   // the auto-install package is NOT a settings field anymore
   assert.doesNotMatch(source, /dbhubPackage/)
@@ -81,6 +80,15 @@ test('client bundle manages workspace connections through configOp', () => {
   assert.match(source, /op: "remove"/)
   assert.match(source, /workspacesOf\(value\)/)
   assert.match(source, /已保存|自动/)
+})
+
+test('client bundle offers a transient per-row connection test', () => {
+  assert.match(source, /op: "test"/)
+  assert.match(source, /nonce/)
+  assert.match(source, /value\.testResult/)
+  // results are surfaced only for nonces the card itself dispatched
+  assert.match(source, /nonceKeys/)
+  assert.match(source, /btn\.test/)
 })
 
 test('client bundle still hard-injects slots and settingsScope', () => {

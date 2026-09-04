@@ -22,10 +22,10 @@ function persistPath() {
   return join(home, 'storages', 'dsh-dbhub-live', 'credentials.json')
 }
 
-test('enabled defaults to true and phase starts initializing', () => {
+test('enabled defaults to true and phase starts running (no resident server)', () => {
   assert.equal(state.isEnabled(), true)
-  assert.equal(state.snapshot().phase, 'initializing')
-  assert.equal(state.snapshot().mode, 'lazy')
+  assert.equal(state.snapshot().phase, 'running')
+  assert.equal(state.snapshot().mode, 'oneshot')
 })
 
 test('setEnabled(false) persists to the store and moves to disabled', () => {
@@ -39,10 +39,10 @@ test('setEnabled(false) persists to the store and moves to disabled', () => {
   assert.equal(state.setEnabled(false), false)
 })
 
-test('setEnabled(true) returns to initializing (lazy init kick is caller-owned)', () => {
+test('setEnabled(true) returns to running (nothing to lazy-init — calls spawn on demand)', () => {
   assert.equal(state.setEnabled(true), true)
   assert.equal(state.isEnabled(), true)
-  assert.equal(state.snapshot().phase, 'initializing')
+  assert.equal(state.snapshot().phase, 'running')
 })
 
 test('recordError/clearError drive the error phase and summary', () => {

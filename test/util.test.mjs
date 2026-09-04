@@ -19,16 +19,47 @@ test.after(() => {
 
 test('slugify normalizes titles', () => {
   assert.equal(cfg.slugify('MyApp'), 'myapp')
-  assert.equal(cfg.slugify('hbtx-server-master_1hn7yaw'), 'hbtx-server-master_1hn7yaw')
+  assert.equal(cfg.slugify('my-app-server_abc123'), 'my-app-server_abc123')
   assert.equal(cfg.slugify('A B!/c'), 'a-b-c')
   assert.equal(cfg.slugify(''), 'ws')
   assert.equal(cfg.slugify(undefined), 'ws')
 })
 
-test('tomlEscape escapes backslash, quotes and newlines', () => {
-  assert.equal(cfg.tomlEscape('a"b'), 'a\\"b')
-  assert.equal(cfg.tomlEscape('a\\b'), 'a\\\\b')
-  assert.equal(cfg.tomlEscape('a\nb'), 'a\\nb')
+test('connLabel describes host/port/database — never user or password', () => {
+  assert.equal(cfg.connLabel('mysql://root:secret@10.0.0.1:3306/mydb'), 'mysql://10.0.0.1:3306/mydb')
+  assert.equal(cfg.connLabel('postgres://u:p@h/db'), 'postgres://h/db')
+  assert.equal(cfg.connLabel('sqlite:///C:/data/x.db'), 'sqlite:///C:/data/x.db')
+  assert.equal(cfg.connLabel(''), '(未知连接)')
+})
+
+test('describeConn extracts only non-secret metadata', () => {
+  const c = cfg.describeConn('mysql://root:secret@10.0.0.1:3306/mydb')
+  assert.deepEqual(c, { type: 'mysql', host: '10.0.0.1', port: '3306', database: 'mydb' })
+  assert.ok(!JSON.stringify(c).includes('secret'))
+  assert.ok(!JSON.stringify(c).includes('root'))
+  assert.equal(cfg.describeConn('jdbc:postgresql://u:p@h:5432/db').type, 'postgres')
+  assert.equal(cfg.describeConn('sqlite:///C:/data/x.db').type, 'sqlite')
+})
+
+test('scrubSecrets removes the DSN password and generic password= tokens', () => {
+  const dsn = 'mysql://root:secret.pw@10.0.0.1:3306/mydb'
+  const scrubbed = cfg.scrubSecrets('Auth failed for user secret.pw (password=secret.pw)', dsn)
+  assert.ok(!scrubbed.includes('secret.pw'))
+  assert.ok(scrubbed.includes('****'))
+  // generic key=value secrets (dbhub stderr style)
+  assert.ok(cfg.scrubSecrets('password=abc123', dsn).includes('password=****'))
+  assert.ok(cfg.scrubSecrets('passwd: abc123', dsn).includes('passwd:****'))
+  assert.ok(cfg.scrubSecrets('PWD=abc123', dsn).includes('PWD=****'))
+  // plain text without the password is untouched (sanity)
+  assert.ok(cfg.scrubSecrets('SELECT 1 OK', dsn).includes('SELECT 1 OK'))
+})
+
+test('dsnUser extracts the username host-side only (never surfaced)', () => {
+  assert.equal(cfg.dsnUser('mysql://root:secret@h/d'), 'root')
+  assert.equal(cfg.dsnUser('postgres://alice@h/db'), 'alice')
+  assert.equal(cfg.dsnUser('mysql://h/d'), undefined)
+  assert.equal(cfg.dsnUser('sqlite:///C:/data/x.db'), undefined)
+  assert.equal(cfg.dsnUser('jdbc:mysql://bob:pw@h:3306/db'), 'bob')
 })
 
 test('shortHash is stable and hex-ish', () => {
@@ -49,8 +80,8 @@ test('maskDsn hides passwords, keeps host/db', () => {
 })
 
 test('dsnFromEnv joins DB_* variables and handles sqlite', () => {
-  const env = { DB_HOST: '10.0.0.1', DB_PORT: '3307', DB_USER: 'root', DB_PASSWORD: 'pw', DB_NAME: 'tx_zdsf_main_pro' }
-  assert.equal(cfg.dsnFromEnv(env), 'mysql://root:pw@10.0.0.1:3307/tx_zdsf_main_pro')
+  const env = { DB_HOST: '10.0.0.1', DB_PORT: '3307', DB_USER: 'root', DB_PASSWORD: 'pw', DB_NAME: 'maindb' }
+  assert.equal(cfg.dsnFromEnv(env), 'mysql://root:pw@10.0.0.1:3307/maindb')
   assert.equal(cfg.dsnFromEnv({ DB_HOST: 'a', DB_USER: 'b', DB_NAME: 'c', DB_TYPE: 'sqlite' }), 'sqlite:///a')
   assert.equal(cfg.dsnFromEnv({ DB_HOST: 'a' }), undefined)
 })
@@ -67,29 +98,10 @@ test('parseEnvFile skips comments/quotes', () => {
   assert.equal(map.EMPTY, '')
 })
 
-test('generateToml and fingerprintOf', () => {
-  const sources = [{ id: 'ws_abc', dsn: 'mysql://u@h/d' }]
-  const toml = cfg.generateToml(sources)
-  assert.match(toml, /^# Auto-generated/)
-  assert.match(toml, /id = "ws_abc"/)
-  assert.match(toml, /dsn = "mysql:\/\/u@h\/d"/)
-  assert.match(toml, /lazy = true/)
-  assert.notEqual(cfg.fingerprintOf(sources), cfg.fingerprintOf([{ id: 'ws_abc', dsn: 'other' }]))
-})
-
-test('generateToml emits lazy = true for EVERY source (one dead env must not kill the server)', () => {
-  const sources = [
-    { id: 'hbtx_1hn7yaw', dsn: 'mysql://root:pw@10.253.0.3:3307/tx_zdsf_main_pro' },
-    { id: 'hbtx_1hn7yaw_test', dsn: 'mysql://root:pw@10.253.0.6:1688/db_zdsf' },
-    { id: 'other_2', dsn: 'sqlite:///C:/data/x.db' },
-  ]
-  const blocks = cfg.generateToml(sources).split('[[sources]]').slice(1)
-  assert.equal(blocks.length, 3)
-  for (const b of blocks) {
-    assert.match(b, /id = ".+"/)
-    assert.match(b, /dsn = ".+"/)
-    assert.match(b, /lazy = true/)
-  }
+test('generateToml is GONE — the resident-server/toml layer was removed', () => {
+  assert.equal(typeof cfg.generateToml, 'undefined')
+  assert.equal(typeof cfg.fingerprintOf, 'undefined')
+  assert.equal(typeof cfg.writeToml, 'undefined')
 })
 
 test('collect: walkForCandidates skips noise dirs and finds config files', async () => {
