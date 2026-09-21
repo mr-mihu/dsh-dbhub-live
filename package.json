@@ -1,7 +1,7 @@
 {
   "name": "dsh-dbhub-live",
-  "version": "4.0.0",
-  "description": "DSH 数据库 MCP 桥接插件：零知识凭据管理（密码永不进模型）+ 按 source 的一次性进程执行（无常驻服务、天然并发与多实例安全）+ 自动安装 dbhub 与浏览器状态卡片。",
+  "version": "4.1.0",
+  "description": "DSH 数据库 MCP 桥接插件：让 AI 直接查询 MySQL / PostgreSQL / MariaDB / SQLite / SQL Server。按工作区动态配置连接（可改名、可跨工作区复制），AI 自助配置管理，密码与连接串零知识（永不进入模型上下文），每次执行独立进程。",
   "type": "module",
   "main": "lib/index.mjs",
   "exports": {

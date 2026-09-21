@@ -15,9 +15,10 @@ test('options seed from process environment; package stays internal-only', () =>
   assert.equal(options.get('updateIntervalDays'), 3)
 })
 
-test('snapshot exposes only the settings field', () => {
+test('snapshot exposes only the settings fields', () => {
   const snap = options.snapshot()
-  assert.deepEqual(Object.keys(snap).sort(), ['updateIntervalDays'])
+  assert.deepEqual(Object.keys(snap).sort(), ['showSidebarEntry', 'updateIntervalDays'])
+  assert.equal(snap.showSidebarEntry, true) // sidebar shortcut on by default
   snap.updateIntervalDays = 99
   assert.equal(options.get('updateIntervalDays'), 3)
 })
@@ -29,9 +30,15 @@ test('applyPatch accepts valid values, emits, and rejects invalid', () => {
   assert.equal(options.get('updateIntervalDays'), 0)
   assert.equal(options.get('dbhubPackage'), 'test/fork-package') // not settable via patch
   assert.equal(seen.length, 1)
+  // the sidebar switch is a boolean-only option
+  assert.equal(options.applyPatch({ showSidebarEntry: false }), true)
+  assert.equal(options.get('showSidebarEntry'), false)
+  assert.equal(options.applyPatch({ showSidebarEntry: 'yes' }), false)
+  assert.equal(options.get('showSidebarEntry'), false)
   off()
   const before = options.snapshot()
   assert.equal(options.applyPatch({ updateIntervalDays: -1, enabled: false }), false)
+  assert.equal(options.applyPatch({ showSidebarEntry: false }), false) // already false: no emit
   assert.deepEqual(options.snapshot(), before)
   assert.equal(options.applyPatch(null), false)
   assert.equal(options.applyPatch(['a']), false)

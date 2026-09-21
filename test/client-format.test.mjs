@@ -33,10 +33,40 @@ test('client bundle exports name/inject/apply and returns module.exports', () =>
   assert.match(source, /var inject = \["slots", "settingsScope"\];/)
 })
 
-test('client bundle registers the settings.plugin.item card keyed to the namespace', () => {
-  assert.match(source, /slots\.inject\("settings\.plugin\.item"/)
-  assert.match(source, /name:\s*"settings\.plugin\.item", key:\s*NS/)
+test('client bundle registers the plugins.row.config page keyed to package#row', () => {
+  // dsh 0.1.6 dropped settings.plugin.item; the plugin's own configuration now
+  // lives on the Plugins page through the keyed plugins.row.config slot.
+  assert.doesNotMatch(source, /settings\.plugin\.item/)
+  assert.match(source, /slots\.inject\(SLOT/)
+  assert.match(source, /var SLOT = "plugins\.row\.config";/)
+  assert.match(source, /var SLOT_KEY = "dsh-dbhub-live#dbhub-live";/)
+  assert.match(source, /name:\s*SLOT, key:\s*SLOT_KEY/)
   assert.match(source, /settingsScope\.bind\(\{ namespace: NS \}\)/)
+})
+
+test('client bundle renders both owner views (summary one-liner + page form)', () => {
+  assert.match(source, /var isPage = props\.view !== "summary";/)
+  assert.match(source, /if \(!isPage\)/)
+})
+
+test('client bundle owns a Settings section (core shell, always available)', () => {
+  assert.match(source, /slots\.inject\("settings\.section"/)
+  assert.match(source, /name: "settings\.section",\s*\n\s*id: "dbhub"/)
+  assert.match(source, /label: function \(\) \{ return t\("title"\); \}/)
+  assert.match(source, /function ConfigPanel\(props\)/)
+})
+
+test('client bundle owns an optional sidebar entry toggled by showSidebarEntry', () => {
+  assert.match(source, /slots\.inject\("sidebar\.panellist"/)
+  assert.match(source, /name: "sidebar\.panellist",\s*\n\s*id: "dbhub"/)
+  assert.match(source, /function PanelIcon\(props\)/)
+  assert.match(source, /slots\.inject\("main"/)
+  assert.match(source, /name: "main",\s*\n\s*key: "dbhub"/)
+  // the switch lives on the settings page and applies live
+  assert.match(source, /v\.showSidebarEntry !== false/)
+  assert.match(source, /var syncSidebar = function/)
+  assert.match(source, /host\.subscribe\(syncSidebar\)/)
+  assert.match(source, /props\.saveConfig\(\{ showSidebarEntry: next \}\)/)
 })
 
 test('client bundle exposes the config editor (saveConfig + editable options)', () => {
@@ -78,6 +108,9 @@ test('client bundle manages workspace connections through configOp', () => {
   assert.match(source, /configOp:\s*function/)
   assert.match(source, /op: "add"/)
   assert.match(source, /op: "remove"/)
+  assert.match(source, /op: "rename"/)
+  assert.match(source, /newEnv/)
+  assert.match(source, /renameFrom/)
   assert.match(source, /workspacesOf\(value\)/)
   assert.match(source, /已保存|自动/)
 })
