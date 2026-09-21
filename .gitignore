@@ -5,5 +5,10 @@ node_modules/
 *.tgz
 .DS_Store
 
+# Local-only desensitization blacklist (real internal identifiers). It must never
+# be committed or published — see AGENTS.md "质量门" for the variable name.
+.env
+.env.local
+
 # Local isolated test home (see AGENTS.md debug workflow).
 .dsh-test/

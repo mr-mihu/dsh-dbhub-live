@@ -14,6 +14,7 @@
     "lib",
     "doc",
     "test",
+    "scripts",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
@@ -34,7 +35,8 @@
   ],
   "scripts": {
     "check": "node --check ./lib/index.mjs && node --check ./lib/config.mjs && node --check ./lib/state.mjs && node --check ./lib/options.mjs && node --check ./lib/runtime.mjs && node --check ./lib/mcp.mjs && node --check ./lib/adhoc.mjs && node --check ./lib/collect.mjs && node --check ./lib/tools.mjs && node --check ./lib/client.js",
-    "test": "node --test test/"
+    "test": "node --test test/",
+    "check:secrets": "node scripts/desensitize-check.mjs"
   },
   "dsh": {
     "bundle": {

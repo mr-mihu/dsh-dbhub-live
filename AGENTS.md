@@ -21,7 +21,9 @@ lib/
   tools.mjs    host 自有工具定义与注册：恒定 4 个（configure/list_sources/execute_sql/search_objects）；configure 探连优先（见零知识契约 5）
   client.js    Web 半（手写 lazy-CJS bundle）：配置页 = `settings.section` 一级设置页 + 可选侧边栏面板（`showSidebarEntry` 开关）+ `plugins.row.config`（summary/page 两视图）
 test/          node:test 单元测试（纯逻辑 + client bundle 格式契约 + 零知识泄漏门）
+scripts/       仓库维护脚本（desensitize-check.mjs = 读本地 .env 的脱敏自检）
 doc/           需求文档
+.env           本地脱敏黑名单（DSH_DBHUB_DESENSITIZE_RE），gitignore 排除、不进 npm 包——**唯一允许存放真实标识的地方**
 cordis.patch.yml   bundle patch：`name: dsh-dbhub-live` 挂载本包
 ```
 
@@ -87,7 +89,8 @@ DSH 启动是 fail-loud：任一插件激活失败整树拒绝启动、GUI 打�
 ## 质量门
 
 ```bash
-npm run check   # 全部 lib 语法
+npm run check        # 全部 lib 语法
+npm run check:secrets  # 脱敏自检（黑名单在本地 .env，见下）
 # 单测：沙箱内逐个文件跑（node --test 的 runner 子进程在沙箱下 EPERM）
 node test/util.test.mjs && node test/state.test.mjs && node test/options.test.mjs \
   && node test/init.test.mjs && node test/i18n.test.mjs \
@@ -95,13 +98,21 @@ node test/util.test.mjs && node test/state.test.mjs && node test/options.test.mj
   && node test/client-format.test.mjs && node test/zero-knowledge.test.mjs
 ```
 
-脱敏自检（**每次提交/发布前必须零匹配**；黑名单按需追加新发现的真实值）：
+脱敏自检（**每次提交/发布前必须零匹配**）：
 
 ```bash
-git grep -inE '10\.253\.|192\.168\.77|tx_zdsf|tx_sd_jineng|db_zdsf|hbtx|1hn7yaw|9sqpcz|唐讯|广告宝|110\.120\.66' -- ':!node_modules' ':!AGENTS.md'
+npm run check:secrets
 ```
 
-零知识自检（模型可见面不得含密码）：`node test/zero-knowledge.test.mjs` 全绿 + 上面 git grep 零匹配。
+黑名单**不在仓库里**：它放在仓库根目录的 `.env`（`.gitignore` 排除、`package.json` 的 `files` 也不包含，因此永不进 git 历史、公开仓库与 npm 包）：
+
+```
+DSH_DBHUB_DESENSITIZE_RE=10\.0\.0\.1|example-db|example-project
+```
+
+`scripts/desensitize-check.mjs` 会遍历全仓库（跳过 `.git`/`node_modules`/`.env`/`*.tgz`），逐行匹配该正则，命中即 exit 1 并打印 `文件:行`；未配置时 exit 1 并提示怎么配。**新发现真实值只能追加到 `.env`，绝不能写进 `AGENTS.md`、README、测试、注释、提交信息或工具描述**（历史事故：这些值曾随 npm 包与公开仓库分发，公开即视为泄露、无法追回）。
+
+零知识自检（模型可见面不得含密码）：`node test/zero-knowledge.test.mjs` 全绿 + 上面 `npm run check:secrets` 零匹配。
 
 发布前：按「调试方法」第 3 步在隔离实例完整冷启动一遍，确认 Host 无报错、`/plugins/dsh-dbhub-live/client.js` 可访问。
 
@@ -120,7 +131,7 @@ git grep -inE '10\.253\.|192\.168\.77|tx_zdsf|tx_sd_jineng|db_zdsf|hbtx|1hn7yaw|
 ## 约定
 
 - 产品文案中文、代码注释英文；密码脱敏/零知识不可绕过；扫描必须经 `askUser` 授权。
-- **脱敏红线（提交/发布前强制自检）**：仓库任何文件——**包括 `test/`（会打进 npm tarball）与工具描述文案**——不得出现真实内网 IP、真实库名、真实密码、公司/项目标识。示例 DSN 一律用 `127.0.0.1` 或文档保留段（`192.0.2.x` / `198.51.100.x` / `203.0.113.x`），且**密码位只用占位词**（`user:pass@`、`u:p@`、`username:password@`、`账号:密码@`）。历史事故：工具描述里的示例 DSN 与测试用例里的「真实值」曾随 npm 包与公开仓库历史分发——公开即视为泄露、无法追回。每次提交前跑「质量门」中的脱敏自检；发现新的真实值，清洗后将其加入黑名单。
+- **脱敏红线（提交/发布前强制自检）**：仓库任何文件——**包括 `test/`（会打进 npm tarball）与工具描述文案**——不得出现真实内网 IP、真实库名、真实密码、公司/项目标识。示例 DSN 一律用 `127.0.0.1` 或文档保留段（`192.0.2.x` / `198.51.100.x` / `203.0.113.x`），且**密码位只用占位词**（`user:pass@`、`u:p@`、`username:password@`、`账号:密码@`）。历史事故：工具描述里的示例 DSN 与测试用例里的「真实值」曾随 npm 包与公开仓库历史分发——公开即视为泄露、无法追回。每次提交前跑「质量门」中的 `npm run check:secrets`；发现新的真实值，**只追加到本地 `.env` 的 `DSH_DBHUB_DESENSITIZE_RE`**（该文件 gitignore + 不进 npm 包），绝不再写进任何受版本控制的文件。
 - `state.*` 之外不要直接改持久化。
 - 增加行为时同步更新本文件、README（用户侧）与 doc/REQUIREMENTS.md（业务侧）。
 - README 双语同步：`README.md`（中文）为唯一真源，`README.en.md` 由 AI 从最新中文派生——改动任一侧必须同次更新另一侧，章节结构一一对应。
