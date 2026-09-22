@@ -1,0 +1,33 @@
+# Quality gate for dsh-dbhub-live.
+#
+# The desensitization gate (scripts/desensitize-check.mjs) is the important one:
+# every file in this repository ships publicly (npm tarball + public repo), so
+# real hosts, accounts, passwords, database and project names must never enter
+# it. The local .env denylist is intentionally absent in CI — that layer is a
+# maintainer-local supplement, while the slot registry and the generic backstop
+# run everywhere.
+name: quality
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax check
+        run: npm run check
+      - name: Desensitization gate (slots + backstop)
+        run: npm run check:secrets
+      - name: Unit tests
+        run: |
+          for f in test/*.test.mjs; do
+            echo "== $f"
+            node "$f"
+          done

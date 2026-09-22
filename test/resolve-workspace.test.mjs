@@ -35,14 +35,14 @@ writeFileSync(join(storeDir, 'workspace.json'), JSON.stringify({
 writeFileSync(join(storeDir, 'dsh-dbhub-live', 'credentials.json'), JSON.stringify({
   [WS_A]: {
     environments: {
-      default: { dsn: 'mysql://u:p@a-host/main', source: 'user' },
-      '线上': { dsn: 'mysql://u:p@a-host/online', source: 'user' },
+      default: { dsn: 'mysql://u:p@198.51.100.1/main', source: 'user' },
+      '线上': { dsn: 'mysql://u:p@198.51.100.1/online', source: 'user' },
     },
   },
   [WS_B]: {
     environments: {
-      default: { dsn: 'mysql://u:p@b-host/main', source: 'user' },
-      '线上': { dsn: 'mysql://u:p@b-host/online', source: 'user' },
+      default: { dsn: 'mysql://u:p@198.51.100.2/main', source: 'user' },
+      '线上': { dsn: 'mysql://u:p@198.51.100.2/online', source: 'user' },
     },
   },
 }, null, 2))
@@ -77,14 +77,14 @@ test('an exact source id always wins, whichever workspace it belongs to', async 
   const hit = await mcp.resolveSource(ctx, subprocess, idB)
   assert.ok(hit && !hit.ambiguous)
   assert.equal(hit.row.wsPath, WS_B)
-  assert.equal(hit.row.dsn, 'mysql://u:p@b-host/main')
+  assert.equal(hit.row.dsn, 'mysql://u:p@198.51.100.2/main')
 })
 
 test('a bare environment name resolves inside the CURRENT workspace', async () => {
   const hit = await mcp.resolveSource(ctx, subprocess, '线上', { preferredWsPath: WS_A })
   assert.ok(hit && !hit.ambiguous, 'the current workspace row must win over the look-alike')
   assert.equal(hit.row.wsPath, WS_A)
-  assert.equal(hit.row.dsn, 'mysql://u:p@a-host/online')
+  assert.equal(hit.row.dsn, 'mysql://u:p@198.51.100.1/online')
 })
 
 test('without a current workspace, a cross-workspace match is reported as ambiguous', async () => {

@@ -1,6 +1,6 @@
 {
   "name": "dsh-dbhub-live",
-  "version": "4.1.0",
+  "version": "4.1.1-dev.1",
   "description": "DSH 数据库 MCP 桥接插件：让 AI 直接查询 MySQL / PostgreSQL / MariaDB / SQLite / SQL Server。按工作区动态配置连接（可改名、可跨工作区复制），AI 自助配置管理，密码与连接串零知识（永不进入模型上下文），每次执行独立进程。",
   "type": "module",
   "main": "lib/index.mjs",
@@ -36,7 +36,8 @@
   "scripts": {
     "check": "node --check ./lib/index.mjs && node --check ./lib/config.mjs && node --check ./lib/state.mjs && node --check ./lib/options.mjs && node --check ./lib/runtime.mjs && node --check ./lib/mcp.mjs && node --check ./lib/adhoc.mjs && node --check ./lib/collect.mjs && node --check ./lib/tools.mjs && node --check ./lib/client.js",
     "test": "node --test test/",
-    "check:secrets": "node scripts/desensitize-check.mjs"
+    "check:secrets": "node scripts/desensitize-check.mjs",
+    "prepublishOnly": "npm run check:secrets"
   },
   "dsh": {
     "bundle": {

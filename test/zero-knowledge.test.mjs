@@ -33,12 +33,12 @@ test('summarizeRows is metadata-only (no dsn/password/username)', () => {
     wsPath: 'C:\\ws\\demo',
     title: 'Demo App',
     env: 'default',
-    dsn: 'mysql://root:secret.pw@10.0.0.1:3306/mydb',
+    dsn: 'mysql://root:secret.pw@198.51.100.1:3306/mydb',
     source: 'persisted(user)',
     persisted: true,
   }]
   const summary = mcp.summarizeRows(rows)[0]
-  assert.equal(summary.conn, 'mysql://10.0.0.1:3306/mydb')
+  assert.equal(summary.conn, 'mysql://198.51.100.1:3306/mydb')
   assert.equal(summary.dsn, undefined)
   assert.ok(!JSON.stringify(summary).includes('secret.pw'))
   assert.ok(!JSON.stringify(summary).includes('root'))

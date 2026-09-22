@@ -78,15 +78,15 @@ test('renameWorkspaceEnv moves a persisted connection to a new name', () => {
 })
 
 test('connLabel describes host/port/database — never user or password', () => {
-  assert.equal(cfg.connLabel('mysql://root:secret@10.0.0.1:3306/mydb'), 'mysql://10.0.0.1:3306/mydb')
+  assert.equal(cfg.connLabel('mysql://root:secret@198.51.100.1:3306/mydb'), 'mysql://198.51.100.1:3306/mydb')
   assert.equal(cfg.connLabel('postgres://u:p@h/db'), 'postgres://h/db')
   assert.equal(cfg.connLabel('sqlite:///C:/data/x.db'), 'sqlite:///C:/data/x.db')
   assert.equal(cfg.connLabel(''), '(未知连接)')
 })
 
 test('describeConn extracts only non-secret metadata', () => {
-  const c = cfg.describeConn('mysql://root:secret@10.0.0.1:3306/mydb')
-  assert.deepEqual(c, { type: 'mysql', host: '10.0.0.1', port: '3306', database: 'mydb' })
+  const c = cfg.describeConn('mysql://root:secret@198.51.100.1:3306/mydb')
+  assert.deepEqual(c, { type: 'mysql', host: '198.51.100.1', port: '3306', database: 'mydb' })
   assert.ok(!JSON.stringify(c).includes('secret'))
   assert.ok(!JSON.stringify(c).includes('root'))
   assert.equal(cfg.describeConn('jdbc:postgresql://u:p@h:5432/db').type, 'postgres')
@@ -94,7 +94,7 @@ test('describeConn extracts only non-secret metadata', () => {
 })
 
 test('scrubSecrets removes the DSN password and generic password= tokens', () => {
-  const dsn = 'mysql://root:secret.pw@10.0.0.1:3306/mydb'
+  const dsn = 'mysql://root:secret.pw@198.51.100.1:3306/mydb'
   const scrubbed = cfg.scrubSecrets('Auth failed for user secret.pw (password=secret.pw)', dsn)
   assert.ok(!scrubbed.includes('secret.pw'))
   assert.ok(scrubbed.includes('****'))
@@ -122,8 +122,8 @@ test('shortHash is stable and hex-ish', () => {
 })
 
 test('maskDsn hides passwords, keeps host/db', () => {
-  assert.equal(cfg.maskDsn('mysql://root:secret@10.0.0.1:3306/mydb'),
-    'mysql://root:****@10.0.0.1:3306/mydb')
+  assert.equal(cfg.maskDsn('mysql://root:secret@198.51.100.1:3306/mydb'),
+    'mysql://root:****@198.51.100.1:3306/mydb')
   assert.equal(cfg.maskDsn('postgres://u:p@h/db'), 'postgres://u:****@h/db')
   // no password -> unchanged
   assert.equal(cfg.maskDsn('sqlite:///C:/data/x.db'), 'sqlite:///C:/data/x.db')
@@ -132,8 +132,8 @@ test('maskDsn hides passwords, keeps host/db', () => {
 })
 
 test('dsnFromEnv joins DB_* variables and handles sqlite', () => {
-  const env = { DB_HOST: '10.0.0.1', DB_PORT: '3307', DB_USER: 'root', DB_PASSWORD: 'pw', DB_NAME: 'maindb' }
-  assert.equal(cfg.dsnFromEnv(env), 'mysql://root:pw@10.0.0.1:3307/maindb')
+  const env = { DB_HOST: '198.51.100.1', DB_PORT: '3307', DB_USER: 'root', DB_PASSWORD: 'pw', DB_NAME: 'maindb' }
+  assert.equal(cfg.dsnFromEnv(env), 'mysql://root:pw@198.51.100.1:3307/maindb')
   assert.equal(cfg.dsnFromEnv({ DB_HOST: 'a', DB_USER: 'b', DB_NAME: 'c', DB_TYPE: 'sqlite' }), 'sqlite:///a')
   assert.equal(cfg.dsnFromEnv({ DB_HOST: 'a' }), undefined)
 })
@@ -145,12 +145,12 @@ test('dsnFromMap prefers explicit DSN', () => {
 
 test('buildDsnFromParts assembles DSNs (password only from the UI channel)', () => {
   assert.equal(
-    cfg.buildDsnFromParts({ type: 'mysql', host: '10.0.0.1', port: '3307', user: 'root', password: 'pw', database: 'maindb' }),
-    'mysql://root:pw@10.0.0.1:3307/maindb')
+    cfg.buildDsnFromParts({ type: 'mysql', host: '198.51.100.1', port: '3307', user: 'root', password: 'pw', database: 'maindb' }),
+    'mysql://root:pw@198.51.100.1:3307/maindb')
   // no user/password -> empty credentials stay in the string
   assert.equal(
-    cfg.buildDsnFromParts({ type: 'mysql', host: '10.0.0.1', port: '3307', database: 'maindb' }),
-    'mysql://:@10.0.0.1:3307/maindb')
+    cfg.buildDsnFromParts({ type: 'mysql', host: '198.51.100.1', port: '3307', database: 'maindb' }),
+    'mysql://:@198.51.100.1:3307/maindb')
   // defaults: mysql type and localhost host; port/database optional
   assert.equal(cfg.buildDsnFromParts({ host: 'h' }), 'mysql://:@h/')
   assert.equal(cfg.buildDsnFromParts({}), 'mysql://:@localhost/')
@@ -178,13 +178,13 @@ test('likelyAuthOrConnError classifies auth/connect failures', () => {
 })
 
 test('argsChangedEndpoint detects a re-described endpoint', () => {
-  const meta = { type: 'mysql', host: '10.0.0.1', port: '3306', database: 'mydb' }
+  const meta = { type: 'mysql', host: '198.51.100.1', port: '3306', database: 'mydb' }
   // same endpoint (or blank args) -> keep verifying the existing row
-  assert.equal(cfg.argsChangedEndpoint({ type: 'mysql', host: '10.0.0.1', port: '3306', database: 'mydb' }, meta), false)
+  assert.equal(cfg.argsChangedEndpoint({ type: 'mysql', host: '198.51.100.1', port: '3306', database: 'mydb' }, meta), false)
   assert.equal(cfg.argsChangedEndpoint({ user: 'root' }, meta), false)
   assert.equal(cfg.argsChangedEndpoint({}, meta), false)
   // any endpoint field differing -> re-run the probe-first loop
-  assert.equal(cfg.argsChangedEndpoint({ host: '10.0.0.2' }, meta), true)
+  assert.equal(cfg.argsChangedEndpoint({ host: '198.51.100.2' }, meta), true)
   assert.equal(cfg.argsChangedEndpoint({ port: '3307' }, meta), true)
   assert.equal(cfg.argsChangedEndpoint({ database: 'otherdb' }, meta), true)
   assert.equal(cfg.argsChangedEndpoint({ type: 'postgres' }, meta), true)
@@ -194,7 +194,7 @@ test('argsChangedEndpoint detects a re-described endpoint', () => {
 })
 
 test('decideConfigureStep picks the probe-first interaction', () => {
-  const prefill = { type: 'mysql', host: '10.0.0.1', port: '3307', database: 'maindb', user: 'root' }
+  const prefill = { type: 'mysql', host: '198.51.100.1', port: '3307', database: 'maindb', user: 'root' }
   // existing row + probe OK -> zero-input confirm
   assert.deepEqual(cfg.decideConfigureStep({ existingRow: { dsn: 'x' }, existingCheck: { ok: true, message: 'ok' }, prefill, candidateCheck: undefined }), { kind: 'existing-ok' })
   // existing row + auth-style failure -> minimal credentials dialog
@@ -208,7 +208,7 @@ test('decideConfigureStep picks the probe-first interaction', () => {
   // new env, complete essentials, auth-style failure -> minimal credentials dialog
   assert.deepEqual(cfg.decideConfigureStep({ existingRow: undefined, existingCheck: undefined, prefill, candidateCheck: { ok: false, message: 'password incorrect' } }), { kind: 'ask-credentials', emptyUserDenied: false })
   // ... and an empty-account candidate denial also makes the account required
-  assert.deepEqual(cfg.decideConfigureStep({ existingRow: undefined, existingCheck: undefined, prefill, candidateCheck: { ok: false, message: 'Access denied for user ""@1.2.3.4' } }), { kind: 'ask-credentials', emptyUserDenied: true })
+  assert.deepEqual(cfg.decideConfigureStep({ existingRow: undefined, existingCheck: undefined, prefill, candidateCheck: { ok: false, message: 'Access denied for user ""@198.51.100.4' } }), { kind: 'ask-credentials', emptyUserDenied: true })
   // new env, complete essentials, non-auth failure -> mode dialog with the failure noted
   assert.deepEqual(cfg.decideConfigureStep({ existingRow: undefined, existingCheck: undefined, prefill, candidateCheck: { ok: false, message: 'timeout' } }), { kind: 'ask-mode', failed: true })
   // new env, missing database (essentials incomplete) -> mode dialog, no probe happened
@@ -220,7 +220,7 @@ test('decideConfigureStep picks the probe-first interaction', () => {
 test('emptyUserDenied detects empty-account rejections', () => {
   assert.ok(cfg.emptyUserDenied("Access denied for user ''@'198.51.100.1'"))
   assert.ok(cfg.emptyUserDenied('authentication failed for user ""@host'))
-  assert.ok(!cfg.emptyUserDenied('Access denied for user root@10.0.0.1'))
+  assert.ok(!cfg.emptyUserDenied('Access denied for user root@198.51.100.1'))
   assert.ok(!cfg.emptyUserDenied('password incorrect'))
   assert.ok(!cfg.emptyUserDenied(''))
 })
@@ -244,15 +244,15 @@ test('collect: walkForCandidates skips noise dirs and finds config files', async
   const root = join(home, 'proj')
   mkdirSync(join(root, 'node_modules'), { recursive: true })
   mkdirSync(join(root, 'src'), { recursive: true })
-  writeFileSync(join(root, '.env'), 'DSN=mysql://root:pw@10.0.0.1:3306/appdb\n')
+  writeFileSync(join(root, '.env'), 'DSN=mysql://root:pw@198.51.100.1:3306/appdb\n')
   writeFileSync(join(root, 'node_modules', 'x.env'), 'DSN=mysql://nope@x/y\n')
-  writeFileSync(join(root, 'src', 'application.yml'), 'url: jdbc:mysql://1.2.3.4:3306/biz?user=u&password=p\n')
+  writeFileSync(join(root, 'src', 'application.yml'), 'url: jdbc:mysql://198.51.100.4:3306/biz?user=u&password=p\n')
 
   const found = walkForCandidates(root, { count: 0 })
   assert.ok(found.includes(join(root, '.env')))
   assert.ok(found.includes(join(root, 'src', 'application.yml')))
   assert.ok(!found.some((f) => f.includes('node_modules')))
 
-  const candidates = extractDsnCandidates(join(root, '.env'), 'DSN=mysql://root:pw@10.0.0.1:3306/appdb\n')
-  assert.ok(candidates.some((c) => c.dsn === 'mysql://root:pw@10.0.0.1:3306/appdb'))
+  const candidates = extractDsnCandidates(join(root, '.env'), 'DSN=mysql://root:pw@198.51.100.1:3306/appdb\n')
+  assert.ok(candidates.some((c) => c.dsn === 'mysql://root:pw@198.51.100.1:3306/appdb'))
 })

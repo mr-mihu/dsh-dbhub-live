@@ -65,7 +65,7 @@ test('normalizeStore keeps v2 multi-environment entries and lists rows', async (
     'C:\\ws\\multi': {
       environments: {
         default: { dsn: 'mysql://u:p@h/d', source: 'user' },
-        prod: { dsn: 'postgres://u:p@prod/db', source: 'user', updatedAt: 1 },
+        prod: { dsn: 'postgres://u:p@198.51.100.1/db', source: 'user', updatedAt: 1 },
         '': { dsn: 'mysql://x@y/z' },              // empty env name is kept as-is (host normalizes on write)
         broken: { dsn: '   ' },                    // dropped
       },
@@ -76,7 +76,7 @@ test('normalizeStore keeps v2 multi-environment entries and lists rows', async (
     const envs = config.store['C:\\ws\\multi'].environments
     assert.deepEqual(Object.keys(envs).sort(), ['', 'default', 'prod'])
     assert.equal(envs.default.dsn, 'mysql://u:p@h/d')
-    assert.equal(envs.prod.dsn, 'postgres://u:p@prod/db')
+    assert.equal(envs.prod.dsn, 'postgres://u:p@198.51.100.1/db')
     const rows = config.listWorkspaceEnvironments(config.store)
     assert.equal(rows.length, 3)
     assert.equal(rows.find((r) => r.env === 'prod').wsPath, 'C:\\ws\\multi')

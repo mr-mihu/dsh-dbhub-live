@@ -21,7 +21,8 @@ lib/
   tools.mjs    host 自有工具定义与注册：恒定 4 个（configure/list_sources/execute_sql/search_objects）；configure 探连优先（见零知识契约 5）
   client.js    Web 半（手写 lazy-CJS bundle）：配置页 = `settings.section` 一级设置页 + 可选侧边栏面板（`showSidebarEntry` 开关）+ `plugins.row.config`（summary/page 两视图）
 test/          node:test 单元测试（纯逻辑 + client bundle 格式契约 + 零知识泄漏门）
-scripts/       仓库维护脚本（desensitize-check.mjs = 读本地 .env 的脱敏自检）
+scripts/       仓库维护脚本：desensitize.config.mjs（**脱敏槽位表 = 单一事实源**）、desensitize-check.mjs（门禁）
+.github/       CI：push/PR 跑语法检查 + 脱敏门禁 + 单测
 doc/           需求文档
 .env           本地脱敏黑名单（DSH_DBHUB_DESENSITIZE_RE），gitignore 排除、不进 npm 包——**唯一允许存放真实标识的地方**
 cordis.patch.yml   bundle patch：`name: dsh-dbhub-live` 挂载本包
@@ -90,7 +91,7 @@ DSH 启动是 fail-loud：任一插件激活失败整树拒绝启动、GUI 打�
 
 ```bash
 npm run check        # 全部 lib 语法
-npm run check:secrets  # 脱敏自检（黑名单在本地 .env，见下）
+npm run check:secrets  # 脱敏门禁（槽位表 + 通用兜底 + 本地 denylist，见下）
 # 单测：沙箱内逐个文件跑（node --test 的 runner 子进程在沙箱下 EPERM）
 node test/util.test.mjs && node test/state.test.mjs && node test/options.test.mjs \
   && node test/init.test.mjs && node test/i18n.test.mjs \
@@ -98,19 +99,19 @@ node test/util.test.mjs && node test/state.test.mjs && node test/options.test.mj
   && node test/client-format.test.mjs && node test/zero-knowledge.test.mjs
 ```
 
-脱敏自检（**每次提交/发布前必须零匹配**）：
+### 脱敏门禁（`npm run check:secrets`）
 
-```bash
-npm run check:secrets
-```
+真实主机/账号/密码/库名/项目名只允许存在于两处：`$DSH_HOME/storages/dsh-dbhub-live/credentials.json`（仓库外）与本地 `.env`（`.gitignore` 排除、`package.json` 的 `files` 不含，永不进 git 历史/公开仓库/npm 包）。仓库内一切内容都视为会公开分发。
 
-黑名单**不在仓库里**：它放在仓库根目录的 `.env`（`.gitignore` 排除、`package.json` 的 `files` 也不包含，因此永不进 git 历史、公开仓库与 npm 包）：
+门禁由 `scripts/desensitize-check.mjs` 执行，规则与槽位来自 `scripts/desensitize.config.mjs`：
 
-```
-DSH_DBHUB_DESENSITIZE_RE=10\.0\.0\.1|example-db|example-project
-```
+1. **槽位规则（主力，高精度）**：槽位表登记"真实值可能出现的出口"（宿主文案、浏览器文案、连接构造代码、扫描器、测试夹具、文档示例、包元数据、本提示词、维护脚本），每个槽位声明它需要的规则（`password`/`dsn`/`host`/`name`）。**槽位 glob 必须匹配到文件，否则门禁报 `slot-stale`**——槽位表不会随目录移动悄悄失效。
+2. **通用兜底（覆盖未登记的新出口）**：`ip`（只允许回环、`0.0.0.0` 与 RFC 5737 文档段 `192.0.2.x`/`198.51.100.x`/`203.0.113.x`）、`secret`（GitHub/npm/OpenAI/Slack/AWS/JWT/PEM 等真凭据格式）、`entropy`（大小写/数字混排的高熵串）、`host`（`.local`/`.internal`/`.corp` 等内网后缀）、`name`（本地 denylist）。
+3. **本地 denylist（补充）**：pattern 抓不到的**裸名字**（项目/公司/库名）放在 `.env` 的 `DSH_DBHUB_DESENSITIZE_RE`（`|` 分隔、正则转义、多条取并集）。CI 里没有 `.env`，该层自动降级为提示，不影响其余两层。
 
-`scripts/desensitize-check.mjs` 会遍历全仓库（跳过 `.git`/`node_modules`/`.env`/`*.tgz`），逐行匹配该正则，命中即 exit 1 并打印 `文件:行`；未配置时 exit 1 并提示怎么配。**新发现真实值只能追加到 `.env`，绝不能写进 `AGENTS.md`、README、测试、注释、提交信息或工具描述**（历史事故：这些值曾随 npm 包与公开仓库分发，公开即视为泄露、无法追回）。
+**约定（新增内容一律照此写）**：示例主机用 `127.0.0.1`/`localhost`/RFC 5737 段；示例密码用 `CHANGE_ME`；测试夹具可用短占位（`u:p`、`root:secret`），但主机仍须回环/保留段；误报走行内标记 `desensitize:allow`（仅限确认无害的行）。
+
+**义务（硬规则）**：新增功能若引入新的示例、默认值、文案串或夹具 → **同一次改动里更新 `scripts/desensitize.config.mjs` 的槽位表**；提交前跑 `npm run check:secrets`，命中就改成占位符/规范值再提交 git 与 npm。执行点：本地手动 + `prepublishOnly`（挡住带真实值的包）+ CI（`.github/workflows/quality.yml`，别人的提交也拦得住）。历史事故：这些值曾随 npm 包与公开仓库分发，公开即视为泄露、无法追回。
 
 零知识自检（模型可见面不得含密码）：`node test/zero-knowledge.test.mjs` 全绿 + 上面 `npm run check:secrets` 零匹配。
 
@@ -131,7 +132,7 @@ DSH_DBHUB_DESENSITIZE_RE=10\.0\.0\.1|example-db|example-project
 ## 约定
 
 - 产品文案中文、代码注释英文；密码脱敏/零知识不可绕过；扫描必须经 `askUser` 授权。
-- **脱敏红线（提交/发布前强制自检）**：仓库任何文件——**包括 `test/`（会打进 npm tarball）与工具描述文案**——不得出现真实内网 IP、真实库名、真实密码、公司/项目标识。示例 DSN 一律用 `127.0.0.1` 或文档保留段（`192.0.2.x` / `198.51.100.x` / `203.0.113.x`），且**密码位只用占位词**（`user:pass@`、`u:p@`、`username:password@`、`账号:密码@`）。历史事故：工具描述里的示例 DSN 与测试用例里的「真实值」曾随 npm 包与公开仓库历史分发——公开即视为泄露、无法追回。每次提交前跑「质量门」中的 `npm run check:secrets`；发现新的真实值，**只追加到本地 `.env` 的 `DSH_DBHUB_DESENSITIZE_RE`**（该文件 gitignore + 不进 npm 包），绝不再写进任何受版本控制的文件。
+- **脱敏红线（提交/发布前强制自检）**：仓库任何文件——**包括 `test/`（会打进 npm tarball）与工具描述文案**——不得出现真实内网 IP、真实库名、真实密码、公司/项目标识。写法约定与三层门禁见上面「脱敏门禁」：示例主机只用回环或 RFC 5737 段、示例密码只用 `CHANGE_ME`、新出口同次登记进 `scripts/desensitize.config.mjs`；发现新的真实值**只追加到本地 `.env` 的 `DSH_DBHUB_DESENSITIZE_RE`**，绝不写进任何受版本控制的文件。
 - `state.*` 之外不要直接改持久化。
 - 增加行为时同步更新本文件、README（用户侧）与 doc/REQUIREMENTS.md（业务侧）。
 - README 双语同步：`README.md`（中文）为唯一真源，`README.en.md` 由 AI 从最新中文派生——改动任一侧必须同次更新另一侧，章节结构一一对应。
