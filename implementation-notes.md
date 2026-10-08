@@ -1,4 +1,4 @@
-# implementation-notes — 0.2.x 双栈移植（5.0.0）
+# implementation-notes — 0.2.x 双栈移植（5.0.1）
 
 临时工作记忆，不属于发布内容（`package.json` 的 `files` 不含本文件）。三条固定小节 + 末尾五行总结。
 
