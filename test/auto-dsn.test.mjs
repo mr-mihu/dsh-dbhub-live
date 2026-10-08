@@ -10,10 +10,12 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
+const here = dirname(fileURLToPath(import.meta.url))
 const home = mkdtempSync(join(tmpdir(), 'dsh-dbhub-autodsn-'))
 process.env.DSH_HOME = home
 
@@ -107,4 +109,18 @@ test('a persisted default skips auto-discovery entirely', async () => {
   const rows = await cfg.resolveWorkspaceEnvs(answeringSubprocess(counter, 'DSN=mysql://u:p@127.0.0.1:3307/auto\n'), fsStub, wsPath)
   assert.equal(counter.spawns, 0, 'no probe when the default environment is configured')
   assert.deepEqual(rows.map((r) => r.env), ['default'])
+})
+
+// The runtime tests above cannot catch an `unref()`ed budget timer on every
+// platform: when the timer is the only pending work the loop drains and the
+// process exits before it fires, so the "budget" silently stops existing. On
+// Linux CI that shows up as this whole file being cancelled ("Promise
+// resolution is still pending but the event loop has already resolved"); on
+// Windows other handles keep the loop alive and the same defect passes. This
+// static assertion is the platform-independent guard.
+test('budget timers stay referenced (an unref()ed budget never fires)', () => {
+  for (const file of ['config.mjs', 'index.mjs']) {
+    const text = readFileSync(join(here, '..', 'lib', file), 'utf8')
+    assert.doesNotMatch(text, /\.unref\(\)/, `${file} must not unref() a budget timer`)
+  }
 })
