@@ -40,7 +40,7 @@
 
 ---
 
-# implementation-notes — 5.1 只读模式 + SSH 隧道 + 入口随启用状态（5.1.0-dev.1）
+# implementation-notes — 5.1 只读模式 + SSH 隧道 + 入口随启用状态（5.1.0-dev.2）
 
 临时工作记忆，不属于发布内容。对应计划：`PLAN-5.1-readonly-and-ssh-tunnel.md`。
 
