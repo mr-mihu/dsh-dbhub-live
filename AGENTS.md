@@ -145,6 +145,8 @@ node test/util.test.mjs && node test/state.test.mjs && node test/options.test.mj
   && node test/client-format.test.mjs && node test/zero-knowledge.test.mjs
 ```
 
+**CI（`.github/workflows/quality.yml`，GitHub Actions 的 `quality` workflow）**：`push` 到 `main` 与 `dev`、所有 PR、以及手动 `workflow_dispatch` 都会跑同一个 job **`gate`**（`ubuntu-latest` + Node 22，约 12–15 秒），六步 = 语法检查 → 脱敏门禁 → 客户端布局门禁 → 逐个单测（12 个文件、117 个断言）。`main` 的分支保护把 `gate` 设为必需检查。**CI 是真实执行**：它在 5.0.0 上真的跑挂过（`test/auto-dsn.test.mjs` 全部 cancelled），这正是它存在的意义——**本地 Windows 会掩盖只影响 Linux 的缺陷**（见「自动发现的代价与边界」条的 `unref` 教训），所以"本地全绿"不能当作发布依据，必须看 CI。
+
 ### 脱敏门禁（`npm run check:secrets`）
 
 真实主机/账号/密码/库名/项目名只允许存在于两处：`$DSH_HOME/storages/dsh-dbhub-live/credentials.json`（仓库外）与本地 `.env`（`.gitignore` 排除、`package.json` 的 `files` 不含，永不进 git 历史/公开仓库/npm 包）。仓库内一切内容都视为会公开分发。
@@ -162,6 +164,50 @@ node test/util.test.mjs && node test/state.test.mjs && node test/options.test.mj
 零知识自检（模型可见面不得含密码）：`node test/zero-knowledge.test.mjs` 全绿 + 上面 `npm run check:secrets` 零匹配。
 
 发布前：按「调试方法」第 3 步在隔离实例完整冷启动一遍，确认 Host 无报错、`/api/dsh-dbhub-live/state` 带会话 cookie 返回 200（不带 cookie 返回 401）、`/plugins/??<包名>/client.js&rev=…` 可访问。
+
+## 分支与发布流程（dev 测试版 → main 正式版）
+
+**分支职责**
+- `dev`：**集成/测试分支**。所有改动先落这里（直接提交，或功能分支 PR 进 dev）；允许 force push；CI（`gate`）在这里跑。
+- `main`：**只用于发布**。已开分支保护：必需检查 `gate`、禁止 force push、禁止删除。改动只能从 `dev` 合入（PR），main 上不再有其它直接提交。
+- 每次发布后 `dev` 与 `main` 收敛：`git checkout dev && git merge --ff-only main`。
+
+**触发词与硬约束（最重要，别越界）**
+- 用户说「**可以了，发布**」（或类似）= **发 dev 测试版**。此时**绝不**动 `main`、**绝不**执行 `npm publish` 的默认（`latest`）发布。
+- 只有用户明确说「**合并主分支发布正式版**」（或等价明确指令）时，才走正式版流程；并且**正式版的 npm 发布命令只输出给用户手动执行**——代理不代发（用户自己用浏览器登录拿凭据）。仓库里没有 `NPM_TOKEN` secret，CI 也不会替你发。
+- **已发布的 tag 与 npm 版本绝不移动 / 删除 / unpublish**；发现缺陷就发下一个补丁版本。这条是 5.0.0→5.0.1 那次事故的直接教训（当时为了"对齐"移动过 tag，用户明确否掉了这种做法）。
+- 测试版**必须** `--tag dev`（若发 npm）+ GitHub `--prerelease`；只有正式版才能用 `--latest` 与默认 dist-tag（否则 `latest` 会被指到测试版，普通用户直接中招）。
+- 只有 CI（`gate`）绿的提交才能进 `main`；`pnpm pack` 的产物名必须与 `package.json` 版本一致。
+
+**阶段一：测试版（在 dev 上）**
+```powershell
+git checkout dev && git pull
+# 改代码；package.json 版本 = <下一个正式版>-dev.<N>（N 不复用，如 5.1.0-dev.1）
+npm run check; npm run check:secrets; npm run check:ui     # 再逐个跑单测
+$env:npm_config_store_dir='D:/my/app/dsh/plugin/.pnpm-store'; pnpm pack   # dsh-dbhub-live-<ver>.tgz
+git add -A; git commit -m "..."; git push origin dev       # CI 在 dev 上跑 gate
+git tag -a v<ver> -m "..."; git push origin v<ver>
+gh release create v<ver> --prerelease --title "v<ver>" --notes-file <notes> dsh-dbhub-live-<ver>.tgz
+# 可选（只在需要验证 npm 安装路径时）：npm publish --registry=https://registry.npmjs.org/ --tag dev
+# 安装验证（不碰 npm 也行）：dsh plugin --profile web add <tarball>（或 dsh-dbhub-live@dev）
+```
+预发布不会抢 Release 页的 "Latest" 徽章，普通用户 `dsh plugin add dsh-dbhub-live` 仍拿正式版。
+
+**阶段二：正式版（仅在用户明确要求时）**
+```powershell
+# 1) 在 dev 上把版本号转正（去掉 -dev.N），提交 "vX.Y.Z (release): ..."，push dev
+# 2) 开 PR 合入 main，等 CI 绿后合并
+gh pr create --base main --head dev --title "vX.Y.Z (release): ..." --body "..."
+gh pr merge --merge
+# 3) 在 main 的合并提交上打 tag
+git checkout main && git pull; git tag -a vX.Y.Z -m "..."; git push origin vX.Y.Z
+# 4) GitHub 正式发布（--latest，附 tarball）
+gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> dsh-dbhub-live-X.Y.Z.tgz
+# 5) npm：把命令交给用户手动执行（代理不代发）
+#    npm publish --registry=https://registry.npmjs.org/    # 不带 --tag → latest 指向它
+```
+
+**给代理的默认行为**：本仓库里代理只往 `dev` 提交/推送；`main` 只通过 PR 合入。需要动 `main`/发 npm 时先停下来向用户确认。
 
 ## 版本号策略（测试版本 → 发布版本）
 
