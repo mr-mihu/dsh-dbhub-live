@@ -143,6 +143,7 @@ export const ENTROPY = {
     /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/, // uuid
     /^[A-Za-z0-9]+\.(mjs|js|json|md|yml|yaml|ts|tsx|png|tgz)$/, // file name
     /^[a-z0-9]+(?:[-_][a-z0-9]+)+$/, // lowercase slug / identifier (kebab or snake)
+    /^Icon[A-Za-z0-9]*$/, // platform icon component name (IconCopyOutline16, IconChevronDownOutline14)
     /^[A-Za-z0-9_.-]+=[^\s]*$/, // `KEY=value` fragment (env/config line)
     /^[A-Za-z0-9_-]+:[A-Za-z0-9_./-]+$/, // `key: value` fragment
     /^https?/, // url fragment
@@ -173,7 +174,7 @@ export const SLOTS = [
   {
     id: 'host-copy',
     description: '宿主侧模型可见文案：工具描述、i18n 结果与标签（会打进 npm 包、直接进模型上下文）',
-    globs: ['lib/i18n.mjs', 'lib/tools.mjs', 'lib/index.mjs', 'lib/mcp.mjs', 'lib/state.mjs'],
+    globs: ['lib/i18n.mjs', 'lib/tools.mjs', 'lib/index.mjs', 'lib/mcp.mjs', 'lib/state.mjs', 'lib/bridge.mjs'],
     rules: ['password', 'dsn', 'host', 'name'],
   },
   {

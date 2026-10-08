@@ -20,7 +20,7 @@
 - **Workspace × environment connection management** — one workspace can hold multiple environments (default / prod / dev / test…) distinguished by their `source` value.
 - **Auth-failure loop** — when credentials or connection details are wrong, the tool gives clear guidance; the model steers you to update the password in the UI (it never asks you for it), or you edit it directly in the settings card. **Auto-probe during configuration**: non-sensitive connection facts are tested host-side first — if they connect they take effect with zero input (password-less databases never prompt), and if only the password is missing the dialog asks just for "account (when unknown) + password" instead of re-asking for the whole input method. When the probe explicitly blames an EMPTY account (e.g. `Access denied for user ''`), the account is required — the "leave empty (use empty account)" choice is not offered, so the same doomed DSN is never saved again.
 - **Enable / disable switch** — turning it off makes every dbhub tool return a friendly "plugin disabled" message immediately; no restart needed.
-- **Browser configure page** — three entries to the same page: **Settings → DBHub Database Tools** (a first-level settings page, recommended), the **sidebar entry DBHub Database Tools** (a shortcut you can switch off on the settings page), and the plugin row's Configure control on the Plugins page. Shows live: status badge, mode (one-shot), registered tool count, environment count, recent error, plus the enable/disable switch, connection CRUD, **environment rename** and connection tests.
+- **Browser configure page** — three entries to the same page: **Settings → DBHub Database Tools** (a first-level settings page, recommended), the **sidebar entry DBHub Database Tools** (a shortcut you can switch off on the settings page), and the plugin row's Configure control on the Plugins page. It shows the status badge, tool count and environment count, and offers the enable/disable switch, connection CRUD, **environment rename** and connection tests. **The connection list is organised per workspace**: when every workspace holds exactly one environment it renders as flat tiles (up to 3 columns, everything visible); as soon as one workspace owns several environments the rows fold per workspace with **click-to-expand group heads**, opening the workspace you used most recently by default, plus an expand/collapse-all control. Each connection **takes one line only** (environment · 🔒 type/host/port/**database** · source handle · icon actions): a narrow column truncates the host/port prefix first and **the database name always stays visible**; the actions are three small icons — ⚡ test / ✏ edit / 🗑 delete — instead of text buttons eating half the row; the `source` handle is a dashed chip showing `…` plus its distinguishing tail (e.g. `…1a2b3c`) — click it to copy, hover for the full value (it is the handle the model uses to target this connection, not a copy of the whole row). Where a connection came from (hand-entered / scanned / copied / auto-discovered) never takes row width — hover the environment chip to see it (an auto-discovered connection that is not saved says so explicitly). The auto-update interval and the sidebar switch live in the "⚙ Settings" strip, and the add form is folded away too (a group's "＋ Environment" adds straight into that workspace, no workspace field to fill). All colours come from DSH theme tokens, so the page follows the active theme/skin and dark mode — **including translucent-background themes**. Writes are guarded against silent overwrites: **saving into an environment name that already exists asks “overwrite?” first** (cancelling writes nothing at all and leaves the form as typed so you can rename it), and renaming an environment onto an existing one asks too.
 - **Out of the box** — if `dbhub` is missing, the plugin installs it on first use and keeps it updated at your configured interval.
 
 ## Supported Data Sources
@@ -30,6 +30,7 @@ MySQL · PostgreSQL · MariaDB · SQLite · SQL Server
 ## Requirements
 
 - DeepSeek Harness's `dsh` CLI (`dsh web` runs the GUI)
+- Works with **every dsh release line from 0.1.5 on, 0.2.x included**: the configure page rides the settings namespace on 0.1.x and the plugin's own authenticated HTTP bridge (`/api/dsh-dbhub-live/*`) on 0.1.7+/0.2.x, and both carry the same state
 - Node.js ≥ 18 with `npm` recommended — `dbhub` is auto-installed on first use
 
 ## Installation
@@ -42,10 +43,12 @@ dsh plugin --profile web add dsh-dbhub-live
 npx @deepseek-ai/dsh plugin --profile web add dsh-dbhub-live
 
 # Update to a specific version (pin the currently published version so pnpm doesn't skip with "Already up to date")
-dsh plugin --profile web update dsh-dbhub-live@4.1.0
+dsh plugin --profile web update dsh-dbhub-live@5.0.0
 ```
 
 After installing, **restart `dsh web`** for it to take effect (you can then see the configure page at **Settings → DBHub Database Tools**).
+
+> Upgrading from 4.x: dsh 0.2.x removed the settings-namespace interface the old configure page relied on, so dsh refuses to load 4.x there. 5.0.0 serves both release lines; upgrading the plugin keeps your connections and your saved options.
 
 ## Quick Start
 
@@ -105,7 +108,7 @@ All page copy (name, status, config fields, buttons, connection rows) follows th
 | Auto-update interval (days) | How often dbhub is auto-updated; `0` disables | `7` |
 | Show the sidebar entry | Whether the DBHub Database Tools shortcut appears in the sidebar; applies immediately | on |
 
-Precedence: **user settings > process environment variables (default seeds) > built-in defaults**. The auto-installed package is not in the UI (controlled separately by the `DSH_DBHUB_PACKAGE` environment variable, default `@bytebase/dbhub`).
+Precedence: **settings saved on the configure page > process environment variables (default seeds) > built-in defaults**; when upgrading from an older 0.1.x install, the options still stored in the settings document are read as a lower layer (they are never silently reset). On dsh 0.1.7 and later these two options are also the plugin's declared configuration (volatile Config): set them in the plugin's row in `cordis.patch.yml`, or in the official Plugins form — **either change is adopted, and this plugin's page shows the same value** (a page save writes back to that configuration too, so the two surfaces never disagree). The auto-installed package is not in the UI (controlled separately by the `DSH_DBHUB_PACKAGE` environment variable, default `@bytebase/dbhub`).
 
 **Workspace connections**:
 
@@ -155,6 +158,7 @@ dsh plugin --profile web remove dsh-dbhub-live
 | A query to one environment fails with connection refused / auth error | Environments use independent one-shot connections: an unreachable environment only fails that call — other environments and calls keep working. The error carries guidance — for wrong credentials/details, ask the AI to run `dbhub_configure` and enter the password in the UI, or edit it directly in Plugins → dsh-dbhub-live → Configure. |
 | Tools say "plugin disabled" | Open Plugins → dsh-dbhub-live → Configure and click "Enable". |
 | Configure Page not visible | Confirm the plugin is installed and restart `dsh web`; the card only shows in the Web settings panel (`dsh web`) — on terminal environments without the panel, tool usage is unaffected. |
+| dsh reports the plugin as incompatible after a dsh upgrade | That is dsh's peer-version check: upgrade the plugin to 5.0.0 or later (it serves both 0.1.x and 0.2.x). Forcing it through with `dsh plugin --profile web allow-version` does not help — the interface 4.x depends on is gone in 0.2.x, so the configure page stays empty. |
 | No config files found by the scan | `node_modules` / `.git` / `target` / `dist` etc. are skipped by default; use "Enter DSN" or "Fill in fields" instead. |
 | Need a custom dbhub version | Set the `DSH_DBHUB_PACKAGE` environment variable (e.g. `@bytebase/dbhub@1.2.1`) and restart; or delete `~/.dsh/storages/dsh-dbhub-live` and let it reinstall automatically. |
 | Don't want automatic dbhub updates | Set "Auto-update interval (days)" to `0` in the Configure Page and save; or set `DSH_DBHUB_UPDATE_DAYS=0`. |

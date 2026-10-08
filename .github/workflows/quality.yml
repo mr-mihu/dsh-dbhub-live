@@ -25,6 +25,8 @@ jobs:
         run: npm run check
       - name: Desensitization gate (slots + backstop)
         run: npm run check:secrets
+      - name: Client layout gate (offline render + interaction)
+        run: npm run check:ui
       - name: Unit tests
         run: |
           for f in test/*.test.mjs; do
