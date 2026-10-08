@@ -186,7 +186,7 @@ export const SLOTS = [
   {
     id: 'connection-code',
     description: '连接构造与解析代码：不得有硬编码 host/user/password 默认值',
-    globs: ['lib/config.mjs', 'lib/adhoc.mjs', 'lib/options.mjs', 'lib/runtime.mjs'],
+    globs: ['lib/config.mjs', 'lib/adhoc.mjs', 'lib/options.mjs', 'lib/runtime.mjs', 'lib/toml.mjs', 'lib/capability.mjs'],
     rules: ['password', 'dsn', 'host', 'name'],
   },
   {

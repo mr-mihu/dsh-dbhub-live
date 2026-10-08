@@ -40,8 +40,39 @@ test('summarizeRows is metadata-only (no dsn/password/username)', () => {
   const summary = mcp.summarizeRows(rows)[0]
   assert.equal(summary.conn, 'mysql://198.51.100.1:3306/mydb')
   assert.equal(summary.dsn, undefined)
+  assert.equal(summary.ro, false)
+  assert.equal(summary.ssh, null)
   assert.ok(!JSON.stringify(summary).includes('secret.pw'))
   assert.ok(!JSON.stringify(summary).includes('root'))
+})
+
+test('summarizeRows never carries a tunnel secret or the key path', () => {
+  // The SSH password / passphrase / private-key path live next to the DSN in the
+  // store; the mirrored row may only say WHETHER each exists.
+  const rows = [{
+    wsPath: 'C:\\ws\\demo',
+    title: 'Demo App',
+    env: 'prod',
+    dsn: 'mysql://root:secret.pw@198.51.100.1:3306/mydb',
+    source: 'persisted(user)',
+    persisted: true,
+    ro: true,
+    ssh: {
+      host: 'bastion.example.com', port: 22, user: 'ops', auth: 'password',
+      password: 'CHANGE_ME', keyPath: '~/.ssh/id_ed25519', passphrase: 'CHANGE_ME_TOO',
+    },
+  }]
+  const summary = mcp.summarizeRows(rows)[0]
+  const text = JSON.stringify(summary)
+  assert.equal(summary.ro, true)
+  assert.equal(summary.ssh.authKind, 'password')
+  assert.equal(summary.ssh.hasPassword, true)
+  assert.equal(summary.ssh.hasPassphrase, false, 'a password-auth tunnel has no key passphrase')
+  assert.equal(summary.ssh.keyReady, false)
+  assert.equal(text.includes('CHANGE_ME'), false)
+  assert.equal(text.includes('id_ed25519'), false, 'the key path is not mirrored either')
+  assert.equal(text.includes('secret.pw'), false)
+  assert.equal(summary.ssh.host, 'bastion.example.com', 'the host is routing metadata, not a secret')
 })
 
 test('tools.mjs registers exactly the 4-tool zero-knowledge contract', () => {
@@ -54,6 +85,17 @@ test('tools.mjs registers exactly the 4-tool zero-knowledge contract', () => {
   }
   // NO tool declares a `dsn` schema property the model could fill with a secret
   assert.doesNotMatch(toolsSource, /dsn:\s*\{\s*type:\s*["']string["']/)
+  // ... and no tool may declare a TUNNEL secret either: the model can name a
+  // host / user / key path, never a password or a passphrase.
+  assert.doesNotMatch(toolsSource, /sshPassword\s*:/)
+  assert.doesNotMatch(toolsSource, /sshPassphrase\s*:/)
+  // the tunnel parameters that DO exist are the non-secret ones
+  for (const key of ['sshHost', 'sshPort', 'sshUser', 'sshAuthKind', 'sshKeyPath', 'sshProxyJump', 'sshOff']) {
+    assert.match(toolsSource, new RegExp(key + ':\\s*\\{\\s*type:'), key)
+  }
+  // read-only is a model-facing toggle, but only in the tightening direction
+  assert.match(toolsSource, /readOnly:\s*\{\s*type:\s*["']boolean["']/)
+  assert.match(toolsSource, /args\.readOnly === false/)
   // descriptions explicitly forbid passing credentials as arguments
   assert.match(toolsSource, /不能作为本工具参数传入/)
 })
