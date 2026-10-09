@@ -1,8 +1,6 @@
 # dsh-dbhub-live
 
-[简体中文](README.md) | English
-
-> Let [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/DeepSeek-Harness) operate databases directly and safely: **zero-knowledge credentials** (passwords never reach the model) + **one-shot process execution** (no resident server — naturally concurrent and multi-instance safe) + workspace × environment connection management + a browser Configure Page.
+[简体中文](README.md) · **English**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![DSH](https://img.shields.io/badge/DSH-plugin-blue.svg)](#installation)
@@ -10,188 +8,123 @@
 [![npm version](https://img.shields.io/npm/v/dsh-dbhub-live)](https://www.npmjs.com/package/dsh-dbhub-live)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/mr-mihu/dsh-dbhub-live)
 
-`dsh-dbhub-live` is a DSH plugin built on [DBHub](https://dbhub.ai) (a database MCP server) that lets the model query databases directly: the model only says *which workspace/environment* to query, and the plugin resolves the real connection host-side and executes it — **passwords and DSNs never appear anywhere the model can see**. Every call is an independent throwaway dbhub process, killed right after the call.
+> Let the AI inside [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) query your databases directly — **your password never enters the model context**.
 
-## ✨ Features
+Install it and you can simply tell the AI "show me the last 10 rows of the orders table". The AI runs SQL through [DBHub](https://dbhub.ai) (a database MCP server), but all it ever knows is *which environment of which workspace*, plus metadata such as `mysql://host:3306/db`; **passwords, accounts and full connection strings always stay on your machine**, typed only into the box in front of you.
 
-- **Zero-knowledge credentials** — the model only ever sees `source` handles and metadata (type / host / port / database); passwords, usernames and full DSNs exist only host-side; entering/changing a password happens **in the UI**, never through the model.
-- **One-shot process execution** — no resident dbhub service: each call spawns an independent process and recycles it when done. A hung/failed query only affects its own call; parallel tasks and multiple DSH instances running at once never interfere (no shared ports, no cross-kills).
-- **Constant 4 tool declarations** — `dbhub_configure` / `dbhub_list_sources` / `dbhub_execute_sql` / `dbhub_search_objects`; more environments never inflate the model context.
-- **Workspace × environment connection management** — one workspace can hold multiple environments (default / prod / dev / test…) distinguished by their `source` value.
-- **Per-environment read-only mode and manual SSH tunnels** — each environment can be put in **read-only mode** on its own (writes are rejected by dbhub itself; the model may enable it but never lift it) or routed through a **manual SSH tunnel** (password/passphrase are UI-only and never reach the model; single-hop ProxyJump). Both need dbhub **1.4.0+**. Whether the tunnel works can be checked **on its own** with the row editor's "Test SSH tunnel", instead of guessing whether the tunnel or the database is at fault. See [Read-only mode and SSH tunnels](#-read-only-mode-and-ssh-tunnels).
-- **Auth-failure loop** — when credentials or connection details are wrong, the tool gives clear guidance; the model steers you to update the password in the UI (it never asks you for it), or you edit it directly in the settings card. **Auto-probe during configuration**: non-sensitive connection facts are tested host-side first — if they connect they take effect with zero input (password-less databases never prompt), and if only the password is missing the dialog asks just for "account (when unknown) + password" instead of re-asking for the whole input method. When the probe explicitly blames an EMPTY account (e.g. `Access denied for user ''`), the account is required — the "leave empty (use empty account)" choice is not offered, so the same doomed DSN is never saved again. **When a connection test fails, read the end of the message first**: it carries the TAIL of dbhub's output and says which layer failed; with a tunnel configured, press "Test SSH tunnel" to prove the SSH layer on its own — **a database-layer error means the tunnel is already up**. The connection string inside a diagnostic is always scrubbed to `mysql://****:****@host:3306/db` — **neither the username nor the password ever appears**.
-- **Enable / disable switch** — turning it off makes every dbhub tool return a friendly "plugin disabled" message immediately and **hides the sidebar shortcut at the same time** (a disabled plugin contributes no entry at all, whatever the "Show the sidebar entry" switch says); the settings page and the plugin row's Configure control stay reachable, so you can always enable it again (you can never lock yourself out). No restart needed. Note that **hiding the entry is not disabling the plugin**: to merely keep the sidebar tidy, turn off "Show the sidebar entry" in the settings strip — the plugin keeps working and the model can still query.
-- **Browser configure page** — three entries to the same page: **Settings → DBHub Database Tools** (a first-level settings page, recommended), the **sidebar entry DBHub Database Tools** (shown when the plugin is enabled **and** the "Show the sidebar entry" switch is on: turning the switch off only hides the entry while the plugin keeps working, whereas disabling the plugin always hides it; the settings page and the plugin row stay reachable so you can enable it again), and the plugin row's Configure control on the Plugins page. It shows the status badge, tool count and environment count, and offers the enable/disable switch, connection CRUD, **environment rename** and connection tests. **The connection list is organised per workspace**: when every workspace holds exactly one environment it renders as flat tiles (up to 3 columns, everything visible); as soon as one workspace owns several environments the rows fold per workspace with **click-to-expand group heads**, opening the workspace you used most recently by default, plus an expand/collapse-all control. Each connection **takes one line only** (environment · 🔒 type/host/port/**database** · source handle · icon actions): a narrow column truncates the host/port prefix first and **the database name always stays visible**; the actions are three small icons — ⚡ test / ✏ edit / 🗑 delete — instead of text buttons eating half the row; the `source` handle is a dashed chip showing `…` plus its distinguishing tail (e.g. `…1a2b3c`) — click it to copy, hover for the full value (it is the handle the model uses to target this connection, not a copy of the whole row). Where a connection came from (hand-entered / scanned / copied / auto-discovered) never takes row width — hover the environment chip to see it (an auto-discovered connection that is not saved says so explicitly). Each environment can also be put in **read-only mode** or given a **manual SSH tunnel** (see "Read-only mode and SSH tunnels" below). The auto-update interval and the "Show the sidebar entry" switch both live in the "⚙ Settings" strip, and the add form is folded away too (a group's "＋ Environment" adds straight into that workspace, no workspace field to fill). All colours come from DSH theme tokens, so the page follows the active theme/skin and dark mode — **including translucent-background themes**. Writes are guarded against silent overwrites: **saving into an environment name that already exists asks “overwrite?” first** (cancelling writes nothing at all and leaves the form as typed so you can rename it), and renaming an environment onto an existing one asks too.
-- **Out of the box** — if `dbhub` is missing, the plugin installs it on first use and keeps it updated at your configured interval.
+<!-- Screenshot slot 1 (hero): replace this whole comment with ![DBHub Database Tools configure page](doc/images/settings-page.png)
+     What to shoot: the whole Settings → DBHub Database Tools page — the status row (🟢 running · 4 tools (fixed)) plus 2–3 connection rows (one of them carrying the read-only tag) and the "＋ Add connection" button.
+     Note: use demo data (127.0.0.1 / 192.0.2.x style addresses) and never expose a real host, database or account. -->
 
-## Supported Data Sources
+## Why use it
 
-MySQL · PostgreSQL · MariaDB · SQLite · SQL Server
+| | |
+| --- | --- |
+| 🔒 **Zero-knowledge credentials** | The model only sees type / host / port / database; the password is typed in the UI and never enters the model context |
+| ⚡ **One-shot process** | No resident dbhub service: every call is its own process, killed the moment it finishes; a failed query only affects itself, and parallel instances never kill each other |
+| 🧮 **Always 4 tools** | However many environments you add, the model context never grows |
+| 🗂 **Per workspace × environment** | One workspace can hold `default` / `prod` / `dev`… (environment names may be Chinese), told apart by their `source` — never the wrong database |
+| 🛡 **Per-environment read-only** | Writes are refused natively by dbhub; **the model can switch it on but never off** (only you can switch it off on the configure page) |
+| 🔐 **Manual SSH tunnel** | Databases behind a bastion are reachable too; the SSH password / key passphrase is typed in the UI only |
+| 📦 **Works out of the box** | If dbhub is missing it is installed for you, then kept up to date at your interval |
 
-## Requirements
-
-- DeepSeek Harness's `dsh` CLI (`dsh web` runs the GUI)
-- Works with **every dsh release line from 0.1.5 on, 0.2.x included**: the configure page rides the settings namespace on 0.1.x and the plugin's own authenticated HTTP bridge (`/api/dsh-dbhub-live/*`) on 0.1.7+/0.2.x, and both carry the same state
-- Node.js ≥ 18 with `npm` recommended — `dbhub` is auto-installed on first use
-- **Read-only mode and SSH tunnels require dbhub 1.4.0 or newer**: the plugin detects the version and, when it is too old, fails with an explicit error and an upgrade hint (the version the plugin installs automatically satisfies this)
+Supports **MySQL · PostgreSQL · MariaDB · SQLite · SQL Server**.
 
 ## Installation
 
 ```bash
-# Option 1: use a locally installed dsh
+# dsh already installed
 dsh plugin --profile web add dsh-dbhub-live
 
-# Option 2: invoke dsh via npx (no global dsh installation required)
+# no dsh yet (use npx)
 npx @deepseek-ai/dsh plugin --profile web add dsh-dbhub-live
-
-# Update to a specific version (pin the currently published version so pnpm doesn't skip with "Already up to date")
-dsh plugin --profile web update dsh-dbhub-live@5.0.0
 ```
 
-After installing, **restart `dsh web`** for it to take effect (you can then see the configure page at **Settings → DBHub Database Tools**).
+Once installed, **restart `dsh web`** and open **Settings → DBHub Database Tools** to see the configure page (there is also a sidebar shortcut, and the Configure control on the plugin's row on the Plugins page — all three entries lead to the same page).
 
-> Upgrading from 4.x: dsh 0.2.x removed the settings-namespace interface the old configure page relied on, so dsh refuses to load 4.x there. 5.0.0 serves both release lines; upgrading the plugin keeps your connections and your saved options.
+> Requirements: every `dsh` release line from 0.1.5 on (0.2.x included); Node.js ≥ 18 is recommended locally (it is used to install dbhub automatically). **Read-only mode and SSH tunnels need dbhub 1.4.0+** — the plugin detects this and gives you upgrade guidance.
 
 ## Quick Start
 
-The tools below are invoked automatically by DSH's AI — you don't run them by hand; just state your request in natural language (e.g., "look up the users table"):
+No commands to memorise — just talk to the AI:
 
 ```text
-# 1) If the current workspace has no connection yet, the AI guides configuration (password is entered in the UI, the AI never sees it)
-dbhub_configure
-
-# 2) Run a query on a configured connection (source comes from dbhub_list_sources)
-dbhub_execute_sql  source=myapp  sql="SELECT * FROM users LIMIT 10;"
-
-# 3) List registered connections and their source values
-dbhub_list_sources
+You: mysql on 192.0.2.10:3306, database app, account ops
+AI:  (a dialog opens — you type the password there) → saved, source = myapp_1a2b3c_default
+You: the last 10 rows of the orders table
+AI:  … (query results)
 ```
+
+The password is only ever typed into the box in front of you. If you give only part of the picture (say "connect to mydb on 192.0.2.10"), the plugin **probes with those non-sensitive facts first**: if it connects, the connection is saved straight away (password-less databases need no input at all); if only the password is missing it asks just for "account (when unknown) + password"; only when the information is incomplete do you choose a full method (enter a DSN / fill in fields / authorise a scan of project config files).
+
+When the workspace already has `mise env` or a `.env` (`DSN` / `DB_*`), the plugin discovers it automatically — no manual configuration needed.
 
 ## Tools
 
 | Tool | Description |
 | --- | --- |
-| `dbhub_configure(workspace?, env?, renameFrom?, copyFrom?, type?, host?, port?, database?, user?, readOnly?, sshHost?, sshPort?, sshUser?, sshAuthKind?, sshKeyPath?, sshProxyJump?, sshOff?)` | Configure/persist a workspace connection. **Does NOT accept a dsn argument** — the password/DSN is always entered in the UI (never through the model); type/host/port/database/user may be passed as non-sensitive prefills. **With enough prefills the plugin auto-probes first**: connectable → saved directly and the source value returned; password required → a minimal "account (when unknown) + password" dialog; incomplete info or another failure → the full method choice appears. **Rename**: `env=new name` + `renameFrom=old name` (the connection and its credentials stay as they are; works for `default` → `prod` or a Chinese/English swap; an existing target is confirmed with the user first). **Cross-workspace copy**: `copyFrom=<another workspace's source value>` + `env=<environment to create here>`; the Host copies the connection, so the password never passes through the model. **Environment options**: `readOnly:true` turns read-only mode on for that environment (`readOnly:false` is refused — only the user can turn it off, on the configure page); an SSH tunnel is configured with `sshHost`/`sshPort`/`sshUser`/`sshAuthKind` (`key` or `password`)/`sshKeyPath`/`sshProxyJump`, where the **SSH password and key passphrase may only be typed by the user in the dialog** (the model can never pass them), and `sshOff:true` removes the tunnel while keeping the connection and its read-only flag. |
-| `dbhub_list_sources()` | List every connection source, **grouped by workspace** and marking the **[CURRENT WORKSPACE]**: metadata only (type/host/port/database) + origin badge + the corresponding **source** value. |
-| `dbhub_execute_sql(source, sql)` | Execute SQL on a source; `source` comes from `dbhub_list_sources`. **Every source belongs to exactly one workspace** — prefer the current workspace's; to reuse another workspace's connection, first copy it here with `dbhub_configure`'s `copyFrom` instead of querying that workspace's source directly. Each call is an independent one-shot connection; multiple statements separated by `;`. |
-| `dbhub_search_objects(source, object_type, ...)` | Search database objects (tables/views/columns/indexes, etc.) on a given source. |
+| `dbhub_configure(...)` | Configure / change a workspace connection. **It does not accept a `dsn` argument** — the password and connection string are always typed in the UI; `type`/`host`/`port`/`database`/`user` may be passed as non-sensitive prefills. Supports renaming with `env=<new name>` + `renameFrom=<old name>`, cross-workspace copying with `copyFrom=<another workspace's source>`, `readOnly:true` (`readOnly:false` is refused) and the tunnel options `sshHost`/`sshPort`/`sshUser`/`sshAuthKind`/`sshKeyPath`/`sshProxyJump` (**the SSH password and passphrase can only be typed by you in the dialog**). |
+| `dbhub_list_sources()` | List every connection source, **grouped by workspace** and marking the **[CURRENT WORKSPACE]**; metadata and the **source value** only. |
+| `dbhub_execute_sql(source, sql)` | Execute SQL on the given source; `source` comes from `dbhub_list_sources`. Every call is an independent one-shot connection; separate multiple statements with `;`. |
+| `dbhub_search_objects(source, object_type, ...)` | Search database objects (tables / views / columns / indexes, etc.). |
 
-> **Security**: the model can never obtain a password through this plugin — results and lists only show metadata like `mysql://host:3306/db`; dbhub's error text is scrubbed before it is returned. On a failing query, follow the hint and update the password in the UI.
-
-> Note: `search_objects` works only for SQLite; for MySQL / PostgreSQL etc. use `dbhub_execute_sql` directly (e.g., `SHOW TABLES`).
-
-### Configuration Methods
-
-0. **Auto-probe (preferred by default)** — once you state connection facts in chat (e.g. "mysql 198.51.100.1:3307/mydb"), the plugin tests them first: connectable → saved immediately (password-less databases need zero input); password required → the dialog asks only for "account (when unknown) + password" with the failure reason and a "use another way" escape when the connection details themselves are wrong; when the probe blames an EMPTY account (e.g. `Access denied for user ''`), the account is required (no "leave empty" choice); incomplete info or another failure → the three methods below appear. If you name a different database/host/port than the saved connection, the plugin re-runs the probe against the new target.
-1. **Explicit DSN** — enter a full connection string in the UI, e.g. `mysql://user:pass@host:3306/db`.
-2. **Fill in fields** — fill type / host / port / user / password / database name in the UI; fields already known from the conversation are pre-filled — you only fill in the gaps.
-3. **Authorized scan** — after authorization, scan project config files (`.env`, `application*.yml`, `docker-compose`, `jdbc.properties`, etc.) and list candidates (host/port/database only — passwords are read host-side and never shown) for you to confirm.
-
-If a workspace already has `mise env` or `.env` (`DSN` / `DB_*`), the plugin discovers it automatically — no manual configuration needed.
+> **Every source belongs to exactly one workspace**: to reuse a connection from another workspace, copy it over with `dbhub_configure`'s `copyFrom` — do not query another workspace's source directly.
+> `search_objects` is currently available for SQLite only; for MySQL / PostgreSQL etc. use `dbhub_execute_sql` (e.g. `SHOW TABLES`).
 
 ## Configure Page
 
-Three entries, one page and one state:
+<!-- Screenshot slot 2 (configure page section): replace this whole comment with ![Connection row and "Test SSH tunnel"](doc/images/row-editor.png)
+     What to shoot: the editor of one row after clicking ✏, with "Advanced: SSH tunnel" expanded — the read-only checkbox and the "Test SSH tunnel" button must both be visible.
+     A shot that also captures a "Test SSH tunnel" verdict (the [SSH layer] / [database layer] prefixed text) sells the point that it tells you which layer failed.
+     Note: use demo data as well; never expose a real host, database, account or key path. -->
 
-1. **Settings → DBHub Database Tools** (recommended): the first-level settings page the plugin registers; present in every deployment.
-2. **Sidebar entry DBHub Database Tools**: a shortcut shown **when the plugin is enabled and the "Show the sidebar entry" switch in the settings strip is on** (on by default; changeable at any time, effective immediately, no restart). **Hiding the shortcut is not disabling the plugin**: with the switch off the entry disappears while the plugin keeps working and the model can still query; use Disable at the top of the page only to stop the plugin as a whole — a disabled plugin always hides the entry.
-3. **Plugins → dsh-dbhub-live → Configure**: the configure control the official Plugins page gives each plugin row since dsh 0.1.6 (that page is provided by the official plugin manager; use the first two entries when it is absent).
+- **Status and switch**: the running-status badge, the tool count (always 4), the environment count, the enable / disable switch, the most recent error.
+- **Connection list**: organised by workspace. When every workspace has a single environment the rows render as flat cards; as soon as one workspace owns several environments they fold into per-workspace groups (click a group head to expand; the most recently used one is open by default). Each connection takes one line: environment name · 🔒 type / host / port / **database** · the `source` handle (click it to copy) · ⚡ test / ✏ edit / 🗑 delete. In a narrow window the host and port are truncated first, while **the database name always stays visible**.
+- **Add / edit / delete**: use ✏ on a row to change the connection string or the environment name; "＋ Add connection" accepts Chinese environment names. **Saving onto an environment name that already exists asks "overwrite?" first** — cancel and not a single byte is written.
+- **Connection test**: runs `SELECT 1` over **the effective connection that environment will really use** (read-only / tunnel included) and shows the elapsed time while it runs. The result is one-shot feedback: nothing is persisted and no connection state changes.
+- **Settings strip** (⚙ Settings): the auto-update interval, and the "Show the sidebar entry" switch.
 
-> The sidebar entry disappearing (the switch was turned off, or the plugin was disabled) never removes access: the settings page and the plugin row's Configure control stay available, so you can flip the switch back or enable the plugin at any time.
-
-All page copy (name, status, config fields, buttons, connection rows) follows the dsh UI language (Chinese / English — Settings → General → Language); model-facing errors, feedback and the host logs follow it as well.
-
-**Status**: status badge (🟢 running / ⚪ disabled), the **enable/disable switch**, mode (one-shot connection), tool declarations (`4 (fixed)`), environments (`N · M saved`), most recent error (shown in red on error).
-
-**Configuration** (edit, then click "Save Configuration" to apply immediately and persist):
-
-| Parameter | Description | Default |
-| --- | --- | --- |
-| Auto-update interval (days) | How often dbhub is auto-updated; `0` disables | `7` |
-| Show the sidebar entry | Whether the plugin's shortcut appears in the left sidebar; turning it off only hides the entry — the plugin keeps working (tools stay available) and it is **not** a way to disable the plugin | on |
-
-The sidebar entry appears only when **both** hold: the plugin is enabled **and** "Show the sidebar entry" is on. **Hiding the shortcut is not disabling the plugin** — with the switch off the entry disappears while the plugin keeps working and the model can still query; disabling the plugin always hides the entry (a disabled plugin contributes no sidebar entry at all). Removing the entry never removes your way back: the settings page and the plugin row's Configure control stay reachable, so either state can be undone there.
-
-Precedence: **settings saved on the configure page > process environment variables (default seeds) > built-in defaults**; when upgrading from an older 0.1.x install, the options still stored in the settings document are read as a lower layer (they are never silently reset). On dsh 0.1.7 and later both the "Auto-update interval" and "Show the sidebar entry" are also the plugin's declared configuration (volatile Config: `updateIntervalDays` / `showSidebarEntry`): set them in the plugin's row in `cordis.patch.yml`, or in the official Plugins form — **either change is adopted, and this plugin's page shows the same value** (a page save writes back to that configuration too, so the two surfaces never disagree). The auto-installed package is not in the UI (controlled separately by the `DSH_DBHUB_PACKAGE` environment variable, default `@bytebase/dbhub`).
-
-**Workspace connections**:
-
-- Lists every workspace × environment connection: workspace name, environment name, **source value** (what the model passes to `dbhub_execute_sql`, shown in monospace), **connection metadata** (🔒 `mysql://host:3306/db` — no username, no password; passwords never appear on the page), origin badge (`saved` / `auto`) and origin detail (`saved · user` / `saved · scan` / `saved · copied` / `auto · mise env` / `auto · .env`).
-  - `saved`: you configured it (`dbhub_configure` or added in the page).
-  - `auto`: not saved, discovered from `mise env` / `.env` — not persisted and follows the source files; if auto-discovery is wrong, use "Edit" to override it with a manual configuration. If you **explicitly set an option** (read-only / SSH) on such an environment, the plugin **promotes it to a saved connection** (persisted with the connection string it just discovered) and says so — from then on it no longer follows the source files.
-- Each row can be **tested** (connectivity probe, see below), **edited** (change the connection string **and/or the environment name**; a rename keeps the connection and its credentials untouched — enter only a name to rename) or **deleted** (saved items only).
-- **Connection test**: clicking "Test" makes the Host probe the environment's **effective connection** — the one execution will really use — through a throwaway connection (a one-off dbhub process running `SELECT 1`); with read-only enabled or an SSH tunnel configured, that is exactly the "tunnelled + read-only" combination. The running row shows the elapsed time (`testing… 1.2s`) and the success/failure appears inline. The report is one-shot feedback: never persisted, fades after ~10 s; a failure never marks, restricts or alters the connection, other environments or queries. The test **never re-scans every workspace** just to find the connection string (a saved environment is read straight from local credentials, an auto-discovered one uses the row already on screen, and only a never-scanned environment triggers a real discovery walk), so "Test" costs about as much as the probe itself. Wait budget: ~25 s direct, ~45 s through an SSH tunnel (browser watchdog 30 s / 60 s); on timeout you get an explicit message instead of an endless spinner. **On failure, read the end of the message**: the diagnostic carries the **tail** of dbhub's output (multi-line, ~600 characters, line breaks preserved, **cut at a line boundary** and with `at …` stack-frame remnants dropped, so a message never starts with half a line) — the fatal line sits at the end, so truncating from the start would hide the real error. With a tunnel configured the message also **names the failing layer**: 「【SSH 层】隧道未建立：…」 (SSH layer — the tunnel was not established) or 「【数据库层】隧道可能已建立，失败发生在数据库连接/认证：…」 (database layer — the tunnel *may* have come up and the failure is in the database connection/auth); the latter is deliberately hedged, because only "Test SSH tunnel" can prove the tunnel really came up (see below). **The reading is direct: a database-layer report means the tunnel itself is up** — the error came from the database behind it (auth / database name / target address), so SSH need not be suspected any more; press "Test SSH tunnel" once to turn that "may" into a definite verdict. When the plugin itself cannot start dbhub or generate its config, the prefix is 「【插件层】…」 instead — neither the tunnel nor the database layer. The connection string inside a diagnostic is always scrubbed to `mysql://****:****@host:3306/db`: **neither the username nor the password ever appears**.
-- **Multiple environments per workspace**: fill "workspace (path or title, empty = default current workspace) + environment name + connection string" in the form and click "Add Connection". Environment names **may be Chinese** (e.g. `线上` / `测试`): the name is shown verbatim while the environment segment of the source value becomes `env-<short hash>`, so two Chinese names can never collide (purely ASCII names such as `test` / `dev` keep their existing source values).
+**"Show the sidebar entry" is not disabling the plugin**: switching it off merely hides the sidebar shortcut — the plugin keeps working and the model can still query; use "Disable" to stop the plugin as a whole (a disabled plugin always hides the entry). In either state, **the settings page and the Plugins row's Configure control always stay reachable**, so the change can be undone at any time.
 
 ## 🔒 Read-only Mode and SSH Tunnels
 
-Both are **per-environment (workspace × environment)** connection options executed by dbhub's own native features. Once read-only or a tunnel is on, every execution on that environment switches to a **temporary, generated dbhub configuration** — the file contains only `${…}` placeholders and **no password at all** (the real values reach the child process through its environment), and it is deleted right after use. Every other environment behaves exactly as before.
+Both are **per-environment** connection options executed by dbhub's native features. Once either is on, every execution in that environment switches to a **temporary, generated dbhub configuration** (the file holds only `${…}` placeholders and no password at all — the real values reach the child process through its environment) and is deleted as soon as the call ends; every other environment is unaffected.
 
-### Read-only mode
+**Read-only mode**: click ✏ on a connection row, tick "Read-only mode" and save (the model can enable it for an environment too). dbhub then lets read statements through only (measured on MySQL: `select/with/explain/show/describe/desc`), and writes come straight back as `READONLY_VIOLATION`; object search keeps working. **Turning read-only off is something only you can do on the configure page** — an attempt by the model is refused. A read-only environment's name gains a small "RO" badge.
 
-- **How to enable it**: click ✏ on the connection row (or use the "＋ Add connection" form), tick "Read-only mode" and save; the model can also enable read-only for an environment. **Turning it off is a user-only action on the configure page** — the model may enable it but never lift it (that would be self-escalation), and an attempt to disable it is refused with a pointer to the configure page.
-- **What gets rejected**: dbhub only allows read statements (`select` / `with` / `explain` / `pragma` and so on, depending on the connector); writes (`INSERT` / `UPDATE` / `DELETE` / DDL …) are rejected by dbhub itself with `READONLY_VIOLATION`. The model sees that raw error plus a short hint. Object search (`dbhub_search_objects`) keeps working in a read-only environment.
-- **How to recognise it**: the environment name gains a small `RO` badge, with an explanation on hover.
-- **Note**: read-only is a **per-environment** switch; there is no "all environments read-only" global switch — use Disable to stop the plugin as a whole.
-
-### SSH tunnel (manual)
-
-For the case where the database sits behind a bastion and can only be reached over SSH. Fields:
+**SSH tunnel** (configured by hand, for databases sitting behind a bastion):
 
 | Field | Description |
 | --- | --- |
-| SSH host | A **domain or IP** (e.g. `203.0.113.10`). Do not enter an `~/.ssh/config` alias — a bare name without a dot is resolved by dbhub as an alias, which this plugin does not support. |
-| Port | Defaults to `22`. |
-| SSH user | The account used to log in to the bastion. |
-| Auth | **Key** (enter the key path, e.g. `~/.ssh/id_ed25519`; a passphrase can be supplied for an encrypted key; **a blank key path means the default `~/.ssh/id_ed25519`**) or **password**. |
-| ProxyJump | Optional, **single hop only**, format `[user@]host[:port]` (e.g. `203.0.113.11:22`). |
-| Key passphrase / SSH password | **Entered in the UI only** — never through the model, never echoed back; when editing, **blank = keep the stored value**. |
+| SSH host | A **domain or IP** (e.g. `203.0.113.10`); do not enter an alias from `~/.ssh/config` |
+| Port | Defaults to `22` |
+| SSH user | The account used to log in to the bastion |
+| Auth | **Key** (enter the key path; give a passphrase if the private key has one; **blank = the default `~/.ssh/id_ed25519`**) or **password** |
+| ProxyJump | Optional, **one hop only**, format `[user@]host[:port]` |
+| Key passphrase / SSH password | **Typed in the UI only**, never echoed back; when editing, **blank = keep the stored value** |
 
-> **A blank key path means the default identity file**: with auth set to Key and the key path left empty, the plugin falls back to the SSH convention, **`~/.ssh/id_ed25519`** (exactly the value the field shows as its placeholder). The default applies **only to key auth with an empty path**: a path you typed is never overridden, and password auth is untouched. **Saving and testing follow the same rule** (otherwise a passing test could be followed by a save that silently drops the tunnel). The **"blank = keep the stored value" rule is unchanged**: a blank key passphrase / SSH password still keeps the stored secret, and a stored key path is kept when the field is left blank (no default is applied then). The "Test SSH tunnel" verdict **names the path it actually tried** ("no key path was given, so the default `~/.ssh/id_ed25519` was tried; put a path in that field to use another key."), so nobody hunts for a typo. **Honest limit**: the default file may not exist on your machine — the probe then answers with the actionable `SSH key file missing or unreadable: ~/.ssh/id_ed25519` (with that same note), instead of a vague "incomplete configuration".
+"Advanced: SSH tunnel" holds **two** test buttons:
 
-The "Advanced: SSH tunnel" section holds **two** test buttons: **"Test SSH tunnel"** validates **the SSH layer alone** (can this machine reach the host/port, is the private key file there, do the SSH handshake and authentication come up), while **"Test this configuration"** probes the **effective connection** (tunnel + read-only). Press the former first and a tunnel problem is separated from a database problem immediately. **The key insight: a database-layer error is proof the tunnel is up** (see step 5 below for the decision order and signatures).
+- **"Test SSH tunnel"** validates the tunnel layer alone: it first probes TCP reachability of `ssh_host:ssh_port` (about 5 seconds; a failure carries a code such as `ENOTFOUND` / `ECONNREFUSED` / `ETIMEDOUT`), with key auth it checks that the private key file exists and is readable, and finally it **deliberately** asks dbhub to open a tunnel to an address that cannot possibly be listening — then decides from the evidence: an error carrying **SSH signatures** (handshake / authentication / private key) means the tunnel is down; one carrying a **database-layer signature** (`PROTOCOL_CONNECTION_LOST`, `Connection lost`, `Access denied`, `Unknown database`, `ER_*`, `ECONNREFUSED` and the like) means the connection **already got past the tunnel**, so the verdict is "SSH tunnel works"; only when neither is present does it honestly say "cannot be determined", with the tail of the output attached.
+- **"Test this configuration"** probes the **effective connection** (tunnel + read-only) for real.
 
-Prerequisites and limits:
+> **One line to remember**: a **database-layer** error means the tunnel is already up — the problem is the database behind it (authentication / database name / target address), so SSH need not be suspected any longer.
+>
+> **Honest limit**: the SSH-layer test proves "the network is reachable + the key is present + the SSH layer comes up"; it is not a full session test against a real database — a tunnel coming up does not mean the database behind it is reachable, and that question is answered by "Test this configuration".
 
-- Requires **dbhub 1.4.0 or newer**: on an older version the plugin fails with an explicit error and an upgrade hint — it never silently ignores the tunnel or the read-only setting.
-- **The database address in the connection string must be the one the bastion sees**: e.g. when the database runs on the bastion itself, use `mysql://user:CHANGE_ME@127.0.0.1:3306/db`, not an address only your own machine can see.
-- **Multi-hop bastions, `ProxyCommand` and ssh-agent are not supported** (dbhub shares one credential set across hops, so per-hop logins cannot be expressed); the plugin reports this explicitly and points you at a single hop.
-- The plugin **never reuses or reads** any other plugin's SSH configuration (including DSH's own SSH tooling): the tunnel information comes only from what you fill in here.
-- Read-only and the tunnel are independent switches; either can be used on its own.
+Order of checks: ① your machine can log in with `ssh user@bastion`; ② **the address in the connection string must be the one the bastion sees** (write `127.0.0.1` when the database runs on the bastion itself) — this is the most common cause; ③ the key path exists and is readable (remember the passphrase for an encrypted key); ④ ProxyJump is a single hop.
 
-### When a tunnel will not connect
-
-1. Check the **bastion itself is reachable**: `ssh user@203.0.113.10` works from your machine.
-2. Check the **host/port in the connection string is what the bastion can reach** — the most common cause (an address only your machine sees; when the database runs on the bastion itself, use `127.0.0.1`).
-3. Check the **key path exists and is readable** (`~` is expanded; when the field is blank the default `~/.ssh/id_ed25519` is used and the probe reports whether it exists), and enter the passphrase for an encrypted key.
-4. Check it is a **single hop**: two or more comma-separated ProxyJump entries are refused.
-5. Press **"Test SSH tunnel"** to validate the tunnel layer on its own. It tests the SSH layer only and answers three things in order: ① **TCP reachability** of `ssh_host:ssh_port` (a ~5 s budget) — a failure says "host unreachable / port closed" and carries the **socket error code** (`ENOTFOUND` the name does not resolve / `ECONNREFUSED` nothing listens on the port / `ETIMEDOUT` packets are dropped by a firewall), which alone rules DNS, firewall and port issues in or out; ② with key auth it checks that the **private key file exists and is readable** (`~` is expanded); ③ finally it **deliberately** asks dbhub to open the tunnel towards an address that cannot be listening (`127.0.0.1:1`) and then decides on the evidence, in a fixed order: an **SSH-specific signature** (all authentication methods failed, the private key cannot be parsed, an encrypted key without a passphrase, handshake or ProxyJump trouble) **decides the SSH layer alone** (such signatures are only emitted for tunnel-level problems); otherwise a **database-layer signature** (`PROTOCOL_CONNECTION_LOST`, `Connection lost`, `server closed the connection`, `Access denied`, `Unknown database`, `ER_*`, `ECONNREFUSED` / `ECONNRESET` / `ETIMEDOUT` / `EHOSTUNREACH`, `SSH tunnel closed`) **proves the connection got past the tunnel** — the driver only speaks once the forwarded connection exists, so the verdict is "SSH tunnel works"; otherwise, if the error **names the forwarded target**, that counts as a working tunnel too; only when neither is present does it honestly answer "the SSH layer could not be classified", with the tail of the output attached — it never guesses. **One line to remember: a database-layer error (including `SSH tunnel closed` + `Connection lost`) means the tunnel is fine and the problem is the database behind it.** **Know its limit**: it proves "the network is reachable + the local key is in place + the SSH layer comes up"; it is **not** a full SSH session test with a real database behind it — a tunnel that comes up does not mean the database behind it is reachable, which is what "Test this configuration" answers.
-6. Before saving, press "Test this configuration" as well: it probes the **effective connection** (tunnel + read-only; the first SSH handshake is slow, up to ~45 s) and tells you why it failed — **read the end of the message**: it carries the **tail** of dbhub's output (~600 characters, line breaks preserved, **cut at a line boundary** with `at …` stack-frame remnants dropped, so it never starts mid-line) and names the failing SSH or database layer — **a 【数据库层】 (database-layer) report means the tunnel itself is up**.
-
-## dbhub Environment Variables
-
-| Environment variable | Description | Default |
-| --- | --- | --- |
-| `DSH_DBHUB_PACKAGE` | npm package name used for auto-install (environment variable only, not exposed in the UI) | `@bytebase/dbhub` |
-| `DSH_DBHUB_UPDATE_DAYS` | Seed for the auto-update interval in days; `0` disables (overridden once saved in the settings card) | `7` |
-
-## 🔄 Automatic Installation & Updates
-
-- **Auto-install on first use** — when `dbhub` is missing locally, the plugin installs it on the first execution; afterwards it also works offline.
-- **Kept up to date automatically** — silently updates to the latest version in the background (interval under "Configure Page → configurable parameters"); on failure the existing version is kept.
-- **Never touches your configuration** — a `dbhub` you installed yourself via PATH / mise is left untouched.
-
-> The default update interval can also be seeded by an environment variable, see "Configure Page → Configuration"; once saved in the settings card, the saved value wins.
+**Prerequisites and limits**: dbhub **1.4.0+** is required (an older version fails with an explicit error rather than being silently ignored); multi-hop, `ProxyCommand` and ssh-agent are **not supported**, and the plugin does **not reuse** the SSH configuration of any other plugin (including DSH's own SSH tooling) — the tunnel information comes only from what you type in. Read-only and SSH are two independent switches; either can be used on its own.
 
 ## Data Location
 
-All configuration and credentials live outside the module directory (unaffected by pnpm packaging); deleting the directory clears everything:
+All configuration and credentials live outside the module directory; delete that directory and everything is cleared:
 
 ```
 ~/.dsh/storages/dsh-dbhub-live/
 ```
 
-Instances are isolated by `DSH_HOME`; multiple profiles of the same instance share it (same convention as dsh's own `workspace.json`). Workspace connections are stored per "workspace × environment" (`environments.default` is the default environment); legacy v1 single-connection entries migrate automatically at startup. The plugin cleans up and migrates legacy config left by upgrades or manual edits in one pass; it does not crash if the runtime directory is deleted or writes are blocked by the system — it recreates the directory, warns once and keeps running in memory when a write fails. **There is no resident dbhub process and no shared config file**: concurrent instances on the same machine — even sharing one DSH_HOME — do not interfere with each other. With read-only / an SSH tunnel enabled, each call generates a temporary dbhub configuration under `tmp/` — **the file holds placeholders only and no password**, it is deleted right after use, and leftovers from a crash are cleaned up on the next start.
+Isolated per `DSH_HOME` and shared by multiple profiles of the same instance (the same convention as dsh's own `workspace.json`). Connections are stored per "workspace × environment"; old formats and leftovers from manual edits are cleaned up and migrated in one pass at startup, and the plugin does not crash if the runtime directory is deleted by accident or a write is blocked. **There is no resident process and no shared configuration file**, so several instances running at once on one machine never interfere.
 
 ## Uninstall
 
@@ -203,21 +136,18 @@ dsh plugin --profile web remove dsh-dbhub-live
 
 | Symptom | Fix |
 | --- | --- |
-| "Cannot locate dbhub" on first use | Make sure npm is present and online; offline, install `dbhub` manually and add it to PATH. |
-| A query to one environment fails with connection refused / auth error | Environments use independent one-shot connections: an unreachable environment only fails that call — other environments and calls keep working. The error carries guidance — for wrong credentials/details, ask the AI to run `dbhub_configure` and enter the password in the UI, or edit it directly in Plugins → dsh-dbhub-live → Configure. |
-| Tools say "plugin disabled" | Open Plugins → dsh-dbhub-live → Configure and click "Enable". |
-| The sidebar entry vanished after disabling the plugin | Expected: a disabled plugin contributes no sidebar entry at all. Go to **Settings → DBHub Database Tools** (or Plugins → dsh-dbhub-live → Configure) and click "Enable" — the entry comes straight back. |
-| I turned off "Show the sidebar entry" — do the tools still work? | Yes. The switch only hides the shortcut; the plugin keeps working and the model can still query (that is exactly the difference between "hide the entry" and "disable the plugin"). Turn it back on in the settings strip to restore the entry. |
-| A write reports `READONLY_VIOLATION` after enabling read-only | Not a fault — read-only mode is doing its job (dbhub rejects the write). To write, clear that environment's "Read-only mode" on the configure page; the model cannot turn it off. |
-| The read-only / SSH controls are greyed out, or the plugin says dbhub is too old | Both need dbhub 1.4.0+. Upgrade dbhub, or delete `~/.dsh/storages/dsh-dbhub-live` and let the plugin auto-install a version that satisfies it. |
-| A connection test fails and you cannot tell why | Read the **end** of the message: it carries the tail of dbhub's output (multi-line, ~600 characters, line breaks preserved, cut at a line boundary) and, with a tunnel configured, names the failing layer (【SSH 层】/【数据库层】 — SSH vs database). **A 【数据库层】 report means the tunnel itself is up** — the error came from the database behind it (auth / database name / target address), so SSH need not be suspected any more; press "Test SSH tunnel" to pin that down. With a tunnel, press it first to validate the SSH layer on its own, then work through the row below. |
-| An SSH tunnel will not connect | Press **"Test SSH tunnel"** first to validate the tunnel layer on its own (it tells you separately whether the port is reachable, the key is there, and the SSH authentication came up). **The verdict follows the evidence, never a guess**: only an SSH-specific signature (handshake / authentication / key) means the tunnel is broken; a **database-layer signature** (`PROTOCOL_CONNECTION_LOST`, `Connection lost`, `server closed the connection`, `Access denied`, `Unknown database`, `ER_*`, `ECONNREFUSED` / `ECONNRESET` / `ETIMEDOUT` / `EHOSTUNREACH`, `SSH tunnel closed`) or an error naming the forwarded target means the connection **got past the tunnel** and the verdict is "SSH tunnel works" — the problem is the database behind it; only when neither is present does it honestly say "the SSH layer could not be classified" and attach the tail. Then check in order: the bastion is reachable → the address in the connection string is the one the bastion sees (use `127.0.0.1` when the database is on the bastion itself) → the key path exists and is readable (a blank field uses the default `~/.ssh/id_ed25519`) → ProxyJump names a single hop. See "Read-only Mode and SSH Tunnels → When a tunnel will not connect". |
-| Configure Page not visible | Confirm the plugin is installed and restart `dsh web`; the card only shows in the Web settings panel (`dsh web`) — on terminal environments without the panel, tool usage is unaffected. |
-| dsh reports the plugin as incompatible after a dsh upgrade | That is dsh's peer-version check: upgrade the plugin to 5.0.0 or later (it serves both 0.1.x and 0.2.x). Forcing it through with `dsh plugin --profile web allow-version` does not help — the interface 4.x depends on is gone in 0.2.x, so the configure page stays empty. |
-| No config files found by the scan | `node_modules` / `.git` / `target` / `dist` etc. are skipped by default; use "Enter DSN" or "Fill in fields" instead. |
-| Need a custom dbhub version | Set the `DSH_DBHUB_PACKAGE` environment variable (e.g. `@bytebase/dbhub@1.4.0`; read-only / SSH tunnels need 1.4.0+) and restart; or delete `~/.dsh/storages/dsh-dbhub-live` and let it reinstall automatically. |
-| Don't want automatic dbhub updates | Set "Auto-update interval (days)" to `0` in the Configure Page and save; or set `DSH_DBHUB_UPDATE_DAYS=0`. |
-| Can't update the password in chat (the model asks you for it) | That is by design — the model must not handle passwords. Ask the AI to run `dbhub_configure` and fill in the password in the UI prompt, or edit it yourself in Plugins → dsh-dbhub-live → Configure. |
+| "Cannot fetch dbhub" on first use | Make sure npm is present and the machine can reach the network; offline, install `dbhub` by hand and add it to PATH. |
+| A connection to one environment is refused / authentication fails | That environment is an independent one-shot connection, so only this one call is affected. The end of the error carries guidance: ask the AI to run `dbhub_configure` and walk you through updating the password in the UI, or edit it directly on the configure page. |
+| The tools report "plugin disabled" | Go to **Settings → DBHub Database Tools** and click "Enable". |
+| The sidebar entry is gone after disabling | Expected behaviour (a disabled plugin contributes no entry). Click "Enable" and the entry is back immediately. |
+| A write reports `READONLY_VIOLATION` after read-only was turned on | Not a fault — read-only is doing its job. To write, clear that environment's "Read-only mode" on the configure page (the model cannot turn it off). |
+| The read-only / SSH controls are greyed out, or dbhub is reported as too old | Both need dbhub 1.4.0+: upgrade dbhub, or delete `~/.dsh/storages/dsh-dbhub-live` so the plugin installs a version that satisfies it. |
+| A connection test fails and you cannot tell why | Read the **end** of the message (the diagnostic is the tail of dbhub's output and marks the layer: [SSH layer] / [database layer] / [plugin layer]). **A [database layer] report means the tunnel is already up**; with a tunnel configured, press "Test SSH tunnel" first to verify the SSH layer on its own. |
+| The configure page is not visible | Check the plugin is installed and `dsh web` has been restarted; the page only shows in the Web settings panel and does not affect tool usage in terminal environments. |
+| After a dsh upgrade the plugin is reported as incompatible | Upgrade the plugin to 5.0.0+ (it supports both 0.1.x and 0.2.x); forcing it through with `allow-version` buys nothing. |
+| Automatic dbhub updates are not wanted | Set "Auto-update interval (days)" to `0` on the configure page and save, or set `DSH_DBHUB_UPDATE_DAYS=0`. |
+
+**Environment variables** (only these two, not exposed in the UI): `DSH_DBHUB_PACKAGE` (the package that gets auto-installed, default `@bytebase/dbhub`), `DSH_DBHUB_UPDATE_DAYS` (the seed for the auto-update interval, default `7`, overridden by the value saved on the configure page).
 
 ## License
 
