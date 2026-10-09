@@ -6,19 +6,28 @@
 # it. The local .env denylist is intentionally absent in CI — that layer is a
 # maintainer-local supplement, while the slot registry and the generic backstop
 # run everywhere.
+#
+# Branches: `dev` is the integration branch (every change lands there first and
+# is tested from there); `main` is release-only and protected. Both are gated
+# here, so the commit a release is merged from already carries a green run.
+# `workflow_dispatch` exists so the gate can be re-run by hand.
 name: quality
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
       - name: Syntax check

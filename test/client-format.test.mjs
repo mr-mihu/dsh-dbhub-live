@@ -86,17 +86,28 @@ test('client bundle owns a Settings section (core shell, always available)', () 
   assert.match(source, /className: "dbh-wrap"/)
 })
 
-test('client bundle owns an optional sidebar entry toggled by showSidebarEntry', () => {
+test('client bundle owns a sidebar entry gated by enabled AND the user switch', () => {
   assert.match(source, /slots\.inject\("sidebar\.panellist"/)
   assert.match(source, /name: "sidebar\.panellist",\s*\n\s*id: "dbhub"/)
   assert.match(source, /function PanelIcon\(props\)/)
   assert.match(source, /slots\.inject\("main"/)
   assert.match(source, /name: "main",\s*\n\s*key: "dbhub"/)
-  // the switch lives on the settings page and applies live
-  assert.match(source, /v\.showSidebarEntry !== false/)
+  // Two independent conditions: the user's "hide the shortcut" switch and the
+  // plugin's enabled state. Hiding the entry is NOT disabling the plugin.
+  assert.match(source, /return v\.enabled !== false && v\.showSidebarEntry !== false;/)
   assert.match(source, /var syncSidebar = function/)
   assert.match(source, /face\.subscribe\(syncSidebar\)/)
-  assert.match(source, /props\.saveConfig\(\{ showSidebarEntry: next \}\)/)
+  // The switch itself is back on the settings strip and applies immediately.
+  assert.match(source, /"cfg\.sidebar": "在侧边栏显示入口"/)
+  assert.match(source, /"cfg\.sidebar": "Show the sidebar entry"/)
+  assert.match(source, /var toggleSidebar = function \(next\)/)
+  assert.match(source, /props\.saveConfig\(\{ showSidebarEntry: next \}\);/)
+  assert.match(source, /showSidebarEntry: draft\.showSidebarEntry !== false,/)
+  // The settings section and the Plugins row never depend on either condition, so
+  // no combination can lock the user out of the configuration.
+  assert.match(source, /slots\.inject\("settings\.section"/)
+  assert.match(source, /"cfg\.disabledHint":/)
+  assert.match(source, /t\("cfg\.enabledHint"\) : t\("cfg\.disabledHint"\)\) \+ " " \+ t\("cfg\.sidebarHint"\)/)
 })
 
 test('client bundle exposes the config editor (saveConfig + editable options)', () => {
@@ -162,9 +173,15 @@ test('client bundle tiles single-environment workspaces instead of folding them'
   // where a connection came from is identical on almost every row, so it is a
   // tooltip on the environment chip — never an inline badge
   assert.match(source, /var originTitle = function \(w, base\)/)
-  assert.match(source, /className: "dbh-envname", title: originTitle\(w, w\.env\)/)
+  assert.match(source, /title: originTitle\(w, w\.env\)/)
   assert.match(source, /t\("ws\.source"\) \+ "：" \+ sourceLabelOf\(w, t\)/)
   assert.match(source, /if \(!w\.persisted\) text \+= " " \+ t\("ws\.autoHint"\);/)
+  // the read-only flag is a per-row ATTRIBUTE that changes what a query may do,
+  // so it is visible on the chip (the source is a tooltip, this is not)
+  assert.match(source, /var envChip = function \(w\)/)
+  assert.match(source, /className: "dbh-ro", title: t\("ro\.title"\)/)
+  assert.match(source, /if \(w\.ro === true\) text \+= " · " \+ t\("ro\.title"\);/)
+  assert.match(source, /if \(w\.ssh\) text \+= " · " \+ t\("ro\.sshTitle"/)
   assert.doesNotMatch(source, /dbh-pill/)
 })
 
@@ -221,9 +238,9 @@ test('client bundle asks before overwriting an existing environment', () => {
   assert.match(source, /var confirmOverwrite = function \(\)/)
   assert.match(source, /var cancelOverwrite = function \(\) \{ setOverwrite\(null\); \}/)
   // both entry points go through the gate: the add form and a renaming edit
-  assert.match(source, /env: addForm\.env\.trim\(\) \|\| "default",\s*\n\s*dsn: addForm\.dsn\.trim\(\),\s*\n\s*\}, true\);/)
-  assert.match(source, /if \(renaming\) requestWrite\(\{ ws: row\.path, env: newEnv, dsn: "", _editRow: row \}, true\);/)
-  assert.match(source, /_renameFrom: renaming \? row\.env : "" \}, renaming\);/)
+  assert.match(source, /function connDraftOf\(form\)/)
+  assert.match(source, /requestWrite\(withConnDraft\(\{\s*\n\s*ws: addTarget \|\| addForm\.ws\.trim\(\),\s*\n\s*env: addForm\.env\.trim\(\) \|\| "default",\s*\n\s*dsn: addForm\.dsn\.trim\(\),\s*\n\s*_draft: addForm,\s*\n\s*\}, addForm\), true\);/)
+  assert.match(source, /_renameFrom: renaming \? row\.env : "" \}, editing\), renaming\);/)
   // editing the connection of the SAME environment is not an overwrite question
   assert.match(source, /var renaming = normalizeEnvForCompare\(newEnv\) !== normalizeEnvForCompare\(row\.env\);/)
   // the prompt is a warning card with an explicit overwrite/cancel pair
@@ -295,6 +312,10 @@ test('client bundle manages workspace connections through configOp', () => {
   assert.match(source, /op: "add"/)
   assert.match(source, /op: "remove"/)
   assert.match(source, /op: "rename"/)
+  // the options-only write (read-only switch / SSH tunnel) never carries a DSN
+  assert.match(source, /op: "options"/)
+  assert.match(source, /_opKind: "rename"/)
+  assert.match(source, /_opKind: "options"/)
   assert.match(source, /newEnv/)
   assert.match(source, /renameFrom/)
   assert.match(source, /workspacesOf\(value\)/)
@@ -319,7 +340,7 @@ test('client bundle folds status/options into the header + a settings strip', ()
   assert.match(source, /t\("cfg\.summary", \{/)
   assert.match(source, /className: "dbh-cfgsum"/)
   // view state survives remounts within the page session
-  assert.match(source, /var uiMemory = \{ expanded: \{\}, addOpen: false, addTarget: "", settingsOpen: false \};/)
+  assert.match(source, /var uiMemory = \{ expanded: \{\}, addOpen: false, addTarget: "", settingsOpen: false, advOpen: false \};/)
 })
 
 test('client bundle offers a transient per-row connection test', () => {
@@ -349,4 +370,62 @@ test('client bundle injects only slots and probes the host transport', () => {
   // GUI must not poll the bridge.
   assert.match(source, /props\.subscribe\(function \(\) \{ setValue\(valueOf\(props\.getSnapshot\(\)\)\); \}, \{ live: true \}\);/)
   assert.match(source, /var live = !!\(opts && opts\.live\);/)
+})
+
+test('client bundle offers the environment read-only switch and never echoes the mirrored secret', () => {
+  assert.match(source, /"add\.readOnly": "只读模式"/)
+  assert.match(source, /"add\.readOnly": "Read-only mode"/)
+  assert.match(source, /var roCheck = function \(form, update, keyPrefix\)/)
+  // the checkbox is NOT a `.dbh-field`/`.dbh-input`: the add panel's field count
+  // and its 0..2 input indices are pinned by the offscreen gate
+  assert.match(source, /type: "checkbox", className: "dbh-checkbox"/)
+  assert.match(source, /"aria-label": t\("add\.readOnly"\)/)
+  // the very same draft builder feeds every op payload
+  assert.match(source, /function withConnDraft\(op, form\)/)
+  assert.match(source, /op\.readOnly = d\.readOnly === true;/)
+})
+
+test('client bundle configures the SSH tunnel, keeping secrets write-only', () => {
+  assert.match(source, /"add\.adv": "高级：SSH 隧道"/)
+  assert.match(source, /"add\.adv": "Advanced: SSH tunnel"/)
+  assert.match(source, /var advPanel = function \(form, update, keyPrefix, targetOf\)/)
+  // the SSH-layer-only test lives in the advanced section, with its own payload
+  assert.match(source, /"btn\.testSsh": "测试 SSH 隧道"/)
+  assert.match(source, /var startSshTest = function \(form, targetOf, key\)/)
+  assert.match(source, /op: "test", kind: "ssh",/)
+  assert.match(source, /"aria-expanded": open/)
+  // secrets are typed in and posted, never rendered back
+  assert.match(source, /"adv\.keepSecret"/)
+  assert.match(source, /type: "password", placeholder: t\("adv\.keepSecret"\)/)
+  // a blank secret means "keep the stored one": the builder only attaches the
+  // fields the user actually typed
+  assert.match(source, /if \(password\) ssh\.password/)
+  assert.match(source, /if \(keyPath\) ssh\.keyPath/)
+  assert.match(source, /if \(passphrase\) ssh\.passphrase/)
+  // the mirrored row only carries booleans for secrets
+  assert.match(source, /function sshDraftOf\(row\)/)
+  assert.match(source, /sshKeyPath: "",\s*\n\s*sshPassword: "",\s*\n\s*sshPassphrase: "",/)
+})
+
+test('client bundle shows the elapsed time of a running probe and cleans the ticker up', () => {
+  assert.match(source, /"test\.elapsed": "测试中… \{s\}s"/)
+  assert.match(source, /startedAt: Date\.now\(\)/)
+  assert.match(source, /t\("test\.elapsed", \{ s: String\(secs\) \}\)/)
+  // the 1s ticker exists ONLY while a row is testing, and its effect cleans up
+  // (the offscreen gate hangs on a leaked interval, which is the point)
+  assert.match(source, /if \(!anyTesting \|\| typeof setInterval !== "function"\) return undefined;/)
+  assert.match(source, /return function \(\) \{ clearInterval\(id\); \};/)
+  // probe watchdogs are tiered for the slower tunnel
+  assert.match(source, /var PRETEST_WATCHDOG_MS = 30000;/)
+  assert.match(source, /var PRETEST_WATCHDOG_SSH_MS = 60000;/)
+  assert.match(source, /var TEST_WATCHDOG_MS = 30000;/)
+  assert.match(source, /var TEST_WATCHDOG_SSH_MS = 60000;/)
+})
+
+test('client bundle disables what the installed dbhub cannot do', () => {
+  assert.match(source, /function capsOf\(value\)/)
+  assert.match(source, /function capabilityHint\(caps, t\)/)
+  assert.match(source, /"cap\.tooOld":/)
+  assert.match(source, /disabled: !sshSupported,/)
+  assert.match(source, /disabled: !roSupported,/)
 })

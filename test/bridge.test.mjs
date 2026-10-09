@@ -17,7 +17,9 @@ const VIEW = {
   lastError: '',
   mode: 'oneshot',
   updateIntervalDays: 7,
-  showSidebarEntry: true,
+  // Upstream dbhub capability probe (JSON string). The sidebar entry is NOT a
+  // view field anymore: it follows `enabled` (F0).
+  capabilities: '{"version":"1.4.0","readonlyTools":true,"ssh":true,"warning":""}',
   workspaces: '[]',
   testResult: '',
   // The browser half addresses the plugin's own settings form by this id; ''
@@ -122,11 +124,51 @@ test('POST /options forwards the patch and answers the fresh view', async () => 
   const response = await byPath.get(BRIDGE_ROUTES.options).fetch(new Request(url(BRIDGE_ROUTES.options), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ updateIntervalDays: 3, showSidebarEntry: false }),
+    body: JSON.stringify({ updateIntervalDays: 3 }),
   }))
   assert.equal(response.status, 200)
-  assert.deepEqual(calls.options, [{ updateIntervalDays: 3, showSidebarEntry: false }])
+  assert.deepEqual(calls.options, [{ updateIntervalDays: 3 }])
   assert.deepEqual(await body(response), { ok: true, value: VIEW })
+})
+
+test('the view advertises the dbhub capability probe and no removed option', () => {
+  assert.equal(typeof VIEW.capabilities, 'string')
+  assert.equal(JSON.parse(VIEW.capabilities).readonlyTools, true)
+  assert.equal(JSON.parse(VIEW.capabilities).ssh, true)
+  assert.equal(Object.prototype.hasOwnProperty.call(VIEW, 'showSidebarEntry'), false)
+})
+
+test('POST /op carries an options command and returns its options patch', async () => {
+  // The read-only switch / SSH tunnel have no DSN to offer, so they travel as an
+  // `options` command and are answered with an `options` patch the card can
+  // mirror immediately.
+  const { byPath, calls } = harness({
+    handleOp: async (op) => {
+      calls.ops.push(op)
+      return [{ op: 'options', path: 'D:/work/app', env: 'default', ro: true, ssh: null }]
+    },
+  })
+  const command = { op: 'options', workspace: 'D:/work/app', env: 'default', readOnly: true }
+  const response = await byPath.get(BRIDGE_ROUTES.op).fetch(new Request(url(BRIDGE_ROUTES.op), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: command }),
+  }))
+  assert.equal(response.status, 200)
+  assert.deepEqual(calls.ops, [command])
+  const payload = await body(response)
+  assert.deepEqual(payload.patches, [{ op: 'options', path: 'D:/work/app', env: 'default', ro: true, ssh: null }])
+})
+
+test('POST /op keeps answering patches: [] for an unknown command', async () => {
+  const { byPath } = harness({ handleOp: async () => [] })
+  const response = await byPath.get(BRIDGE_ROUTES.op).fetch(new Request(url(BRIDGE_ROUTES.op), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ op: { op: 'nope' } }),
+  }))
+  assert.equal(response.status, 200)
+  assert.deepEqual((await body(response)).patches, [])
 })
 
 test('POST /op carries the decoded command and returns its patches', async () => {

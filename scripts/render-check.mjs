@@ -262,21 +262,32 @@ function mount(snapshot, opts = {}) {
       },
       register(def, comp) {
         registrations[def.name] = { def, comp }
-        return () => {}
+        // A real slot registry REMOVES the entry when its disposer runs — the
+        // sidebar entry's whole point is that it disappears. Model that, or the
+        // "disable hides the entry" check could never fail.
+        return () => {
+          const current = registrations[def.name]
+          if (current && current.comp === comp) delete registrations[def.name]
+        }
       },
     },
   }
   if (opts.transport === 'http') {
     // The bundle reads the page-global `fetch`; the fake answers every bridge
-    // route with the same view the legacy snapshot carries.
+    // route with the same view the legacy snapshot carries — but the view is
+    // MUTABLE, because an `enabled` write must be observable on the next read
+    // (that is exactly what re-syncs the sidebar entry).
     const previousFetch = globalThis.fetch
+    const liveView = Object.assign({}, snapshot)
     globalThis.fetch = async (input, init) => {
       const body = init && typeof init.body === 'string' ? JSON.parse(init.body) : undefined
       if (body && body.op !== undefined) opCalls.push(body.op)
-      else if (body && typeof body.enabled === 'boolean') setCalls.push(['enabled', body.enabled])
-      else if (body) setCalls.push(['options', body])
+      else if (body && typeof body.enabled === 'boolean') {
+        setCalls.push(['enabled', body.enabled])
+        liveView.enabled = body.enabled
+      } else if (body) setCalls.push(['options', body])
       else getCalls.push(String(input))
-      return { ok: true, status: 200, json: async () => ({ ok: true, value: snapshot }) }
+      return { ok: true, status: 200, json: async () => ({ ok: true, value: liveView }) }
     }
     restores.push(() => { globalThis.fetch = previousFetch })
   }
@@ -333,8 +344,14 @@ const classed = (node, cls) => elements(node, (el) => String(el.props.className 
 
 /** Click the button whose aria-label is exactly `label` (icons carry no text). */
 function clickLabel(node, label) {
-  const hit = elements(node, (el) => el.props['aria-label'] === label && typeof el.props.onClick === 'function')[0]
-  if (!hit) throw new Error(`no clickable element labelled ${JSON.stringify(label)}`)
+  clickLabelAt(node, label, 0)
+}
+
+/** Click the nth button whose aria-label is exactly `label`. */
+function clickLabelAt(node, label, index) {
+  const hits = elements(node, (el) => el.props['aria-label'] === label && typeof el.props.onClick === 'function')
+  const hit = hits[index]
+  if (!hit) throw new Error(`no clickable element labelled ${JSON.stringify(label)} at index ${index} (found ${hits.length})`)
   hit.props.onClick({ stopPropagation() {}, preventDefault() {} })
 }
 
@@ -374,6 +391,19 @@ function clickClass(node, cls) {
   hit.props.onClick({ stopPropagation() {}, preventDefault() {} })
 }
 
+/** The nth checkbox/radio (class `dbh-checkbox`) inside the first `.cls` scope. */
+function checkBoxWithin(node, cls, index, checked) {
+  const scope = classed(node, cls)[0]
+  if (!scope) throw new Error(`no .${cls} in the tree`)
+  const boxes = elements(scope, (el) => el.type === 'input'
+    && String(el.props.className || '').split(/\s+/).includes('dbh-checkbox')
+    && typeof el.props.onChange === 'function')
+  const box = boxes[index]
+  if (!box) throw new Error(`no checkbox ${index} inside .${cls} (found ${boxes.length})`)
+  box.props.onChange({ target: { checked } })
+  return box
+}
+
 // ── scenario data ─────────────────────────────────────────────────────────
 
 const row = (title, path, env, conn, extra = {}) => Object.assign({
@@ -383,7 +413,10 @@ const row = (title, path, env, conn, extra = {}) => Object.assign({
 
 const snapshotOf = (rows, extra = {}) => Object.assign({
   enabled: true, phase: 'running', toolCount: 4, lastError: '', mode: 'oneshot',
-  updateIntervalDays: 7, showSidebarEntry: true, testResult: '',
+  updateIntervalDays: 7, testResult: '',
+  // Upstream capability probe (JSON string). '' = "not probed yet", which the
+  // page treats as "assume supported".
+  capabilities: '',
   workspaces: JSON.stringify(rows),
 }, extra)
 
@@ -560,7 +593,23 @@ console.log('\n[8] interaction: add panel (global + per group), settings strip, 
   click(p.tree, '设置')
   p.tree = p.renderAgain()
   check('settings strip opens', count(p.tree, 'dbh-strip') === 1)
-  check('strip carries the sidebar switch', toHtml(p.tree).includes('在侧边栏显示入口'))
+  // The sidebar switch is a USER preference again (dev.3 correction): hiding the
+  // shortcut is not the same as disabling the plugin, so the strip offers it
+  // next to the interval.
+  check('strip carries the sidebar switch again', toHtml(p.tree).includes('在侧边栏显示入口'))
+  check('strip keeps the interval field', classed(p.tree, 'dbh-num').length === 1)
+  check('strip explains that hiding the entry is not disabling the plugin',
+    count(p.tree, 'dbh-hint') >= 1 && toHtml(classed(p.tree, 'dbh-strip')[0]).includes('侧边栏'))
+  // Toggling it applies immediately (no Save round-trip) and the summary follows.
+  const beforeWrites = p.setCalls.length
+  checkBoxWithin(p.tree, 'dbh-strip', 0, false)
+  p.tree = p.renderAgain()
+  // saveConfig queues its writes, so let the microtasks drain before asserting.
+  await new Promise((r) => setTimeout(r, 0))
+  const writes = p.setCalls.slice(beforeWrites)
+  check('sidebar switch writes showSidebarEntry immediately',
+    writes.some(([k, v]) => k === 'showSidebarEntry' && v === false), JSON.stringify(writes))
+  check('the settings summary reflects the switch', toHtml(p.tree).includes('侧边栏入口：隐藏'))
 }
 
 console.log('\n[9] summary view (Plugins page one-liner)')
@@ -802,7 +851,7 @@ console.log('\n[18] HTTP bridge transport (the dsh 0.2.x path)')
   check('the empty pre-fetch paint does not survive', html.includes('docs') || count(p.tree, 'dbh-envname') === 3)
   await p.props.setEnabled(false)
   check('the toggle POSTs to the bridge', p.setCalls.some(([k, v]) => k === 'enabled' && v === false), JSON.stringify(p.setCalls))
-  await p.props.saveConfig({ updateIntervalDays: 3, showSidebarEntry: false })
+  await p.props.saveConfig({ updateIntervalDays: 3 })
   check('option writes POST to the bridge', p.setCalls.some(([k, v]) => k === 'options' && v.updateIntervalDays === 3), JSON.stringify(p.setCalls))
   await p.props.configOp({ op: 'remove', workspace: 'D:/work/app', env: 'default' })
   check('connection commands POST to the bridge', p.opCalls.some((o) => o.op === 'remove'), JSON.stringify(p.opCalls))
@@ -838,6 +887,196 @@ console.log('\n[18] HTTP bridge transport (the dsh 0.2.x path)')
   q.dispose()
   r.dispose()
 }
+
+console.log('\n[19] disabling the plugin hides the sidebar entry (the settings page stays)')
+{
+  // F0: entry visible ⇔ plugin enabled. The settings section and the Plugins row
+  // are NOT part of that equation — otherwise disabling would lock the user out
+  // of the very switch that re-enables it.
+  const p = page(TILED, { transport: 'http', props: { useWorkspaces: wsSnap('D:/work/app') } })
+  await new Promise((r) => setTimeout(r, 0))
+  p.tree = p.renderAgain()
+  check('sidebar entry registered while enabled', !!p.registrations['sidebar.panellist'])
+  check('settings section registered while enabled', !!p.registrations['settings.section'])
+  await p.props.setEnabled(false)
+  p.tree = p.renderAgain()
+  check('disabling disposes the sidebar entry', !p.registrations['sidebar.panellist'])
+  check('the settings page survives the disable', !!p.registrations['settings.section'])
+  check('the Plugins row survives the disable', !!p.registrations['plugins.row.config'])
+  check('the page still offers the enable button', toHtml(p.tree).includes('启用'))
+  await p.props.setEnabled(true)
+  p.tree = p.renderAgain()
+  check('re-enabling brings the entry back', !!p.registrations['sidebar.panellist'])
+  // The disabled hint is what tells the user where the entry went. The strip's
+  // open state is page-session state shared with earlier groups, so only open it
+  // when it is actually closed.
+  await p.props.setEnabled(false)
+  p.tree = p.renderAgain()
+  if (count(p.tree, 'dbh-strip') === 0) {
+    click(p.tree, '设置')
+    p.tree = p.renderAgain()
+  }
+  check('the settings strip explains the hidden entry', toHtml(p.tree).includes('侧边栏入口已隐藏'), toHtml(p.tree).slice(0, 400))
+  p.dispose()
+}
+
+console.log('\n[20] read-only switch → op payload → inline row marker')
+{
+  const rows = [
+    row('ro-app', 'D:/work/ro', 'default', 'mysql://127.0.0.1:3306/app'),
+    row('ro-app', 'D:/work/ro', 'prod', 'mysql://127.0.0.1:3307/app', { ro: true }),
+  ]
+  const p = page(rows, {})
+  check('the lone workspace is open', count(p.tree, 'dbh-envrow') === 2)
+  check('only the read-only row carries the marker', count(p.tree, 'dbh-ro') === 1, `got ${count(p.tree, 'dbh-ro')}`)
+  const chips = classed(p.tree, 'dbh-envname')
+  check('the marker sits inside the environment chip', toHtml(chips[1]).includes('只读'))
+  check('the chip tooltip explains read-only', String(chips[1].props.title || '').includes('只读模式'))
+  check('the writable row has no marker', !toHtml(chips[0]).includes('只读'))
+  // the add form carries the switch, and it rides the pre-test payload
+  click(p.tree, '＋ 添加连接')
+  p.tree = p.renderAgain()
+  check('add panel offers the read-only switch', toHtml(p.tree).includes('只读模式'))
+  check('the add panel still has exactly 3 fields (no new .dbh-field)', classed(p.tree, 'dbh-field').length === 3)
+  const addInputs = classed(classed(p.tree, 'dbh-addpanel')[0], 'dbh-input')
+  check('the read-only box is not a .dbh-input', addInputs.length === 3, `got ${addInputs.length}`)
+  checkBoxWithin(p.tree, 'dbh-addpanel', 0, true)
+  p.tree = p.renderAgain()
+  typeWithin(p.tree, 'dbh-addpanel', 1, 'staging')
+  p.tree = p.renderAgain()
+  typeWithin(p.tree, 'dbh-addpanel', 2, 'mysql://127.0.0.1:3401/app')
+  p.tree = p.renderAgain()
+  clickWithin(p.tree, 'dbh-addpanel', '添加连接')
+  p.tree = p.renderAgain()
+  check('the pre-test payload carries readOnly: true',
+    p.opCalls.some((o) => o.op === 'test' && o.readOnly === true && o.env === 'staging'),
+    JSON.stringify(p.opCalls))
+  // Turning it back OFF on the read-only row goes through the options op (no DSN
+  // needed). The prod row is the second one in the group.
+  const q = page(rows, {})
+  clickLabelAt(q.tree, '修改', 1)
+  q.tree = q.renderAgain()
+  check('the editor pre-loads the row read-only state',
+    elements(q.tree, (el) => el.type === 'input' && el.props.checked === true && String(el.props.className || '').includes('dbh-checkbox')).length >= 1)
+  checkBoxWithin(q.tree, 'dbh-editrow', 0, false)
+  q.tree = q.renderAgain()
+  clickWithin(q.tree, 'dbh-editrow', '保存')
+  q.tree = q.renderAgain()
+  check('flipping read-only off sends an options op (no DSN)',
+    q.opCalls.some((o) => o.op === 'options' && o.env === 'prod' && o.readOnly === false && o.newEnv === undefined),
+    JSON.stringify(q.opCalls))
+}
+
+console.log('\n[21] advanced SSH tunnel: expand → fill → payload, secrets never rendered')
+{
+  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  click(p.tree, '＋ 添加连接')
+  p.tree = p.renderAgain()
+  check('advanced section is folded', count(p.tree, 'dbh-advbody') === 0)
+  clickWithin(p.tree, 'dbh-addpanel', '高级：SSH 隧道')
+  p.tree = p.renderAgain()
+  check('advanced section expands', count(p.tree, 'dbh-advbody') === 1)
+  check('fields stay hidden until the tunnel is enabled', classed(p.tree, 'dbh-advrow').length === 0,
+    `got ${classed(p.tree, 'dbh-advrow').length}`)
+  // checkbox 0 = read-only, checkbox 1 = "connect through a tunnel"
+  checkBoxWithin(p.tree, 'dbh-addpanel', 1, true)
+  p.tree = p.renderAgain()
+  const rows = classed(p.tree, 'dbh-advrow')
+  check('host/port/user/auth/key/passphrase/proxy fields appear', rows.length >= 7, `got ${rows.length}`)
+  check('the host hint warns about aliases and the slow handshake',
+    toHtml(classed(p.tree, 'dbh-advbody')[0]).includes('域名或 IP'))
+  typeWithin(p.tree, 'dbh-advbody', 0, 'bastion.example.com')
+  p.tree = p.renderAgain()
+  typeWithin(p.tree, 'dbh-advbody', 1, '2222')
+  p.tree = p.renderAgain()
+  typeWithin(p.tree, 'dbh-advbody', 2, 'ops')
+  p.tree = p.renderAgain()
+  typeWithin(p.tree, 'dbh-advbody', 3, '~/.ssh/id_ed25519')
+  p.tree = p.renderAgain()
+  // A free environment name: writing over an existing one would raise the
+  // overwrite gate before the pre-test runs.
+  typeWithin(p.tree, 'dbh-addpanel', 1, 'sshbox')
+  p.tree = p.renderAgain()
+  typeWithin(p.tree, 'dbh-addpanel', 2, 'mysql://127.0.0.1:3402/app')
+  p.tree = p.renderAgain()
+  clickWithin(p.tree, 'dbh-addpanel', '添加连接')
+  p.tree = p.renderAgain()
+  const sent = p.opCalls.find((o) => o.op === 'test' && o.ssh)
+  check('the pre-test payload carries the ssh block', !!sent, JSON.stringify(p.opCalls))
+  check('ssh host/port/user/auth travel as non-secret fields',
+    !!sent && sent.ssh.host === 'bastion.example.com' && sent.ssh.port === '2222' && sent.ssh.user === 'ops' && sent.ssh.auth === 'key',
+    JSON.stringify(sent && sent.ssh))
+  check('the key path is sent, the blank passphrase is NOT (blank = keep)',
+    !!sent && sent.ssh.keyPath === '~/.ssh/id_ed25519' && sent.ssh.passphrase === undefined,
+    JSON.stringify(sent && sent.ssh))
+  check('no secret reaches the rendered page', !toHtml(p.tree).includes('CHANGE_ME'))
+  // The tunnel state is metadata on the row: it rides the chip tooltip.
+  const rowsWithSsh = [
+    row('ssh-app', 'D:/work/ssh', 'default', 'mysql://127.0.0.1:3306/app', {
+      ssh: { host: 'bastion.example.com', port: 22, user: 'ops', authKind: 'key', hasPassword: false, hasPassphrase: false, keyReady: true, proxyJump: '' },
+    }),
+  ]
+  const q = page(rowsWithSsh, {})
+  const chip = classed(q.tree, 'dbh-envname')[0]
+  check('a tunnelled row says so in its chip tooltip', String(chip.props.title || '').includes('SSH 隧道 bastion.example.com:22'))
+  check('no secret is rendered for that row', !toHtml(q.tree).includes('id_ed25519'))
+}
+
+console.log('\n[23] the SSH-layer-only test is a separate button with its own payload')
+{
+  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  click(p.tree, '＋ 添加连接')
+  p.tree = p.renderAgain()
+  // `uiMemory.advOpen` is module-level (it survives remounts on purpose), so an
+  // earlier group may already have left the section open — never blind-toggle.
+  if (count(p.tree, 'dbh-advbody') === 0) {
+    clickWithin(p.tree, 'dbh-addpanel', '高级：SSH 隧道')
+    p.tree = p.renderAgain()
+  }
+  check('the advanced section is open for the SSH test', count(p.tree, 'dbh-advbody') === 1)
+  checkBoxWithin(p.tree, 'dbh-addpanel', 1, true)
+  p.tree = p.renderAgain()
+  check('the dedicated SSH test button is offered next to the connection test',
+    toHtml(classed(p.tree, 'dbh-advbody')[0]).includes('测试 SSH 隧道'))
+  // An empty block is still dispatched: the HOST answers with the named missing
+  // fields (one source of truth for that message), and it never spawns dbhub.
+  const before = p.opCalls.length
+  clickWithin(p.tree, 'dbh-advbody', '测试 SSH 隧道')
+  p.tree = p.renderAgain()
+  const sent = p.opCalls.slice(before).filter((o) => o.op === 'test' && o.kind === 'ssh').pop()
+  check('the SSH test dispatches {op:test, kind:ssh} with the tunnel block',
+    !!sent && sent.ssh && sent.ssh.auth === 'key', JSON.stringify(sent))
+  check('the SSH test carries its own nonce', !!sent && typeof sent.nonce === 'string' && sent.nonce.includes('sshtest'))
+  check('the SSH test is NOT the connection test (no dsn in its payload)',
+    !!sent && sent.dsn === undefined, JSON.stringify(sent))
+  check('the pending SSH test shows its elapsed time', toHtml(p.tree).includes('测试中…'), toHtml(p.tree).slice(0, 300))
+  // A second click while the probe is in flight must NOT dispatch again (the
+  // button is disabled and the guard in startSshTest is the real backstop).
+  const inFlight = p.opCalls.length
+  clickWithin(p.tree, 'dbh-advbody', '测试 SSH 隧道')
+  check('a second click during the probe is ignored', p.opCalls.length === inFlight, JSON.stringify(p.opCalls.slice(inFlight)))
+  // Disposal clears the pending watchdog timer (a surviving 60s timeout would
+  // keep this gate alive after the last check).
+  p.dispose()
+}
+
+console.log('\n[22] a running probe shows its elapsed time and cleans the ticker up')
+{
+  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  clickLabel(p.tree, '测试')
+  p.tree = p.renderAgain()
+  check('the testing state is shown', toHtml(p.tree).includes('测试中… 0s'), toHtml(p.tree).slice(0, 200))
+  const sent = p.opCalls.filter((o) => o.op === 'test' && o.nonce)
+  check('exactly one probe was dispatched', sent.length === 1, JSON.stringify(p.opCalls))
+  await new Promise((r) => setTimeout(r, 1100))
+  p.tree = p.renderAgain()
+  check('the elapsed seconds advance', /测试中… [1-9]\ds?/.test(toHtml(p.tree)) || toHtml(p.tree).includes('测试中… 1s'), toHtml(p.tree).slice(0, 300))
+  // Disposal must clear the 1s ticker: this gate hangs (and CI times out) if a
+  // per-row interval survives the unmount.
+  p.dispose()
+}
+
+if (liveMount) liveMount.dispose()
 
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`)
 process.exitCode = failures === 0 ? 0 : 1

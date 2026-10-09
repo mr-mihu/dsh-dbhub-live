@@ -1,5 +1,5 @@
 // Unit tests for the configurable options (lib/options.mjs): env seeding for
-// the internal package knob, the two UI-exposed fields, the persisted user
+// the internal package knob, the one UI-exposed field, the persisted user
 // layer, validated patches, and change notifications.
 //
 // The module derives both the storage directory and the persisted prefs layer
@@ -8,7 +8,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -26,10 +26,12 @@ test('options seed from process environment; package stays internal-only', () =>
   assert.equal(options.get('updateIntervalDays'), 3)
 })
 
-test('snapshot exposes only the UI fields', () => {
+test('snapshot exposes both UI fields (the sidebar switch is a user preference)', () => {
   const snap = options.snapshot()
   assert.deepEqual(Object.keys(snap).sort(), ['showSidebarEntry', 'updateIntervalDays'])
-  assert.equal(snap.showSidebarEntry, true) // sidebar shortcut on by default
+  // The switch hides the SHORTCUT; it does not disable the plugin. The client
+  // ANDs it with the enabled state.
+  assert.equal(snap.showSidebarEntry, true)
   snap.updateIntervalDays = 99
   assert.equal(options.get('updateIntervalDays'), 3)
 })
@@ -61,8 +63,9 @@ test('a user write claims the field and persists it for the next boot', async ()
   // prefs.json is the whole UI layer, so it carries both fields.
   assert.deepEqual(JSON.parse(readFileSync(PREFS_PATH, 'utf8')), { updateIntervalDays: 5, showSidebarEntry: false })
   // A boot-time layer must never claim a field, so persisting stays opt-in.
-  assert.equal(options.applyPatch({ showSidebarEntry: true }), true)
+  assert.equal(options.applyPatch({ updateIntervalDays: 6 }), true)
   assert.deepEqual(JSON.parse(readFileSync(PREFS_PATH, 'utf8')), { updateIntervalDays: 5, showSidebarEntry: false })
+  assert.equal(options.applyPatch({ updateIntervalDays: 5 }), true)
 
   // A fresh module instance models a restart: prefs outranks the env seed.
   const restarted = await import('../lib/options.mjs?options3=' + Date.now())
@@ -71,8 +74,24 @@ test('a user write claims the field and persists it for the next boot', async ()
   assert.equal(restarted.get('dbhubPackage'), 'test/fork-package')
 })
 
+test('the sidebar preference survives a restart and is dropped only when non-boolean', async () => {
+  // The user's "hide the shortcut" choice is a real preference again (it was
+  // briefly removed in dev.1/dev.2 and is back in dev.3): a stored `false` must
+  // read back as `false`, not fall back to the default.
+  writeFileSync(PREFS_PATH, JSON.stringify({ updateIntervalDays: 5, showSidebarEntry: false }))
+  const fresh = await import('../lib/options.mjs?options8=' + Date.now())
+  assert.equal(fresh.get('updateIntervalDays'), 5)
+  assert.equal(fresh.get('showSidebarEntry'), false)
+  // A non-boolean is dropped (and the file self-heals) instead of being coerced.
+  writeFileSync(PREFS_PATH, JSON.stringify({ updateIntervalDays: 5, showSidebarEntry: 'nope' }))
+  const cleaned = await import('../lib/options.mjs?options8b=' + Date.now())
+  assert.equal(cleaned.get('showSidebarEntry'), true, 'built-in default')
+  assert.deepEqual(JSON.parse(readFileSync(PREFS_PATH, 'utf8')), { updateIntervalDays: 5 })
+})
+
 test('the legacy settings document only fills fields prefs does not own', async () => {
-  const { writeFileSync } = await import('node:fs')
+  // prefs owns the interval; the sidebar switch is NOT in prefs here, so the
+  // older document may still claim it (that is what "unclaimed" means).
   writeFileSync(PREFS_PATH, JSON.stringify({ updateIntervalDays: 5 }))
   const fresh = await import('../lib/options.mjs?options4=' + Date.now())
   assert.equal(fresh.initFromLayers({ legacyUser: { updateIntervalDays: 9, showSidebarEntry: false } }), true)
@@ -82,10 +101,15 @@ test('the legacy settings document only fills fields prefs does not own', async 
   assert.equal(fresh.initFromLayers({ legacyUser: ['nope'] }), false)
   assert.equal(fresh.initFromLayers({}), false)
   assert.equal(fresh.initFromLayers(null), false)
+  // A legacy layer cannot claim a field prefs DOES own.
+  writeFileSync(PREFS_PATH, JSON.stringify({ updateIntervalDays: 5, showSidebarEntry: true }))
+  const owned = await import('../lib/options.mjs?options4b=' + Date.now())
+  assert.equal(owned.initFromLayers({ legacyUser: { updateIntervalDays: 9, showSidebarEntry: false } }), false)
+  assert.equal(owned.get('updateIntervalDays'), 5)
+  assert.equal(owned.get('showSidebarEntry'), true)
 })
 
 test('a corrupt prefs file cannot seed an invalid option', async () => {
-  const { writeFileSync } = await import('node:fs')
   writeFileSync(PREFS_PATH, JSON.stringify({ updateIntervalDays: -4, showSidebarEntry: 'yes', junk: 1 }))
   const fresh = await import('../lib/options.mjs?options5=' + Date.now())
   assert.equal(fresh.get('updateIntervalDays'), 3) // falls back to the env seed
@@ -115,9 +139,9 @@ test('configValuesOf reads the declared Config in both runtime shapes', async ()
 
 test('an adopted Config value claims the field and outlives the config edit', async () => {
   const fresh = await import('../lib/options.mjs?options7=' + Date.now())
-  const patch = fresh.configValuesOf({ updateIntervalDays: { get: () => 11 } })
+  const patch = fresh.configValuesOf({ updateIntervalDays: { get: () => 11 }, showSidebarEntry: { get: () => false } })
   assert.equal(fresh.applyPatch(patch, { persist: true }), true)
-  assert.deepEqual(JSON.parse(readFileSync(PREFS_PATH, 'utf8')), { updateIntervalDays: 11, showSidebarEntry: true })
+  assert.deepEqual(JSON.parse(readFileSync(PREFS_PATH, 'utf8')), { updateIntervalDays: 11, showSidebarEntry: false })
   // Adopting the same value again is a no-op (no write, no republish loop).
-  assert.equal(fresh.applyPatch(fresh.configValuesOf({ updateIntervalDays: { get: () => 11 } }), { persist: true }), false)
+  assert.equal(fresh.applyPatch(fresh.configValuesOf({ updateIntervalDays: { get: () => 11 }, showSidebarEntry: { get: () => false } }), { persist: true }), false)
 })

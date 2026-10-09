@@ -106,6 +106,23 @@ test('scrubSecrets removes the DSN password and generic password= tokens', () =>
   assert.ok(cfg.scrubSecrets('SELECT 1 OK', dsn).includes('SELECT 1 OK'))
 })
 
+test('scrubSecrets collapses the whole userinfo of a URL-shaped connection string', () => {
+  const dsn = 'mysql://root:secret.pw@198.51.100.1:3306/mydb'
+  // dbhub's own startup banner masks only the password, so the USERNAME used to
+  // survive into the model-facing diagnostics. Both must go now.
+  const banner = 'Configuration source: dbhub-1.toml\n- default: mysql://root:****@198.51.100.1:3306/mydb'
+  const out = cfg.scrubSecrets(banner, dsn)
+  assert.ok(!out.includes('root'), 'the username must not survive: ' + out)
+  assert.ok(out.includes('mysql://****:****@198.51.100.1:3306/mydb'), out)
+  // A userinfo without a password is collapsed the same way.
+  assert.ok(!cfg.scrubSecrets('connect mysql://ops@198.51.100.2:3306/app', dsn).includes('ops'))
+  // A metadata label carries no userinfo at all and must stay byte-identical.
+  assert.equal(cfg.scrubSecrets('mysql://198.51.100.1:3306/mydb', dsn), 'mysql://198.51.100.1:3306/mydb')
+  // SSH secrets riding the child environment are replaced like the DSN password.
+  const sshOut = cfg.scrubSecrets('ssh_password=CHANGE_ME', dsn, ['CHANGE_ME'])
+  assert.ok(!sshOut.includes('CHANGE_ME'), sshOut)
+})
+
 test('dsnUser extracts the username host-side only (never surfaced)', () => {
   assert.equal(cfg.dsnUser('mysql://root:secret@h/d'), 'root')
   assert.equal(cfg.dsnUser('postgres://alice@h/db'), 'alice')

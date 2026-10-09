@@ -186,7 +186,7 @@ export const SLOTS = [
   {
     id: 'connection-code',
     description: '连接构造与解析代码：不得有硬编码 host/user/password 默认值',
-    globs: ['lib/config.mjs', 'lib/adhoc.mjs', 'lib/options.mjs', 'lib/runtime.mjs'],
+    globs: ['lib/config.mjs', 'lib/adhoc.mjs', 'lib/options.mjs', 'lib/runtime.mjs', 'lib/toml.mjs', 'lib/capability.mjs'],
     rules: ['password', 'dsn', 'host', 'name'],
   },
   {
@@ -232,6 +232,16 @@ export const DENYLIST_VAR = 'DSH_DBHUB_DESENSITIZE_RE'
 
 /** Paths the walk never enters and files it never reads. */
 export const SKIP_DIRS = ['.git', 'node_modules', '.dsh-test', 'dist', 'coverage']
-export const SKIP_FILES = ['.env', '.env.local']
+// The two local-dev documents are never committed and never published (see
+// package.json → files), so the gate has no reason to scan them: they legitimately
+// carry plan-era placeholders (`REAL_PASSWORD`, `host:port`) that are not shipped
+// anywhere. The published REQUIREMENTS.md stays in scope. NOTE: this list is
+// matched against the BASENAME (see the walker), so entries are file names.
+export const SKIP_FILES = [
+  '.env',
+  '.env.local',
+  'PLAN-5.1-readonly-and-ssh-tunnel.md',
+  'implementation-notes.md',
+]
 export const SKIP_EXT_RE = /\.(tgz|png|jpe?g|gif|webp|ico|zip|gz|exe|dll|node|woff2?|pdf)$/i
 export const MAX_FILE_BYTES = 2 * 1024 * 1024

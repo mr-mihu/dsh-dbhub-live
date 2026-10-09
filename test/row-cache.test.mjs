@@ -122,13 +122,112 @@ test('a patched row still summarizes to metadata only (no DSN, no credentials)',
   })
   const summaries = mcp.summarizeRows(rows)
   assert.equal(summaries.length, 1)
-  assert.deepEqual(Object.keys(summaries[0]).sort(), ['conn', 'env', 'path', 'persisted', 'source', 'srcId', 'title'])
+  assert.deepEqual(
+    Object.keys(summaries[0]).sort(),
+    ['conn', 'env', 'path', 'persisted', 'ro', 'source', 'ssh', 'srcId', 'title'].sort(),
+  )
   const text = JSON.stringify(summaries)
   assert.equal(text.includes('CHANGE_ME'), false)
   assert.equal(text.includes('mysql://user'), false, 'no credentialed URL shape survives')
   assert.equal(text.includes('"dsn"'), false)
   assert.equal(summaries[0].conn, 'mysql://127.0.0.1:3307/app')
   assert.equal(summaries[0].source, 'persisted(user)', 'provenance stays, credentials do not')
+  assert.equal(summaries[0].ro, false)
+  assert.equal(summaries[0].ssh, null)
+})
+
+test('applyRowPatch carries the read-only flag and the secret-free tunnel metadata', () => {
+  const rows = mcp.applyRowPatch([], {
+    op: 'add', path: 'D:/work/app', title: 'app', env: 'prod',
+    dsn: 'mysql://127.0.0.1:3307/app', ro: true,
+    ssh: { host: 'bastion.example.com', port: 22, user: 'ops', auth: 'password', password: 'CHANGE_ME' },
+  })
+  const s = mcp.summarizeRows(rows)[0]
+  assert.equal(rows[0].ro, true)
+  assert.equal(s.ro, true)
+  assert.equal(s.ssh.authKind, 'password')
+  assert.equal(s.ssh.hasPassword, true)
+  assert.equal(JSON.stringify(s).includes('CHANGE_ME'), false, 'the tunnel secret never reaches the mirror')
+  assert.equal(JSON.stringify(s).includes('bastion.example.com'), true, 'the host is metadata, not a secret')
+})
+
+test('the options patch flips a row in place and is idempotent', () => {
+  const rows = mcp.applyRowPatch(base(), {
+    op: 'options', path: 'D:/work/app', env: 'prod', ro: true, ssh: null,
+  })
+  assert.equal(rows.length, 3, 'no row is added or removed')
+  const prod = rows.find((r) => r.wsPath === 'D:/work/app' && r.env === 'prod')
+  assert.equal(prod.ro, true)
+  assert.equal(prod.dsn, 'mysql://127.0.0.1:3307/app', 'the connection is untouched')
+  const twice = mcp.applyRowPatch(rows, { op: 'options', path: 'D:/work/app', env: 'prod', ro: true, ssh: null })
+  assert.deepEqual(twice, rows)
+  // A patch for a row that is not there changes nothing (no phantom row).
+  assert.deepEqual(mcp.applyRowPatch(rows, { op: 'options', path: 'D:/work/none', env: 'prod', ro: true }), rows)
+})
+
+test('cachedRows/cachedRow expose the host-side rows the card is showing', async () => {
+  // Earlier tests in this file already walked once, so the cache is warm; what
+  // matters is that the accessors track the cache AND the patch layer.
+  assert.ok(Array.isArray(mcp.cachedRows()))
+  const mirror = mcp.createRowMirror()
+  mirror.patch({ op: 'add', path: 'D:/work/app', title: 'app', env: 'default', dsn: 'mysql://127.0.0.1:3306/app' })
+  const hit = mcp.cachedRow('D:/work/app', 'default')
+  assert.ok(hit, 'a patched row is visible through cachedRow')
+  assert.equal(hit.dsn, 'mysql://127.0.0.1:3306/app')
+  assert.equal(mcp.cachedRows().filter((r) => r.env === 'default').length, 1)
+  // A missing row is undefined, never a throw.
+  assert.equal(mcp.cachedRow('D:/work/none', 'prod'), undefined)
+})
+
+test('concurrent collectSources calls share ONE walk', async () => {
+  // A walk spawns `mise env` per workspace without a persisted default; the card
+  // publish, a model list and a connection test can all land in the same second.
+  const { resetAutoDsnCache } = await import('../lib/config.mjs')
+  resetAutoDsnCache()
+  let spawns = 0
+  const subprocess = {
+    resolveExecutable: async () => '/fake/mise',
+    spawn: () => {
+      spawns += 1
+      return {
+        stdout: { on: () => {} },
+        done: Promise.resolve({ exitCode: 1 }),
+        terminate: () => {},
+      }
+    },
+  }
+  const ctx = {
+    get: (name) => (name === 'fs' ? { resolve: async () => { throw new Error('no .env') } } : undefined),
+  }
+  const [a, b] = await Promise.all([
+    mcp.collectSources(ctx, subprocess),
+    mcp.collectSources(ctx, subprocess),
+  ])
+  assert.equal(a, b, 'both callers receive the same walk result')
+  assert.equal(spawns, 1, 'the in-flight walk was shared, not duplicated')
+  // A deliberate rescan bypasses the in-flight handle — and, once the short
+  // auto-discovery cache is cleared, really spawns again.
+  resetAutoDsnCache()
+  await mcp.collectSources(ctx, subprocess, { force: true })
+  assert.equal(spawns, 2)
+})
+
+test('resolveTestDsn prefers the store, then the cached row, then asks for a walk', () => {
+  const storeRow = { wsPath: 'D:/work/app', env: 'default', dsn: 'mysql://127.0.0.1:3306/store', ro: true, ssh: null }
+  const cacheRow = { wsPath: 'D:/work/app', env: 'default', dsn: 'mysql://127.0.0.1:3306/store', ro: false, ssh: null }
+  const fromStore = mcp.resolveTestDsn({ wsPath: 'D:/work/app', env: 'default', storeRows: [storeRow], cachedRows: [cacheRow], hasCache: true })
+  assert.equal(fromStore.from, 'store')
+  assert.equal(fromStore.dsn, storeRow.dsn)
+  assert.equal(fromStore.ro, true, 'the authoritative row wins, options included')
+  const fromCache = mcp.resolveTestDsn({ wsPath: 'D:/work/app', env: 'default', storeRows: [], cachedRows: [cacheRow], hasCache: true })
+  assert.equal(fromCache.from, 'cache')
+  assert.equal(fromCache.dsn, storeRow.dsn, 'all three tiers describe the same target')
+  // Auto-discovered and never walked: the caller MUST walk (a cold cache cannot
+  // prove a connection does not exist).
+  assert.equal(mcp.resolveTestDsn({ wsPath: 'D:/work/app', env: 'default', storeRows: [], cachedRows: [], hasCache: false }), null)
+  // Environment names are normalized before matching (mirrors the Host).
+  const spaced = mcp.resolveTestDsn({ wsPath: 'D:/work/app', env: ' ' , storeRows: [storeRow], cachedRows: [], hasCache: false })
+  assert.equal(spaced.from, 'store')
 })
 
 test('applyRowPatch tolerates junk input', () => {
