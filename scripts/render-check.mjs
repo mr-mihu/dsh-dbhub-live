@@ -593,11 +593,23 @@ console.log('\n[8] interaction: add panel (global + per group), settings strip, 
   click(p.tree, '设置')
   p.tree = p.renderAgain()
   check('settings strip opens', count(p.tree, 'dbh-strip') === 1)
-  // F0: the sidebar switch is GONE — the entry follows the plugin's enabled
-  // state, and the strip says so instead of offering a second switch.
-  check('strip no longer carries a sidebar switch', !toHtml(p.tree).includes('在侧边栏显示入口'))
+  // The sidebar switch is a USER preference again (dev.3 correction): hiding the
+  // shortcut is not the same as disabling the plugin, so the strip offers it
+  // next to the interval.
+  check('strip carries the sidebar switch again', toHtml(p.tree).includes('在侧边栏显示入口'))
   check('strip keeps the interval field', classed(p.tree, 'dbh-num').length === 1)
-  check('strip explains that the entry follows the enabled state', count(p.tree, 'dbh-hint') >= 1 && toHtml(classed(p.tree, 'dbh-strip')[0]).includes('侧边栏'))
+  check('strip explains that hiding the entry is not disabling the plugin',
+    count(p.tree, 'dbh-hint') >= 1 && toHtml(classed(p.tree, 'dbh-strip')[0]).includes('侧边栏'))
+  // Toggling it applies immediately (no Save round-trip) and the summary follows.
+  const beforeWrites = p.setCalls.length
+  checkBoxWithin(p.tree, 'dbh-strip', 0, false)
+  p.tree = p.renderAgain()
+  // saveConfig queues its writes, so let the microtasks drain before asserting.
+  await new Promise((r) => setTimeout(r, 0))
+  const writes = p.setCalls.slice(beforeWrites)
+  check('sidebar switch writes showSidebarEntry immediately',
+    writes.some(([k, v]) => k === 'showSidebarEntry' && v === false), JSON.stringify(writes))
+  check('the settings summary reflects the switch', toHtml(p.tree).includes('侧边栏入口：隐藏'))
 }
 
 console.log('\n[9] summary view (Plugins page one-liner)')
@@ -1008,6 +1020,44 @@ console.log('\n[21] advanced SSH tunnel: expand → fill → payload, secrets ne
   const chip = classed(q.tree, 'dbh-envname')[0]
   check('a tunnelled row says so in its chip tooltip', String(chip.props.title || '').includes('SSH 隧道 bastion.example.com:22'))
   check('no secret is rendered for that row', !toHtml(q.tree).includes('id_ed25519'))
+}
+
+console.log('\n[23] the SSH-layer-only test is a separate button with its own payload')
+{
+  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  click(p.tree, '＋ 添加连接')
+  p.tree = p.renderAgain()
+  // `uiMemory.advOpen` is module-level (it survives remounts on purpose), so an
+  // earlier group may already have left the section open — never blind-toggle.
+  if (count(p.tree, 'dbh-advbody') === 0) {
+    clickWithin(p.tree, 'dbh-addpanel', '高级：SSH 隧道')
+    p.tree = p.renderAgain()
+  }
+  check('the advanced section is open for the SSH test', count(p.tree, 'dbh-advbody') === 1)
+  checkBoxWithin(p.tree, 'dbh-addpanel', 1, true)
+  p.tree = p.renderAgain()
+  check('the dedicated SSH test button is offered next to the connection test',
+    toHtml(classed(p.tree, 'dbh-advbody')[0]).includes('测试 SSH 隧道'))
+  // An empty block is still dispatched: the HOST answers with the named missing
+  // fields (one source of truth for that message), and it never spawns dbhub.
+  const before = p.opCalls.length
+  clickWithin(p.tree, 'dbh-advbody', '测试 SSH 隧道')
+  p.tree = p.renderAgain()
+  const sent = p.opCalls.slice(before).filter((o) => o.op === 'test' && o.kind === 'ssh').pop()
+  check('the SSH test dispatches {op:test, kind:ssh} with the tunnel block',
+    !!sent && sent.ssh && sent.ssh.auth === 'key', JSON.stringify(sent))
+  check('the SSH test carries its own nonce', !!sent && typeof sent.nonce === 'string' && sent.nonce.includes('sshtest'))
+  check('the SSH test is NOT the connection test (no dsn in its payload)',
+    !!sent && sent.dsn === undefined, JSON.stringify(sent))
+  check('the pending SSH test shows its elapsed time', toHtml(p.tree).includes('测试中…'), toHtml(p.tree).slice(0, 300))
+  // A second click while the probe is in flight must NOT dispatch again (the
+  // button is disabled and the guard in startSshTest is the real backstop).
+  const inFlight = p.opCalls.length
+  clickWithin(p.tree, 'dbh-advbody', '测试 SSH 隧道')
+  check('a second click during the probe is ignored', p.opCalls.length === inFlight, JSON.stringify(p.opCalls.slice(inFlight)))
+  // Disposal clears the pending watchdog timer (a surviving 60s timeout would
+  // keep this gate alive after the last check).
+  p.dispose()
 }
 
 console.log('\n[22] a running probe shows its elapsed time and cleans the ticker up')

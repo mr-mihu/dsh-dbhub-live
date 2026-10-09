@@ -86,24 +86,28 @@ test('client bundle owns a Settings section (core shell, always available)', () 
   assert.match(source, /className: "dbh-wrap"/)
 })
 
-test('client bundle owns a sidebar entry driven by the plugin ENABLED state', () => {
+test('client bundle owns a sidebar entry gated by enabled AND the user switch', () => {
   assert.match(source, /slots\.inject\("sidebar\.panellist"/)
   assert.match(source, /name: "sidebar\.panellist",\s*\n\s*id: "dbhub"/)
   assert.match(source, /function PanelIcon\(props\)/)
   assert.match(source, /slots\.inject\("main"/)
   assert.match(source, /name: "main",\s*\n\s*key: "dbhub"/)
-  // F0: the entry follows `enabled` — the old standalone switch is GONE from the
-  // whole bundle (option, dictionary keys, checkbox and draft field).
-  assert.match(source, /return v\.enabled !== false;/)
+  // Two independent conditions: the user's "hide the shortcut" switch and the
+  // plugin's enabled state. Hiding the entry is NOT disabling the plugin.
+  assert.match(source, /return v\.enabled !== false && v\.showSidebarEntry !== false;/)
   assert.match(source, /var syncSidebar = function/)
   assert.match(source, /face\.subscribe\(syncSidebar\)/)
-  assert.doesNotMatch(source, /showSidebarEntry/)
-  assert.doesNotMatch(source, /toggleSidebar/)
-  // The settings section and the Plugins row never depend on the entry, so a
-  // disabled plugin can always be re-enabled from either of them.
+  // The switch itself is back on the settings strip and applies immediately.
+  assert.match(source, /"cfg\.sidebar": "在侧边栏显示入口"/)
+  assert.match(source, /"cfg\.sidebar": "Show the sidebar entry"/)
+  assert.match(source, /var toggleSidebar = function \(next\)/)
+  assert.match(source, /props\.saveConfig\(\{ showSidebarEntry: next \}\);/)
+  assert.match(source, /showSidebarEntry: draft\.showSidebarEntry !== false,/)
+  // The settings section and the Plugins row never depend on either condition, so
+  // no combination can lock the user out of the configuration.
   assert.match(source, /slots\.inject\("settings\.section"/)
   assert.match(source, /"cfg\.disabledHint":/)
-  assert.match(source, /t\("cfg\.enabledHint"\) : t\("cfg\.disabledHint"\)/)
+  assert.match(source, /t\("cfg\.enabledHint"\) : t\("cfg\.disabledHint"\)\) \+ " " \+ t\("cfg\.sidebarHint"\)/)
 })
 
 test('client bundle exposes the config editor (saveConfig + editable options)', () => {
@@ -384,7 +388,11 @@ test('client bundle offers the environment read-only switch and never echoes the
 test('client bundle configures the SSH tunnel, keeping secrets write-only', () => {
   assert.match(source, /"add\.adv": "高级：SSH 隧道"/)
   assert.match(source, /"add\.adv": "Advanced: SSH tunnel"/)
-  assert.match(source, /var advPanel = function \(form, update, keyPrefix\)/)
+  assert.match(source, /var advPanel = function \(form, update, keyPrefix, targetOf\)/)
+  // the SSH-layer-only test lives in the advanced section, with its own payload
+  assert.match(source, /"btn\.testSsh": "测试 SSH 隧道"/)
+  assert.match(source, /var startSshTest = function \(form, targetOf, key\)/)
+  assert.match(source, /op: "test", kind: "ssh",/)
   assert.match(source, /"aria-expanded": open/)
   // secrets are typed in and posted, never rendered back
   assert.match(source, /"adv\.keepSecret"/)

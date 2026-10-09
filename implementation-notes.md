@@ -94,3 +94,36 @@
 4. 验证局限：浏览器仍是离屏渲染门禁（第 19–22 组新增，覆盖"禁用隐藏入口 / 只读开关与行内标记 / 高级 SSH 载荷与秘密不回显 / 测试中计时与计时器回收"），**没有真实浏览器截图级确认**；只读与隧道的真实连通性需要人工用可达主机与真实 dbhub 1.4.0 走一遍 §10.3 V1–V9。
 5. 下一个会话先读：本文件 → `PLAN-5.1-readonly-and-ssh-tunnel.md` §1.1（四个实测陷阱）→ `lib/toml.mjs` 与 `lib/adhoc.mjs`（一次性 TOML 的完整契约）→ `lib/index.mjs` 的 `applyOptionsOp` / `handleTestOp` → `lib/tools.mjs` 的 `runConfigure` 选项分支。
 
+---
+
+# implementation-notes — dev.3（用户实测反馈：侧边栏开关、诊断分层、SSH 独立测试）
+
+用户在自己装好的 dev.2 上实测后给了反馈，本轮全部围绕反馈。
+
+## Deviations
+
+- **计划 §0 决策 7 / Phase 1（F0）被用户明确推翻**：计划当时判定「侧边栏入口不再是选项，随 `enabled` 显隐」。用户原话：「侧边栏开关不能移除……隐藏侧边栏不一定非要禁用。但是禁用了侧边栏一定没有用了，直接消失就行。」即**开关与 enabled 是两件事**，入口可见 = `enabled !== false && showSidebarEntry !== false`。因此 `showSidebarEntry` 全链路恢复（`options.mjs` 默认 true/snapshot/VALIDATORS、`normalizePrefs` 布尔读回、`STATUS_DEFAULTS`/`STATUS_SCHEMA`/`Config` volatile 字段、客户端字典 + 设置条复选框 + draft + `toggleSidebar` 即时生效）。回退条件：用户改主意即可整链删除（与 dev.1/dev.2 的删除方式对称）。
+- 计划没有「单独测 SSH」这一项；本轮按用户要求新增 `probeSshTunnel`（R64）。做法不引入任何依赖：先 TCP 可达（5s 预算），再让 dbhub 以**必然关闭的 `127.0.0.1:1`** 为目标建隧道——数据库那步失败恰恰证明握手/认证成功。诚实边界写进 UI 文案：它证明不了隧道后面有真库。
+- 计划没有诊断分层；本轮新增 `diagnosticTail`（取尾部，600 字符，保留换行）与 `failureLayerOf`（`【SSH 层】/【数据库层】/【插件层】` 前缀，R65）。数据库层的措辞刻意保守（"可能已建立"），只有独立 SSH 测试能证明。
+
+## Discovered edge cases（本轮）
+
+- **连接测试报错取的是"头部 180 字符"，正好是 dbhub 的启动横幅**（`Configuration source: …` / `Connecting to N database source(s)…` / 掩码后的 DSN），真正的致命行在**末尾**被截掉——这就是用户"不知道哪个环节出问题"的直接原因。修复：取尾部 + 保留换行（客户端 `.dbh-test-ok/.dbh-test-fail` 加 `white-space:pre-wrap`）。
+- **dbhub 横幅只掩密码不掩用户名**（`mysql://root:****@host:3306/db`）：`scrubSecrets` 原先只在"找到了密码"时才折叠 userinfo，且保留用户名。修复：无条件把任意 URL 形态连接串的 userinfo 整体折叠成 `://****:****@`（用户名与密码都不出现）；纯元数据标签（`mysql://127.0.0.1:3306/app`）必须字节不变（有单测守护）。
+- **浏览器路径的"留空 = 保持原值"从未实现**：模型路径（`tools.mjs` 的 `resolveSshRequest`）有合并，但 `setWorkspaceEnvOptions` / `applyOptionsOp` 直接 `normalizeSshOptions(patch.ssh)`——卡片不回显秘密，于是"只改主机名"或"对已保存的隧道点测试"都会因缺密码被判成配置不完整。修复：`config.mjs` 新增纯函数 `mergeSshOptions(incoming, stored)`，在 `applyOptionsOp` 与 `handleTestOp` 的 `kind:'ssh'` 分支**校验之前**合并（切换认证方式会丢掉另一种秘密）。
+- 门禁细节：`mysql://root:****@host:port/db` 这种示例过不了 `check:secrets` 的 dsn 规则（只剥数字端口，`host:port` 会被当成主机名）——文档与注释统一写成 `host:3306`；F0 时代 `render-check` 的断言「设置条不再有侧边栏开关」必须同步翻转（否则 `check:ui` 直接红）。
+- 只读被拒时给模型的指引原先写「插件 → dsh-dbhub-live → 配置」，而 GUI 的主入口是「设置 → DBHub 数据库工具」；已改成同时给出两个可达入口，并把 MySQL 的放行语句列表写准（`select/with/explain/show/describe/desc`）。
+
+## Questions for review
+
+- `showSidebarEntry` 恢复后，**它同时是 volatile Config 字段**（官方插件表单里会出现第二个开关）。若产品希望"只在设置条里可改"，把 `Config` 的该字段去掉即可（`options.mjs` 的 VALIDATORS 保留，prefs 层不受影响）。
+- `probeSshTunnel` 的第 3 步依赖"dbhub 的数据库错误里没有 SSH 关键字"这一判据。若上游 dbhub 把隧道错误包成通用消息，需要把 `SSH_LAYER_RE` 收紧到实测样本（目前基于 1.4.0 的 ssh2 报错文案）。
+
+## 总结（5 行）
+
+1. 偏离计划 1 处（且是用户明确要求的反转）：F0 删除 `showSidebarEntry` → 全链路恢复，入口 = `enabled && showSidebarEntry`；其余为计划外新增（R64 独立 SSH 测试、R65 诊断尾部 + 分层）。
+2. 最可能被重新审视的一条：`showSidebarEntry` 同时作为 volatile Config 字段暴露（见 Questions）。
+3. 本轮发现 5 条边界/缺陷：诊断取头部而非尾部；用户名随 dbhub 横幅泄漏；浏览器路径缺少"留空即沿用"的合并；`host:port` 示例触发脱敏规则；只读指引写错了入口名与放行语句。
+4. 验证局限：`probeSshTunnel` 的成功判据（隧道起来后数据库步骤失败）用假 subprocess 覆盖，**没有真实跳板机验证**（V7/V8 仍需人工）；真实 dbhub 1.4.0 的 SSH 报错文案只来自 1.4.0 的实测样本。
+5. 下一个会话先读：本文件 → `lib/adhoc.mjs` 的 `probeSshTunnel`/`diagnosticTail`/`failureLayerOf` → `lib/config.mjs` 的 `mergeSshOptions`/`scrubSecrets` → `lib/index.mjs` 的 `handleTestOp`（`kind:'ssh'` 分支）→ `test/ssh-probe.test.mjs`。
+
