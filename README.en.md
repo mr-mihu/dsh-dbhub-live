@@ -12,7 +12,12 @@
 
 Install it and you can simply tell the AI "show me the last 10 rows of the orders table". The AI runs SQL through [DBHub](https://dbhub.ai) (a database MCP server), but all it ever knows is *which environment of which workspace*, plus metadata such as `mysql://host:3306/db`; **passwords, accounts and full connection strings always stay on your machine**, typed only into the box in front of you.
 
+<details>
+<summary>📷 Preview: Settings → DBHub Database Tools</summary>
+
 ![DBHub Database Tools configure page](doc/images/settings-page.png)
+
+</details>
 
 ## Why use it
 
@@ -53,7 +58,12 @@ You: the 3 most recent rows of the orders table
 AI:  … (query results)
 ```
 
+<details>
+<summary>📷 In action: ask the AI, get the query results</summary>
+
 ![Asking the AI and getting query results](doc/images/chat-query.png)
+
+</details>
 
 The password is only ever typed into the box in front of you. If you give only part of the picture (say "connect to mydb on 192.0.2.10"), the plugin **probes with those non-sensitive facts first**: if it connects, the connection is saved straight away (password-less databases need no input at all); if only the password is missing it asks just for "account (when unknown) + password"; only when the information is incomplete do you choose a full method (enter a DSN / fill in fields / authorise a scan of project config files).
 
@@ -73,7 +83,12 @@ When the workspace already has `mise env` or a `.env` (`DSN` / `DB_*`), the plug
 
 ## Configure Page
 
+<details>
+<summary>📷 Row editor: read-only mode and SSH tunnel</summary>
+
 ![Connection row and "Test SSH tunnel"](doc/images/row-editor.png)
+
+</details>
 
 - **Status and switch**: the running-status badge, the tool count (always 4), the environment count, the enable / disable switch, the most recent error.
 - **Connection list**: organised by workspace. When every workspace has a single environment the rows render as flat cards; as soon as one workspace owns several environments they fold into per-workspace groups (click a group head to expand; the most recently used one is open by default). Each connection takes one line: environment name · 🔒 type / host / port / **database** · the `source` handle (click it to copy) · ⚡ test / ✏ edit / 🗑 delete. In a narrow window the host and port are truncated first, while **the database name always stays visible**.
