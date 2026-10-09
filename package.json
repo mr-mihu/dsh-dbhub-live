@@ -12,7 +12,8 @@
   },
   "files": [
     "lib",
-    "doc",
+    "doc/REQUIREMENTS.md",
+    "doc/images",
     "test",
     "scripts",
     "cordis.patch.yml",

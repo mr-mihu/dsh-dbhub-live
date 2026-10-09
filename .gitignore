@@ -12,3 +12,9 @@ node_modules/
 
 # Local isolated test home (see AGENTS.md debug workflow).
 .dsh-test/
+
+# Local-dev-only documents: the 5.1 implementation plan and the running
+# implementation notes. They are working memory for whoever develops this repo —
+# never tracked by git and never shipped (see `package.json` → `files`).
+doc/PLAN-*.md
+doc/implementation-notes.md

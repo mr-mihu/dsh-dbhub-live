@@ -26,7 +26,7 @@ lib/
 test/          node:test 单元测试（纯逻辑 + bridge 契约 + client bundle 格式契约 + 零知识泄漏门）
 scripts/       仓库维护脚本：desensitize.config.mjs（**脱敏槽位表 = 单一事实源**）、desensitize-check.mjs（脱敏门禁）、render-check.mjs（客户端布局离屏渲染/交互门禁，无需 React 依赖）
 .github/       CI：push/PR 跑语法检查 + 脱敏门禁 + 单测
-doc/           需求文档
+doc/           REQUIREMENTS.md（业务需求，**进 git 与 npm 包**）+ images/（README 截图）+ **仅本地开发用的两份文档**：PLAN-5.1-readonly-and-ssh-tunnel.md（5.1 实施计划）与 implementation-notes.md（实施记录）——后两者被 `.gitignore` 排除、不进 git、不进 npm 包，只服务于本仓库的开发与调试
 .env           本地脱敏黑名单（DSH_DBHUB_DESENSITIZE_RE），gitignore 排除、不进 npm 包——**唯一允许存放真实标识的地方**
 cordis.patch.yml   bundle patch：`name: dsh-dbhub-live` 挂载本包
 ```
@@ -79,7 +79,7 @@ DSH 启动是 fail-loud：任一插件激活失败整树拒绝启动、GUI 打�
 
 1. **静态校验（30 秒，零风险）** — `npm run check`（node --check 全部 lib）→ 逐个跑单测（沙箱下 `node --test` 的 runner 子进程会被 EPERM 挡，按本文件惯例**逐个文件**跑：`node test/x.test.mjs`）。单测会自己建临时 `DSH_HOME`，不会碰真实 store。
    - 只读/隧道两条新路径的静态旁路验证（不需要 Harness）：`node -e "…"` 调 `buildDbhubToml({dsn,ro:true,ssh:{…}})` 打印文本，确认**两条 `[[tools]]` 都在、文本里没有密码**，且 `env` 覆盖了文本里引用的每个 `${VAR}`（`test/toml.test.mjs` 已自动断言，手工复核用于排查现场）。
-   - 真 dbhub 冒烟（不经插件）：把生成的 TOML 落临时目录，`dbhub --transport stdio --config <file>` 喂 `initialize`/`tools/list`/`tools/call`（命令见 `PLAN-5.1-readonly-and-ssh-tunnel.md` 附录 A）：只读环境里 `INSERT`/`CREATE` 应回 `READONLY_VIOLATION`，`SELECT 1` 与 `search_objects` 应成功（**只写一条 `[[tools]]` 会让 `search_objects` 直接消失**），`--config` 与 `--dsn` 同给必 fatal。
+   - 真 dbhub 冒烟（不经插件）：把生成的 TOML 落临时目录，`dbhub --transport stdio --config <file>` 喂 `initialize`/`tools/list`/`tools/call`（命令见 `doc/PLAN-5.1-readonly-and-ssh-tunnel.md` 附录 A，该文件是**本地开发文档**：在 `doc/` 下、被 `.gitignore` 排除、不进 npm 包）：只读环境里 `INSERT`/`CREATE` 应回 `READONLY_VIOLATION`，`SELECT 1` 与 `search_objects` 应成功（**只写一条 `[[tools]]` 会让 `search_objects` 直接消失**），`--config` 与 `--dsn` 同给必 fatal。
 2. **会话内跑通逻辑（不重启）** — 用动态插件工具连（`cordis_define`/`cordis_run`/`cordis_stop`/`cordis_undefine`）：把要验证的纯逻辑（如 configure 流程、scrubSecrets）以无 import 的 Host 代码贴进动态包，在会话里跑，`cordis_stop` 即清场。动态包只活在进程内存 + 当前会话，改动/出错都不影响主进程。动态 Host 代码不能用 `import`，带 `@deepseek-ai/schemastery` import 的 `lib/index.mjs` 不能整文件贴进动态包；只对纯逻辑做动态验证。
 3. **冷启动验证（隔离实例）** — 用独立 `DSH_HOME` 起测试实例。本机备有独立测试 home：`.dsh-a`（`deepseek-harness/mise.toml` 把 `DSH_HOME` 指向它）。两条可用路径：
    - **源码实例（`mise r dsh …`，走 tsx）**：`cd D:\my\app\dsh\plugin\deepseek-harness` 后 `mise r dsh web --port 3082 --no-open`。注意 `pnpm dsh` 会先跑 pnpm 依赖校验，node_modules 不同步时它会想重装并因无 TTY 中止——直接 `node --import tsx/esm apps/cli/src/bin.ts …` 可跳过；esbuild 的 spawn 在沙箱下会 EPERM（属沙箱边界，别绕）。
