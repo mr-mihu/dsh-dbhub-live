@@ -49,9 +49,11 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-dbhub-live
 ```text
 你：mysql 192.0.2.10:3306 的 app 库，账号 ops
 AI：（弹出输入框，你在里面填密码）→ 已保存，source = myapp_1a2b3c_default
-你：orders 表最近 10 条
+你：查询 orders 表最近 3 条数据
 AI：…（返回查询结果）
 ```
+
+![向 AI 提问并拿到查询结果](doc/images/chat-query.png)
 
 密码全程只在你面前的输入框里敲。若你只说了一部分信息（比如「连一下 192.0.2.10 上的 mydb」），插件会**先用这些非敏感信息试连**：能连上就直接保存（不需要密码的库全程零输入），只差密码就只问你「账号（未知时）+ 密码」，信息不全才让你选完整方式（输入 DSN / 填写分项 / 授权扫描项目配置文件）。
 

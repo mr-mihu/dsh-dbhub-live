@@ -49,9 +49,11 @@ No commands to memorise — just talk to the AI:
 ```text
 You: mysql on 192.0.2.10:3306, database app, account ops
 AI:  (a dialog opens — you type the password there) → saved, source = myapp_1a2b3c_default
-You: the last 10 rows of the orders table
+You: the 3 most recent rows of the orders table
 AI:  … (query results)
 ```
+
+![Asking the AI and getting query results](doc/images/chat-query.png)
 
 The password is only ever typed into the box in front of you. If you give only part of the picture (say "connect to mydb on 192.0.2.10"), the plugin **probes with those non-sensitive facts first**: if it connects, the connection is saved straight away (password-less databases need no input at all); if only the password is missing it asks just for "account (when unknown) + password"; only when the information is incomplete do you choose a full method (enter a DSN / fill in fields / authorise a scan of project config files).
 
