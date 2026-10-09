@@ -38,7 +38,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:net'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -88,6 +88,24 @@ const DBHUB_SSH_CAPTURE = [
 ].join('\n')
 const STORED_KEY = { host: '192.0.2.10', port: 2222, user: 'ops', auth: 'key', keyPath: '~/.ssh/id_ed25519', passphrase: 'CHANGE_ME' }
 const PLUGIN_FAIL = '启动临时 dbhub 失败'
+
+// MEASURED dbhub 1.4.0 stderr for a tunnel that DID come up: the forwarded target
+// closed the connection, so the driver reports a DATABASE-protocol error and
+// dbhub tears the tunnel down ("SSH tunnel closed"). Nothing here names the
+// forwarded target, which is exactly why a target-name-only rule answered
+// "cannot classify" for a perfectly good tunnel.
+const DBHUB_TUNNEL_UP_CAPTURE = [
+  'Configuration source: dbhub-1234-2-def456.toml',
+  'Connecting to 1 database source(s)...',
+  '  - default: mysql://probe:********@127.0.0.1:1/probe',
+  'SSH tunnel closed',
+  'Fatal error: Error: Connection lost: The server closed the connection.',
+  '    at Query.query (/opt/dbhub/dist/mysql-ABCDEF.js:135:38)',
+  '    at process.processTicksAndRejections (node:internal/process/task_queues:90:21) {',
+  '  fatal: true,',
+  "  code: 'PROTOCOL_CONNECTION_LOST'",
+  '}',
+].join('\n')
 
 // A fresh DSH_HOME has no credentials.json, so state.mjs starts enabled; make
 // that explicit so every probe below really reaches its dbhub step.
@@ -231,9 +249,14 @@ test('diagnosticTail cuts from the FRONT once the text exceeds the cap', () => {
   // The default cap is DIAG_TAIL_MAX, and a non-positive/invalid max means "default".
   const big = Array.from({ length: 100 }, (_, i) => 'line ' + i).join('\n')
   assert.ok(big.length > adhoc.DIAG_TAIL_MAX)
-  assert.equal(adhoc.diagnosticTail(big), '…' + big.slice(-adhoc.DIAG_TAIL_MAX))
-  assert.equal(adhoc.diagnosticTail(big, 0), '…' + big.slice(-adhoc.DIAG_TAIL_MAX))
-  assert.equal(adhoc.diagnosticTail(big, Number.NaN), '…' + big.slice(-adhoc.DIAG_TAIL_MAX))
+  const defaultCut = adhoc.diagnosticTail(big)
+  assert.ok(defaultCut.startsWith('…'), 'a cut is marked on the side that was dropped')
+  assert.ok(defaultCut.endsWith('line 99'), 'the informative END is what is kept')
+  assert.ok(defaultCut.length <= adhoc.DIAG_TAIL_MAX + 1)
+  // The cut snaps to a line boundary: a dangling half-line reads as corruption.
+  assert.match(defaultCut.split('\n')[0], /^…line \d+$/)
+  assert.equal(adhoc.diagnosticTail(big, 0), defaultCut)
+  assert.equal(adhoc.diagnosticTail(big, Number.NaN), defaultCut)
 })
 
 test('the probe constants describe a closed loopback target', () => {
@@ -350,7 +373,6 @@ test('probeSshTunnel: an unusable block is settled as `config` without any spawn
     { host: '127.0.0.1' },
     { host: '127.0.0.1', user: 'ops' },
     { host: '127.0.0.1', user: 'ops', auth: 'password' },
-    { host: '127.0.0.1', user: 'ops', auth: 'key' },
     { host: '127.0.0.1', user: 'ops', auth: 'key', keyPath: 'x', proxyJump: 'a:22,b:22' },
   ]
   for (const bad of blocks) {
@@ -419,6 +441,41 @@ test('probeSshTunnel: key auth checks the local private-key file (`key`)', async
   }
 })
 
+test('probeSshTunnel: a blank key path falls back to the placeholder default', async () => {
+  // The field's placeholder promises `~/.ssh/id_ed25519`; a key-auth block with no
+  // path must therefore TRY that file instead of being rejected as incomplete.
+  const server = await listenOnce()
+  try {
+    const { subprocess, specs } = recorder({ stderr: 'Error: All configured authentication methods failed' })
+    const res = await adhoc.probeSshTunnel(subprocess, { host: '127.0.0.1', port: server.port, user: 'ops', auth: 'key' })
+
+    // Either the default file is missing on this machine (reported as `key` with
+    // the default path named) or it exists and dbhub is really attempted.
+    const defaultExists = existsSync(cfg.expandHome(cfg.DEFAULT_SSH_KEY_PATH))
+    if (defaultExists) {
+      assert.equal(res.layer, 'ssh', res.message)
+      assert.equal(specs.length, 1, 'the default key got as far as a real dbhub attempt')
+    } else {
+      assert.equal(res.layer, 'key', res.message)
+      assert.equal(specs.length, 0)
+    }
+    assert.ok(res.message.includes(cfg.DEFAULT_SSH_KEY_PATH), 'the path that was tried is named: ' + res.message)
+    // …and the report says the default was used, so nobody hunts for a typo.
+    assert.ok(res.message.includes(currentT('result.sshTestDefaultKey', { path: cfg.DEFAULT_SSH_KEY_PATH })), res.message)
+    // The command layer merges BEFORE the probe, so the note must survive that:
+    // `defaultKeyNoteOf(what the card sent, what will be tried)`.
+    const note = currentT('result.sshTestDefaultKey', { path: cfg.DEFAULT_SSH_KEY_PATH })
+    assert.equal(adhoc.defaultKeyNoteOf({ auth: 'key' }, { auth: 'key', keyPath: cfg.DEFAULT_SSH_KEY_PATH }), note)
+    assert.equal(adhoc.defaultKeyNoteOf(null, { auth: 'key', keyPath: cfg.DEFAULT_SSH_KEY_PATH }), note)
+    // A named or stored path is never announced as a fallback.
+    assert.equal(adhoc.defaultKeyNoteOf({ auth: 'key', keyPath: '~/.ssh/other' }, { auth: 'key', keyPath: '~/.ssh/other' }), '')
+    assert.equal(adhoc.defaultKeyNoteOf({ auth: 'key' }, { auth: 'key', keyPath: '~/.ssh/stored' }), '')
+    assert.equal(adhoc.defaultKeyNoteOf({ auth: 'password', password: 'x' }, { auth: 'password', password: 'x' }), '')
+  } finally {
+    await server.close()
+  }
+})
+
 test('probeSshTunnel: an SSH signature from dbhub is `ssh`', async () => {
   const server = await listenOnce()
   try {
@@ -454,6 +511,27 @@ test('probeSshTunnel: a database-step failure proves the tunnel (`tunnel`)', asy
     assert.equal(res.ok, true, 'the probe proves the SSH layer, never the database behind it')
     assert.equal(res.layer, 'tunnel')
     assert.equal(res.message, currentT('result.sshTestOk', { host: '127.0.0.1', port: String(server.port) }))
+  } finally {
+    await server.close()
+  }
+})
+
+test('probeSshTunnel: a DATABASE-protocol failure with no target named is still `tunnel`', async () => {
+  // Regression for a real user report: the tunnel opened, the forwarded target
+  // closed the connection, and dbhub said only
+  // `Connection lost … PROTOCOL_CONNECTION_LOST` + `SSH tunnel closed` — never the
+  // forwarded `127.0.0.1:1`. The old rule answered "cannot classify", which told
+  // the user nothing even though the SSH layer was demonstrably fine.
+  const server = await listenOnce()
+  try {
+    const { subprocess } = recorder({ stderr: DBHUB_TUNNEL_UP_CAPTURE })
+    const res = await adhoc.probeSshTunnel(subprocess, {
+      host: '127.0.0.1', port: server.port, user: 'ops', auth: 'password', password: 'CHANGE_ME',
+    })
+
+    assert.equal(res.ok, true, res.message)
+    assert.equal(res.layer, 'tunnel')
+    assert.ok(res.message.includes('SSH 隧道可用'), res.message)
   } finally {
     await server.close()
   }

@@ -127,3 +127,29 @@
 4. 验证局限：`probeSshTunnel` 的成功判据（隧道起来后数据库步骤失败）用假 subprocess 覆盖，**没有真实跳板机验证**（V7/V8 仍需人工）；真实 dbhub 1.4.0 的 SSH 报错文案只来自 1.4.0 的实测样本。
 5. 下一个会话先读：本文件 → `lib/adhoc.mjs` 的 `probeSshTunnel`/`diagnosticTail`/`failureLayerOf` → `lib/config.mjs` 的 `mergeSshOptions`/`scrubSecrets` → `lib/index.mjs` 的 `handleTestOp`（`kind:'ssh'` 分支）→ `test/ssh-probe.test.mjs`。
 
+---
+
+# implementation-notes — dev.4（用户实测第二轮：默认密钥路径 + 判定错误的修正）
+
+## Deviations
+
+- 计划/上一轮没有"密钥路径留空时用默认值"这一条，用户明确要求：**选密钥认证且没填路径时，按提示框里的默认值（`~/.ssh/id_ed25519`）尝试**。因此新增 `DEFAULT_SSH_KEY_PATH` + `withDefaultSshKey`，作用点是**合并的最后一步 / 每次 SSH 层测试之前**，并且**保存路径同样生效**（否则会出现"测试通过 → 保存静默丢掉隧道"的死角）。回退条件：删掉这两处调用即可回到"缺路径即配置不完整"。
+
+## Discovered edge cases（本轮）
+
+- **第二份实测样本推翻了第一版的判据**：隧道**起来了**、转发目标关闭连接时，dbhub 只输出 `SSH tunnel closed` + `Connection lost: The server closed the connection.` + `code: 'PROTOCOL_CONNECTION_LOST'`，**从不提转发目标**。第一版规则要求"文本里出现 `127.0.0.1:1`"才判为隧道可用，于是这种情况落到"无法判定"——把一条**正常**的隧道报成未知，用户更迷惑。修正：判据改成**数据库层特征**（`PROTOCOL_CONNECTION_LOST` / `Connection lost` / `server closed the connection` / `Access denied` / `Unknown database` / `ER_*` / 各种 socket 错误 / `SSH tunnel closed`）——驱动只有在转发连接建立之后才会说话，所以数据库层报错**反证**隧道已通。SSH 层特征仍然优先（它只可能来自隧道本身）。
+- `diagnosticTail` 的尾部截断会**截断到半行**：用户贴出来的文本以 `…b/1.4.0/node_modules/…js:135:38)` 开头，正是"被从中间切断的堆栈行"。修正：① 除 `^\s*at\s` 外，再丢弃"以 `file.js:L:C)` 结尾"的包裹残行；② 前端截断后**对齐到行首**，绝不留下半行。
+- 密钥路径默认值让 `missingSshFields` 报告 `keyPath` 的分支变成死代码（`withDefaultSshKey` 先补上了）；保留该报告（它描述的是"输入里缺什么"），单测里那条 `{host,user,auth:'key'}` 期望 `layer:'config'` 的用例相应改为"走默认路径"的新用例。
+
+## Questions for review
+
+- 默认密钥路径只在**密钥认证**下补全；如果产品希望"密码认证也接受空值并尝试 ssh-agent"，那是另一件事（dbhub 1.4.0 没有 agent 支持，需要上游能力）。
+
+## 总结（5 行）
+
+1. 偏离：无（默认密钥路径是用户要求的新行为，不是对计划的偏离）。
+2. 最可能被重新审视的一条：默认路径的**保存**语义（`setWorkspaceEnv`/`setWorkspaceEnvOptions` 也会写入 `~/.ssh/id_ed25519`），若产品希望"只在测试时兜底、保存仍要求显式路径"，去掉那两处 `withDefaultSshKey` 即可。
+3. 本轮发现 3 条：判据漏了"数据库层特征"（把正常隧道判成未知）；尾部截断会留下半行；默认值让一条 `missingSshFields` 分支变成死代码。
+4. 验证局限：两份实测样本都来自**本机**（dbhub 1.4.0 + 一个不可达/可关闭的目标），仍**没有真实跳板机**（V7/V8 待人工）；真实密码认证失败的文案（ssh2 的 `All configured authentication methods failed`）尚未在真机上复现。
+5. 下一个会话先读：本文件 → `lib/adhoc.mjs` 的 `SSH_LAYER_RE`/`DB_LAYER_RE`/`probeSshTunnel` → `lib/config.mjs` 的 `withDefaultSshKey` → `test/ssh-probe.test.mjs`（两份实测样本夹具）。
+
