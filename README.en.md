@@ -12,9 +12,7 @@
 
 Install it and you can simply tell the AI "show me the last 10 rows of the orders table". The AI runs SQL through [DBHub](https://dbhub.ai) (a database MCP server), but all it ever knows is *which environment of which workspace*, plus metadata such as `mysql://host:3306/db`; **passwords, accounts and full connection strings always stay on your machine**, typed only into the box in front of you.
 
-<!-- Screenshot slot 1 (hero): replace this whole comment with ![DBHub Database Tools configure page](doc/images/settings-page.png)
-     What to shoot: the whole Settings → DBHub Database Tools page — the status row (🟢 running · 4 tools (fixed)) plus 2–3 connection rows (one of them carrying the read-only tag) and the "＋ Add connection" button.
-     Note: use demo data (127.0.0.1 / 192.0.2.x style addresses) and never expose a real host, database or account. -->
+![DBHub Database Tools configure page](doc/images/settings-page.png)
 
 ## Why use it
 
@@ -73,10 +71,7 @@ When the workspace already has `mise env` or a `.env` (`DSN` / `DB_*`), the plug
 
 ## Configure Page
 
-<!-- Screenshot slot 2 (configure page section): replace this whole comment with ![Connection row and "Test SSH tunnel"](doc/images/row-editor.png)
-     What to shoot: the editor of one row after clicking ✏, with "Advanced: SSH tunnel" expanded — the read-only checkbox and the "Test SSH tunnel" button must both be visible.
-     A shot that also captures a "Test SSH tunnel" verdict (the [SSH layer] / [database layer] prefixed text) sells the point that it tells you which layer failed.
-     Note: use demo data as well; never expose a real host, database, account or key path. -->
+![Connection row and "Test SSH tunnel"](doc/images/row-editor.png)
 
 - **Status and switch**: the running-status badge, the tool count (always 4), the environment count, the enable / disable switch, the most recent error.
 - **Connection list**: organised by workspace. When every workspace has a single environment the rows render as flat cards; as soon as one workspace owns several environments they fold into per-workspace groups (click a group head to expand; the most recently used one is open by default). Each connection takes one line: environment name · 🔒 type / host / port / **database** · the `source` handle (click it to copy) · ⚡ test / ✏ edit / 🗑 delete. In a narrow window the host and port are truncated first, while **the database name always stays visible**.
