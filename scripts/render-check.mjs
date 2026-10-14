@@ -610,6 +610,19 @@ console.log('\n[8] interaction: add panel (global + per group), settings strip, 
   check('sidebar switch writes showSidebarEntry immediately',
     writes.some(([k, v]) => k === 'showSidebarEntry' && v === false), JSON.stringify(writes))
   check('the settings summary reflects the switch', toHtml(p.tree).includes('侧边栏入口：隐藏'))
+
+  // The policy announcement is a SECOND, independent switch: it changes what
+  // the model sees (one system-prompt section), never what the tools can do.
+  check('strip carries the policy announcement switch', toHtml(p.tree).includes('向模型注入数据库访问策略'))
+  const beforePolicy = p.setCalls.length
+  checkBoxWithin(p.tree, 'dbh-strip', 1, false)
+  p.tree = p.renderAgain()
+  await new Promise((r) => setTimeout(r, 0))
+  const policyWrites = p.setCalls.slice(beforePolicy)
+  check('policy switch writes announceAccessPolicy immediately',
+    policyWrites.some(([k, v]) => k === 'announceAccessPolicy' && v === false), JSON.stringify(policyWrites))
+  check('disabling the announcement does not touch the enabled state',
+    !policyWrites.some(([k]) => k === 'enabled'), JSON.stringify(policyWrites))
 }
 
 console.log('\n[9] summary view (Plugins page one-liner)')

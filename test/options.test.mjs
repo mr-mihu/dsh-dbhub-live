@@ -26,12 +26,15 @@ test('options seed from process environment; package stays internal-only', () =>
   assert.equal(options.get('updateIntervalDays'), 3)
 })
 
-test('snapshot exposes both UI fields (the sidebar switch is a user preference)', () => {
+test('snapshot exposes every UI field (sidebar switch, policy announcement)', () => {
   const snap = options.snapshot()
-  assert.deepEqual(Object.keys(snap).sort(), ['showSidebarEntry', 'updateIntervalDays'])
+  assert.deepEqual(Object.keys(snap).sort(), ['announceAccessPolicy', 'showSidebarEntry', 'updateIntervalDays'])
   // The switch hides the SHORTCUT; it does not disable the plugin. The client
   // ANDs it with the enabled state.
   assert.equal(snap.showSidebarEntry, true)
+  // The policy announcement defaults ON: an installed plugin should be the
+  // route database work takes. Turning it off removes one prompt section only.
+  assert.equal(snap.announceAccessPolicy, true)
   snap.updateIntervalDays = 99
   assert.equal(options.get('updateIntervalDays'), 3)
 })
@@ -48,6 +51,11 @@ test('applyPatch accepts valid values, emits, and rejects invalid', () => {
   assert.equal(options.get('showSidebarEntry'), false)
   assert.equal(options.applyPatch({ showSidebarEntry: 'yes' }), false)
   assert.equal(options.get('showSidebarEntry'), false)
+  // ... and so is the policy announcement (boolean-only, no truthy coercion)
+  assert.equal(options.applyPatch({ announceAccessPolicy: false }), true)
+  assert.equal(options.get('announceAccessPolicy'), false)
+  assert.equal(options.applyPatch({ announceAccessPolicy: 'no' }), false)
+  assert.equal(options.get('announceAccessPolicy'), false)
   off()
   const before = options.snapshot()
   assert.equal(options.applyPatch({ updateIntervalDays: -1, enabled: false }), false)
@@ -60,17 +68,20 @@ test('applyPatch accepts valid values, emits, and rejects invalid', () => {
 
 test('a user write claims the field and persists it for the next boot', async () => {
   assert.equal(options.applyPatch({ updateIntervalDays: 5 }, { persist: true }), true)
-  // prefs.json is the whole UI layer, so it carries both fields.
-  assert.deepEqual(JSON.parse(readFileSync(PREFS_PATH, 'utf8')), { updateIntervalDays: 5, showSidebarEntry: false })
+  // prefs.json is the whole UI layer, so it carries every UI field.
+  assert.deepEqual(JSON.parse(readFileSync(PREFS_PATH, 'utf8')),
+    { updateIntervalDays: 5, showSidebarEntry: false, announceAccessPolicy: false })
   // A boot-time layer must never claim a field, so persisting stays opt-in.
   assert.equal(options.applyPatch({ updateIntervalDays: 6 }), true)
-  assert.deepEqual(JSON.parse(readFileSync(PREFS_PATH, 'utf8')), { updateIntervalDays: 5, showSidebarEntry: false })
+  assert.deepEqual(JSON.parse(readFileSync(PREFS_PATH, 'utf8')),
+    { updateIntervalDays: 5, showSidebarEntry: false, announceAccessPolicy: false })
   assert.equal(options.applyPatch({ updateIntervalDays: 5 }), true)
 
   // A fresh module instance models a restart: prefs outranks the env seed.
   const restarted = await import('../lib/options.mjs?options3=' + Date.now())
   assert.equal(restarted.get('updateIntervalDays'), 5)
   assert.equal(restarted.get('showSidebarEntry'), false)
+  assert.equal(restarted.get('announceAccessPolicy'), false)
   assert.equal(restarted.get('dbhubPackage'), 'test/fork-package')
 })
 
@@ -110,28 +121,29 @@ test('the legacy settings document only fills fields prefs does not own', async 
 })
 
 test('a corrupt prefs file cannot seed an invalid option', async () => {
-  writeFileSync(PREFS_PATH, JSON.stringify({ updateIntervalDays: -4, showSidebarEntry: 'yes', junk: 1 }))
+  writeFileSync(PREFS_PATH, JSON.stringify({ updateIntervalDays: -4, showSidebarEntry: 'yes', announceAccessPolicy: 'nope', junk: 1 }))
   const fresh = await import('../lib/options.mjs?options5=' + Date.now())
   assert.equal(fresh.get('updateIntervalDays'), 3) // falls back to the env seed
   assert.equal(fresh.get('showSidebarEntry'), true) // built-in default
-  assert.deepEqual(fresh.snapshot(), { updateIntervalDays: 3, showSidebarEntry: true })
+  assert.equal(fresh.get('announceAccessPolicy'), true) // built-in default (ON)
+  assert.deepEqual(fresh.snapshot(), { updateIntervalDays: 3, showSidebarEntry: true, announceAccessPolicy: true })
 })
 
 test('configValuesOf reads the declared Config in both runtime shapes', async () => {
   const fresh = await import('../lib/options.mjs?options6=' + Date.now())
   // dsh 0.1.7+/0.2.x: `.volatile()` fields arrive as live references.
   assert.deepEqual(
-    fresh.configValuesOf({ updateIntervalDays: { get: () => 4 }, showSidebarEntry: { get: () => false } }),
-    { updateIntervalDays: 4, showSidebarEntry: false },
+    fresh.configValuesOf({ updateIntervalDays: { get: () => 4 }, showSidebarEntry: { get: () => false }, announceAccessPolicy: { get: () => false } }),
+    { updateIntervalDays: 4, showSidebarEntry: false, announceAccessPolicy: false },
   )
   // dsh 0.1.6 (schemastery 3.18.2 has no `.volatile()`): plain values.
   assert.deepEqual(
-    fresh.configValuesOf({ updateIntervalDays: 2, showSidebarEntry: true }),
-    { updateIntervalDays: 2, showSidebarEntry: true },
+    fresh.configValuesOf({ updateIntervalDays: 2, showSidebarEntry: true, announceAccessPolicy: true }),
+    { updateIntervalDays: 2, showSidebarEntry: true, announceAccessPolicy: true },
   )
   // Unset, invalid and junk input is skipped — the field keeps its other layers.
   assert.deepEqual(fresh.configValuesOf({ updateIntervalDays: { get: () => undefined }, showSidebarEntry: { get: () => 'yes' } }), {})
-  assert.deepEqual(fresh.configValuesOf({ updateIntervalDays: -1, showSidebarEntry: null }), {})
+  assert.deepEqual(fresh.configValuesOf({ updateIntervalDays: -1, showSidebarEntry: null, announceAccessPolicy: 'yes' }), {})
   assert.deepEqual(fresh.configValuesOf({ unknownKey: 5 }), {})
   assert.deepEqual(fresh.configValuesOf(undefined), {})
   assert.deepEqual(fresh.configValuesOf('nope'), {})
@@ -139,9 +151,10 @@ test('configValuesOf reads the declared Config in both runtime shapes', async ()
 
 test('an adopted Config value claims the field and outlives the config edit', async () => {
   const fresh = await import('../lib/options.mjs?options7=' + Date.now())
-  const patch = fresh.configValuesOf({ updateIntervalDays: { get: () => 11 }, showSidebarEntry: { get: () => false } })
+  const patch = fresh.configValuesOf({ updateIntervalDays: { get: () => 11 }, showSidebarEntry: { get: () => false }, announceAccessPolicy: { get: () => false } })
   assert.equal(fresh.applyPatch(patch, { persist: true }), true)
-  assert.deepEqual(JSON.parse(readFileSync(PREFS_PATH, 'utf8')), { updateIntervalDays: 11, showSidebarEntry: false })
+  assert.deepEqual(JSON.parse(readFileSync(PREFS_PATH, 'utf8')),
+    { updateIntervalDays: 11, showSidebarEntry: false, announceAccessPolicy: false })
   // Adopting the same value again is a no-op (no write, no republish loop).
-  assert.equal(fresh.applyPatch(fresh.configValuesOf({ updateIntervalDays: { get: () => 11 }, showSidebarEntry: { get: () => false } }), { persist: true }), false)
+  assert.equal(fresh.applyPatch(fresh.configValuesOf({ updateIntervalDays: { get: () => 11 }, showSidebarEntry: { get: () => false }, announceAccessPolicy: { get: () => false } }), { persist: true }), false)
 })

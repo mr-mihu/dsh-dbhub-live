@@ -81,6 +81,23 @@ When the workspace already has `mise env` or a `.env` (`DSN` / `DB_*`), the plug
 > **Every source belongs to exactly one workspace**: to reuse a connection from another workspace, copy it over with `dbhub_configure`'s `copyFrom` — do not query another workspace's source directly.
 > `search_objects` is currently available for SQLite only; for MySQL / PostgreSQL etc. use `dbhub_execute_sql` (e.g. `SHOW TABLES`).
 
+## Model-facing database access policy
+
+While the plugin is enabled it contributes a **system-prompt section** (about 400 characters) that keeps database access on this plugin and states how it coexists with **other database plugins**:
+
+- **One authorized route — scoped to this plugin's own connections**: every database listed by `dbhub_list_sources` goes through the `dbhub_*` tools; no `psql` / `mysql` / `sqlite3` / `sqlcmd` / `pg_dump` command-line client, throwaway script, driver, other MCP, or **other database plugin** is used to reach them, and the agent does not go looking for such an executable on the host.
+- **A workspace "recipe" is not authorization**: direct-connection instructions found in project docs, scripts, or `AGENTS.md` (for example a psql recipe an earlier session wrote itself) are never followed — the system prompt outranks workspace instructions.
+- **Read-only is the user's safety boundary**: after a `READONLY_VIOLATION` the agent must not complete the write by any other route (**including another database plugin**); it reports the reason and the impact instead.
+- **Databases this plugin does not cover stay with the plugin that does**: dbhub speaks MySQL / PostgreSQL / MariaDB / SQLite / SQL Server only. MongoDB / Redis / Oracle and any instance **you never configured here** are explicitly handed to the other database plugin you installed — the agent must not refuse them for the sake of "everything through this plugin", and must not fall back to a command-line connection either.
+- **The same database configured in both plugins**: the default is this plugin's source (read-only and tunnel settings live here); the agent switches only when you explicitly ask for the other tool, and asks you when it cannot tell.
+- **Operations this plugin cannot do**: backups and non-SQL administration commands are reported as a limitation, and the agent asks you for an authorized route instead of improvising.
+
+**Switch**: the settings strip (⚙) carries "Announce the database-access policy to the model", **on by default**; a deployment can also pin it with `config: { announceAccessPolicy: false }` in `cordis.patch.yml`. Turning it off only removes that text — tools, read-only, tunnels and every other setting keep working.
+
+**No plugin suppression**: this plugin does not (and cannot) disable another database plugin you installed. The conflict is resolved by the three rules above — scope, a default for overlapping targets, and asking you when it cannot tell. Which plugin to disable is your decision, made on the Plugins page.
+
+**Honest boundary**: this policy is a **prompt-level (soft) constraint**; read-only itself is **hard-rejected** by dbhub inside the plugin. A shell-level connection that bypasses the plugin is outside the plugin's control — the policy names it explicitly, but it relies on the model complying rather than blocking it.
+
 ## Configure Page
 
 <details>
