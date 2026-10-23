@@ -12,6 +12,7 @@
 //   node scripts/release-preflight.mjs --max-age-hours 12 --json
 import path from 'node:path'
 import { REPO_ROOT, readJson } from '../release-test/lib/util.mjs'
+import { run } from '../release-test/lib/proc.mjs'
 import { packageMeta } from '../release-test/lib/artifact.mjs'
 import { gitInfoAsync, dirtyFilesAsync } from '../release-test/lib/git.mjs'
 import { loadMatrix, matrixClaimWarnings, matrixHash } from '../release-test/lib/matrix.mjs'
@@ -71,9 +72,16 @@ async function main() {
   }
   // Compare TREE hashes: that is exactly the set of files the artifact was packed
   // from. A squash/merge that lands the same content is fine; any real change is not.
+  // Generated documents are rewritten from the evidence of the run itself, so a
+  // report may legitimately be followed by a docs-only commit. Any other change
+  // means the artifact would differ and the report is stale.
+  const GENERATED = new Set(['doc/SUPPORT-MATRIX.md', 'README.md', 'README.en.md', 'release-test/mise.toml'])
   const sameTree = report.git?.tree && git.tree && report.git.tree === git.tree
   if (!sameTree) {
-    if (report.git?.commit !== git.commit) {
+    const changed = report.git?.tree && git.tree ? await changedPaths(report.git.tree, git.tree) : null
+    if (changed && changed.length && changed.every((file) => GENERATED.has(file))) {
+      warnings.push(`报告之后只有生成文档变化（${changed.join(', ')}）—— 视为同一产物，有效`)
+    } else if (report.git?.commit !== git.commit) {
       problems.push(`报告对应的提交是 ${String(report.git?.commit).slice(0, 8)}（tree ${String(report.git?.tree).slice(0, 8)}），当前 HEAD 是 ${String(git.commit).slice(0, 8)}（tree ${String(git.tree).slice(0, 8)}）—— 内容变了，必须重跑`)
     } else {
       problems.push('无法确认报告与当前工作树一致（缺少 tree 记录）—— 用当前版本的 harness 重跑')
@@ -153,3 +161,10 @@ function finish() {
 }
 
 await main()
+
+/** Files that differ between two tree hashes (null when git refuses). */
+async function changedPaths(treeA, treeB) {
+  const result = await run('git', ['diff', '--name-only', treeA, treeB], { cwd: REPO_ROOT, timeoutMs: 30_000 })
+  if (result.code !== 0) return null
+  return result.stdout.split('\\n').map((line) => line.trim()).filter(Boolean)
+}

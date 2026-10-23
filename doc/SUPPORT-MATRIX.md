@@ -6,20 +6,20 @@
 
 - 插件版本：`5.2.0-dev.2`
 - 矩阵指纹：`40a3fcef6607`（矩阵变了，旧报告就不再被采信）
-- 最近一次完整测试：`20261023-185451-40a3fc`（2026-10-23T10:57:26.116Z，yellow）
-- 最近一次 AI 判定：pass-with-notes — lead-agent (release-test review) @ 2026-10-23T11:05:12.7579570Z
+- 最近一次完整测试：`20261023-194727-40a3fc`（2026-10-23T11:48:26.985Z，yellow）
+- 最近一次 AI 判定：未完成 AI 判定（verdict.json 模板还没填完）
 - 声明范围：0.1.5-rc.3 起至 0.2.1-rc.2（0.1.5 / 0.1.6 / 0.1.7 / 0.2.0 / 0.2.1，含预发布）
 
 ## 声明支持（blocking：任一失败即禁止发版）
 
 | DSH 版本 | 集成代际 | 界面 | 声明依据 | 最近验证 | 结果 |
 | --- | --- | --- | --- | --- | --- |
-| `0.1.5-rc.3` | legacy | legacy | README: 0.1.5 起的全部版本线（含 0.2.x） | 2026-10-23 · 1f1e2046 · 手工装配 | ⚠️ 通过（有告警） |
-| `0.1.6-alpha.2` | legacy | legacy | package.json dsh.compatibility.dshReleases | 2026-10-23 · 1f1e2046 · 手工装配 | ⚠️ 通过（有告警） |
-| `0.1.7-rc.2` | config-form | legacy | 0.1.7 线：settings 命名空间被 Config 表单取代（本插件双栈的转折点） | 2026-10-23 · 1f1e2046 · 手工装配 | ⚠️ 通过（有告警） |
-| `0.2.0-rc.2` | modern | legacy | package.json dsh.compatibility.dshReleases | 2026-10-23 · 1f1e2046 · 手工装配 | ⚠️ 通过（有告警） |
-| `0.2.1-alpha.1` | modern | modern | package.json dsh.compatibility.dshReleases；也是 dshModern 门槛（>=0.2.1 含预发布） | 2026-10-23 · 1f1e2046 · 手工装配 | ⚠️ 通过（有告警） |
-| `0.2.1-rc.2` | modern | modern | npm dist-tag latest（矩阵的当前默认目标） | 2026-10-23 · 1f1e2046 · 手工装配 | ⚠️ 通过（有告警） |
+| `0.1.5-rc.3` | legacy | legacy | README: 0.1.5 起的全部版本线（含 0.2.x） | 2026-10-23 · 1a23bfc0 · 手工装配 | ⚠️ 通过（有告警） |
+| `0.1.6-alpha.2` | legacy | legacy | package.json dsh.compatibility.dshReleases | 2026-10-23 · 1a23bfc0 · 手工装配 | ⚠️ 通过（有告警） |
+| `0.1.7-rc.2` | config-form | legacy | 0.1.7 线：settings 命名空间被 Config 表单取代（本插件双栈的转折点） | 2026-10-23 · 1a23bfc0 · 手工装配 | ⚠️ 通过（有告警） |
+| `0.2.0-rc.2` | modern | legacy | package.json dsh.compatibility.dshReleases | 2026-10-23 · 1a23bfc0 · 手工装配 | ⚠️ 通过（有告警） |
+| `0.2.1-alpha.1` | modern | modern | package.json dsh.compatibility.dshReleases；也是 dshModern 门槛（>=0.2.1 含预发布） | 2026-10-23 · 1a23bfc0 · 手工装配 | ⚠️ 通过（有告警） |
+| `0.2.1-rc.2` | modern | modern | npm dist-tag latest（矩阵的当前默认目标） | 2026-10-23 · 1a23bfc0 · 手工装配 | ⚠️ 通过（有告警） |
 
 ## 观察项（advisory：只报告，不阻塞）
 
