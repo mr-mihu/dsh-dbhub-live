@@ -231,7 +231,7 @@ export const SLOTS = [
 export const DENYLIST_VAR = 'DSH_DBHUB_DESENSITIZE_RE'
 
 /** Paths the walk never enters and files it never reads. */
-export const SKIP_DIRS = ['.git', 'node_modules', '.dsh-test', 'dist', 'coverage']
+export const SKIP_DIRS = ['.git', 'node_modules', '.dsh-test', '.release-test', 'dist', 'coverage']
 // The two local-dev documents are never committed and never published (see
 // package.json → files), so the gate has no reason to scan them: they legitimately
 // carry plan-era placeholders (`REAL_PASSWORD`, `host:port`) that are not shipped

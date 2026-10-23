@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-10-23",
+  "notes": [
+    "Single source of truth for which DSH versions this plugin declares support for.",
+    "tier=declared is blocking: a release may not ship while any declared target fails.",
+    "tier=advisory is informational: it is reported and reviewed, but never blocks.",
+    "era describes the host integration the version is expected to use; the harness",
+    "derives expected log lines and API availability from it (see lib/matrix.mjs).",
+    "ui says which face the client half should render: legacy DOM for < 0.2.1,",
+    "modern (wide/small screen) for >= 0.2.1, prereleases included (lib/meta.mjs dshModern)."
+  ],
+  "targets": [
+    {
+      "version": "0.1.5-rc.3",
+      "tier": "declared",
+      "era": "legacy",
+      "ui": "legacy",
+      "why": "README: 0.1.5 起的全部版本线（含 0.2.x）",
+      "sandboxPatch": "junction-optional-deps",
+      "expect": { "bridge": "required", "settingsNamespace": "optional", "configForm": "optional" }
+    },
+    {
+      "version": "0.1.6-alpha.2",
+      "tier": "declared",
+      "era": "legacy",
+      "ui": "legacy",
+      "why": "package.json dsh.compatibility.dshReleases",
+      "expect": { "bridge": "required", "settingsNamespace": "optional", "configForm": "optional" }
+    },
+    {
+      "version": "0.1.7-rc.2",
+      "tier": "declared",
+      "era": "config-form",
+      "ui": "legacy",
+      "why": "0.1.7 线：settings 命名空间被 Config 表单取代（本插件双栈的转折点）",
+      "expect": { "bridge": "required", "settingsNamespace": "optional", "configForm": "optional" }
+    },
+    {
+      "version": "0.2.0-rc.2",
+      "tier": "declared",
+      "era": "modern",
+      "ui": "legacy",
+      "why": "package.json dsh.compatibility.dshReleases",
+      "expect": { "bridge": "required", "settingsNamespace": "optional", "configForm": "optional" }
+    },
+    {
+      "version": "0.2.1-alpha.1",
+      "tier": "declared",
+      "era": "modern",
+      "ui": "modern",
+      "why": "package.json dsh.compatibility.dshReleases；也是 dshModern 门槛（>=0.2.1 含预发布）",
+      "expect": { "bridge": "required", "settingsNamespace": "optional", "configForm": "optional" }
+    },
+    {
+      "version": "0.2.1-rc.2",
+      "tier": "declared",
+      "era": "modern",
+      "ui": "modern",
+      "why": "npm dist-tag latest（矩阵的当前默认目标）",
+      "expect": { "bridge": "required", "settingsNamespace": "optional", "configForm": "optional" }
+    },
+    {
+      "version": "0.1.7-alpha.2",
+      "tier": "advisory",
+      "era": "config-form",
+      "ui": "legacy",
+      "why": "0.1.7 早期预发布（观察项，不阻塞发版）",
+      "expect": { "bridge": "required", "settingsNamespace": "optional", "configForm": "optional" }
+    },
+    {
+      "version": "0.2.1-alpha.5",
+      "tier": "advisory",
+      "era": "modern",
+      "ui": "modern",
+      "why": "npm dist-tag alpha（观察项，不阻塞发版）",
+      "expect": { "bridge": "required", "settingsNamespace": "optional", "configForm": "optional" }
+    },
+    {
+      "version": "0.2.1-rc.3",
+      "tier": "advisory",
+      "era": "modern",
+      "ui": "modern",
+      "why": "npm dist-tag next（比 latest 更新的下一版；通过一次完整运行后可提升为 declared）",
+      "expect": { "bridge": "required", "settingsNamespace": "optional", "configForm": "optional" }
+    }
+  ]
+}

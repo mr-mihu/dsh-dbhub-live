@@ -13,8 +13,14 @@ node_modules/
 # Local isolated test home (see AGENTS.md debug workflow).
 .dsh-test/
 
+# Release-test work dir: pinned DSH CLIs, isolated DSH homes, per-target evidence
+# and reports. All of it is reproducible output — never commit it.
+.release-test/
+
 # Local-dev-only documents: the 5.1 implementation plan and the running
 # implementation notes. They are working memory for whoever develops this repo —
 # never tracked by git and never shipped (see `package.json` → `files`).
 doc/PLAN-*.md
 doc/implementation-notes.md
+# Local release-notes drafts (GitHub release body source, never tracked).
+doc/RELEASE-NOTES-*.md

@@ -1,7 +1,7 @@
 {
   "name": "dsh-dbhub-live",
-  "version": "5.1.1-dev.1",
-  "description": "DSH 数据库 MCP 桥接插件：让 AI 直接查询 MySQL / PostgreSQL / MariaDB / SQLite / SQL Server。按工作区动态配置连接（可改名、可跨工作区复制），AI 自助配置管理，密码与连接串零知识（永不进入模型上下文），每次执行独立进程。",
+  "version": "5.2.0-dev.2",
+  "description": "DSH 数据库 MCP 桥接插件：让 AI 直接查询 MySQL / PostgreSQL / MariaDB / SQLite / SQL Server。按工作区动态配置连接（可改名、可跨工作区复制），AI 自助配置管理，密码与连接串零知识（永不进入模型上下文），每次执行独立进程。5.2 起配置页适配弹窗 / 宽屏整页 / 手机小屏三套布局，页头显示版本与更新提示。",
   "type": "module",
   "main": "lib/index.mjs",
   "exports": {
@@ -35,11 +35,17 @@
     "plugin"
   ],
   "scripts": {
-    "check": "node --check ./lib/index.mjs && node --check ./lib/bridge.mjs && node --check ./lib/config.mjs && node --check ./lib/state.mjs && node --check ./lib/options.mjs && node --check ./lib/runtime.mjs && node --check ./lib/mcp.mjs && node --check ./lib/adhoc.mjs && node --check ./lib/collect.mjs && node --check ./lib/tools.mjs && node --check ./lib/policy.mjs && node --check ./lib/toml.mjs && node --check ./lib/capability.mjs && node --check ./lib/client.js",
+    "check": "node --check ./lib/index.mjs && node --check ./lib/meta.mjs && node --check ./lib/update.mjs && node --check ./lib/bridge.mjs && node --check ./lib/config.mjs && node --check ./lib/state.mjs && node --check ./lib/options.mjs && node --check ./lib/runtime.mjs && node --check ./lib/mcp.mjs && node --check ./lib/adhoc.mjs && node --check ./lib/collect.mjs && node --check ./lib/tools.mjs && node --check ./lib/policy.mjs && node --check ./lib/toml.mjs && node --check ./lib/capability.mjs && node --check ./lib/client.js",
     "test": "node --test test/",
     "check:ui": "node scripts/render-check.mjs",
     "check:secrets": "node scripts/desensitize-check.mjs",
-    "prepublishOnly": "npm run check:secrets"
+    "test:release": "node release-test/run.mjs --tier declared",
+    "test:release:all": "node release-test/run.mjs",
+    "release:preflight": "node scripts/release-preflight.mjs",
+    "release:verdict": "node release-test/run.mjs verdict --check",
+    "support:matrix": "node release-test/support-matrix.mjs --write",
+    "support:check": "node release-test/support-matrix.mjs --check",
+    "prepublishOnly": "npm run check:secrets && npm run release:preflight"
   },
   "dsh": {
     "bundle": {
@@ -50,16 +56,19 @@
     },
     "compatibility": {
       "dshReleases": {
+        "0.1.5-rc.3": "compatible",
         "0.1.6-alpha.2": "compatible",
+        "0.1.7-rc.2": "compatible",
         "0.2.0-rc.2": "compatible",
-        "0.2.1-alpha.1": "compatible"
+        "0.2.1-alpha.1": "compatible",
+        "0.2.1-rc.2": "compatible"
       }
     }
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-client-connection": ">=0.1.5-rc.1 <0.3.0-0",
-    "@deepseek-ai/dsh-settings": ">=0.1.5-rc.1 <0.3.0-0",
+    "@deepseek-ai/dsh-client-connection": ">=0.1.5-0 <0.1.6-0 || >=0.1.6-0 <0.1.7-0 || >=0.1.7-0 <0.2.0-0 || >=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.3.0-0",
+    "@deepseek-ai/dsh-settings": ">=0.1.5-0 <0.1.6-0 || >=0.1.6-0 <0.1.7-0 || >=0.1.7-0 <0.2.0-0 || >=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.3.0-0",
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "repository": {
