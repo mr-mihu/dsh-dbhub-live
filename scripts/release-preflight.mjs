@@ -75,11 +75,16 @@ async function main() {
   // Generated documents are rewritten from the evidence of the run itself, so a
   // report may legitimately be followed by a docs-only commit. Any other change
   // means the artifact would differ and the report is stale.
+  // Generated docs (rewritten from this run's evidence) and test tooling (not
+  // shipped in the plugin's runtime path) cannot change what users execute.
   const GENERATED = new Set(['doc/SUPPORT-MATRIX.md', 'README.md', 'README.en.md', 'release-test/mise.toml'])
+  const TOOLING_PREFIXES = ['release-test/', '.github/']
+  const TOOLING_FILES = new Set(['scripts/release-preflight.mjs'])
+  const isAllowedDiff = (file) => GENERATED.has(file) || TOOLING_FILES.has(file) || TOOLING_PREFIXES.some((prefix) => file.startsWith(prefix))
   const sameTree = report.git?.tree && git.tree && report.git.tree === git.tree
   if (!sameTree) {
     const changed = report.git?.tree && git.tree ? await changedPaths(report.git.tree, git.tree) : null
-    if (changed && changed.length && changed.every((file) => GENERATED.has(file))) {
+    if (changed && changed.length && changed.every(isAllowedDiff)) {
       warnings.push(`报告之后只有生成文档变化（${changed.join(', ')}）—— 视为同一产物，有效`)
     } else if (report.git?.commit !== git.commit) {
       problems.push(`报告对应的提交是 ${String(report.git?.commit).slice(0, 8)}（tree ${String(report.git?.tree).slice(0, 8)}），当前 HEAD 是 ${String(git.commit).slice(0, 8)}（tree ${String(git.tree).slice(0, 8)}）—— 内容变了，必须重跑`)
@@ -164,7 +169,12 @@ await main()
 
 /** Files that differ between two tree hashes (null when git refuses). */
 async function changedPaths(treeA, treeB) {
-  const result = await run('git', ['diff', '--name-only', treeA, treeB], { cwd: REPO_ROOT, timeoutMs: 30_000 })
+  const logFile = path.join(REPO_ROOT, '.release-test', 'preflight-git.log')
+  const result = await run('git', ['diff', '--name-only', treeA, treeB], { cwd: REPO_ROOT, logFile, timeoutMs: 30_000 })
   if (result.code !== 0) return null
-  return result.stdout.split('\\n').map((line) => line.trim()).filter(Boolean)
+  // run() captures output into the log with framing lines; keep only path lines.
+  return fs.readFileSync(logFile, 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !line.startsWith('=====') && !line.startsWith('[') && !line.startsWith('$'))
 }
