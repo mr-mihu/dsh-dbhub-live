@@ -1,5 +1,7 @@
 // Boot a real `dsh web` on an isolated home and find its ready line.
 import net from 'node:net'
+import fs from 'node:fs'
+import path from 'node:path'
 import { REPO_ROOT, sleep, tail } from './util.mjs'
 import { readIfExists, start, killTree } from './proc.mjs'
 import { cliInvocation } from './cli-source.mjs'
@@ -24,7 +26,7 @@ const FAIL_RE = /(?:^|\n)\s*(?:Error|TypeError|ReferenceError):|\[fatal\]|cannot
  * Start the web app and wait until it prints the ready URL.
  * Returns { child, base, url, token, readyMs, logTail }.
  */
-export async function bootServer({ version, cli, port, logFile, timeoutMs = 120_000 }) {
+export async function bootServer({ version, cli, port, logFile, home, timeoutMs = 120_000 }) {
   const started = Date.now()
   const invocation = cliInvocation(cli, ['web', '--port', String(port), '--no-open'])
   const child = start(invocation.cmd, invocation.args, {
@@ -33,6 +35,10 @@ export async function bootServer({ version, cli, port, logFile, timeoutMs = 120_
     logFile,
     label: `dsh@${version} web --port ${port}`,
   })
+  // Record the child pid inside the isolated home: if this process is killed
+  // mid-run, the next run can still find and stop the orphan before clearing.
+  const pidFile = home ? path.join(home, 'server.pid') : null
+  if (pidFile) { try { fs.writeFileSync(pidFile, String(child.pid)) } catch {} }
   let text = ''
   while (Date.now() - started < timeoutMs) {
     text = readIfExists(logFile)
@@ -45,6 +51,7 @@ export async function bootServer({ version, cli, port, logFile, timeoutMs = 120_
         token: match[3],
         readyMs: Date.now() - started,
         logTail: tail(text, 2000),
+        pidFile,
       }
     }
     if (child.exitCode !== null) {
@@ -58,6 +65,7 @@ export async function bootServer({ version, cli, port, logFile, timeoutMs = 120_
   throw new Error(`timed out after ${timeoutMs}ms waiting for the "dsh web:" ready line:\n${tail(text)}`)
 }
 
-export function stopServer(child) {
+export function stopServer(child, pidFile = null) {
   killTree(child)
+  if (pidFile) { try { fs.unlinkSync(pidFile) } catch {} }
 }

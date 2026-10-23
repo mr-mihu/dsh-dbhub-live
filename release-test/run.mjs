@@ -28,7 +28,7 @@ import { loadMatrix, matrixClaimWarnings, matrixHash, selectTargets, validateMat
 import { ensureCli, distTags, cliEnv } from './lib/cli-install.mjs'
 import { describeCli, resolveCli } from './lib/cli-source.mjs'
 import { applySandboxHostPatch } from './lib/host-patch.mjs'
-import { prepareHome, createProfile, provisionPlugin, dshEnv } from './lib/home.mjs'
+import { prepareHome, createProfile, provisionPlugin, dshEnv, homeDir } from './lib/home.mjs'
 import { bootServer, freePort, stopServer } from './lib/server.mjs'
 import { openSession, runProbes } from './lib/probe.mjs'
 import { packPlugin, useTarball, packageMeta } from './lib/artifact.mjs'
@@ -176,7 +176,7 @@ async function runOne({ target, artifact, matrix, runDir, provision, keep, skipI
       step(`[${version}] boot dsh web`)
       const port = await freePort()
       try {
-        server = await bootServer({ version, cli, port, logFile: logs.boot })
+        server = await bootServer({ version, cli, port, logFile: logs.boot, home: homeDir(version) })
         break
       } catch (error) {
         // Sandbox-only limitation: the sandbox denies symlink creation, and the
@@ -244,7 +244,7 @@ async function runOne({ target, artifact, matrix, runDir, provision, keep, skipI
     result.error = redact(error?.stack ?? String(error))
     bad(`[${version}] ${error?.message ?? error}`)
   } finally {
-    if (server) stopServer(server.child)
+    if (server) stopServer(server.child, server.pidFile)
     result.timings.totalMs = Date.now() - startedAt
   }
   return result

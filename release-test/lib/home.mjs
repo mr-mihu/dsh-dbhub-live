@@ -46,10 +46,27 @@ export function prepareHome(version, { clean = true } = {}) {
       // maxRetries absorbs the transient Windows lock right after a killed run.
       fs.rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 250 })
     } catch (error) {
-      throw new Error(
-        `cannot clear ${dir} (${error.code ?? error.message}). A leftover dsh web process is probably still running with this ` +
-        `directory as its cwd; close it (or kill the stale node process) and rerun.`,
-      )
+      // A previous run may have been interrupted: its `dsh web` child can still
+      // hold the home as its cwd. The child pid is recorded in server.pid.
+      const pidFile = path.join(dir, 'server.pid')
+      let cleared = false
+      if (fs.existsSync(pidFile)) {
+        const pid = Number(fs.readFileSync(pidFile, 'utf8').trim())
+        if (Number.isFinite(pid) && pid > 0) {
+          try { process.kill(pid) } catch {}
+          const deadline = Date.now() + 3000
+          while (Date.now() < deadline && !cleared) {
+            try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 2, retryDelay: 200 }); cleared = true } catch {}
+          }
+          cleared = cleared || !fs.existsSync(dir)
+        }
+      }
+      if (!cleared) {
+        throw new Error(
+          `cannot clear ${dir} (${error.code ?? error.message}). A leftover dsh web process is probably still running with this ` +
+          `directory as its cwd; close it (or kill the stale node process) and rerun.`,
+        )
+      }
     }
   }
   ensureDir(dir)
