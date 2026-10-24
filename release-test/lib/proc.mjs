@@ -7,7 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
-import { ensureDir, isWindows, redact, sleep } from './util.mjs'
+import { REPO_ROOT, ensureDir, isWindows, redact, sleep } from './util.mjs'
 
 export const LOG_SECTION = (title) => `\n===== ${title} =====\n`
 
@@ -118,31 +118,61 @@ export function killTree(child) {
   }, 5000).unref()
 }
 
-/**
- * Kill whatever still listens on `port`. Last line of defence for a leaked web
- * server (the pid we hold may be a wrapper that already exited).
- */
-export function killPortOwner(port) {
-  if (!isWindows) return
+/** Pids currently LISTENING on `port` (Windows; empty elsewhere). */
+export async function pidsListeningOn(port) {
+  if (!isWindows) return []
   const numeric = Number(port)
-  if (!Number.isFinite(numeric) || numeric <= 0) return
+  if (!Number.isFinite(numeric) || numeric <= 0) return []
   // Pipes are forbidden in confined sandboxes, so redirect netstat to a file.
-  const outFile = path.join(process.env.TEMP || process.env.TMP || '.', `dsh-release-port-${numeric}.txt`)
-  const child = spawn('cmd', ['/c', `netstat -ano -p tcp | findstr LISTENING | findstr :${numeric} > "${outFile}" 2>nul`], {
-    stdio: 'ignore',
-    windowsHide: true,
-  })
-  child.on('close', () => {
+  const outFile = path.join(process.env.TEMP || process.env.TMP || '.', `dsh-release-port-${numeric}-${process.pid}.txt`)
+  // No shell and no pipes: netstat writes straight to a file descriptor.
+  await new Promise((resolve) => {
+    let fd
+    let settled = false
+    const done = () => {
+      if (settled) return
+      settled = true
+      try { fs.closeSync(fd) } catch {}
+      resolve()
+    }
     try {
-      for (const line of fs.readFileSync(outFile, 'utf8').split(/\r?\n/)) {
-        const columns = line.trim().split(/\s+/)
-        const pid = columns[columns.length - 1]
-        if (/^\d+$/.test(pid) && Number(pid) > 0) killPid(pid)
-      }
-    } catch {}
-    try { fs.unlinkSync(outFile) } catch {}
+      fd = fs.openSync(outFile, 'w')
+      const child = spawn('netstat', ['-ano', '-p', 'tcp'], { stdio: ['ignore', fd, fd], windowsHide: true })
+      child.on('close', done)
+      child.on('error', done)
+    } catch {
+      done()
+    }
   })
-  child.on('error', () => {})
+  let pids = []
+  try {
+    pids = fs.readFileSync(outFile, 'utf8').split(/\r?\n/)
+      .filter((line) => /LISTENING/.test(line) && new RegExp(`:${numeric}\\s`).test(line))
+      .map((line) => line.trim().split(/\s+/).at(-1))
+      .filter((pid) => /^\d+$/.test(pid) && Number(pid) > 0)
+      .map(Number)
+  } catch {}
+  try { fs.unlinkSync(outFile) } catch {}
+  return [...new Set(pids)]
+}
+
+/**
+ * Kill whatever still listens on `port` and WAIT until the port is free.
+ * Last line of defence for a leaked web server (the pid we hold may be a wrapper
+ * such as `mise` that already exited). Must be awaited, otherwise the caller's
+ * own process.exit() can cancel the cleanup before it runs.
+ */
+export async function killPortOwner(port) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const pids = await pidsListeningOn(port)
+    if (!pids.length) return true
+    for (const pid of pids) killPid(pid)
+    for (let wait = 0; wait < 10; wait += 1) {
+      await sleep(200)
+      if (!(await pidsListeningOn(port)).length) return true
+    }
+  }
+  return false
 }
 
 /** Read a file if it exists, else ''. */

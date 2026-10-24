@@ -66,11 +66,13 @@ export async function bootServer({ version, cli, port, logFile, home, timeoutMs 
   throw new Error(`timed out after ${timeoutMs}ms waiting for the "dsh web:" ready line:\n${tail(text)}`)
 }
 
-export function stopServer(server) {
-  if (!server) return
+export async function stopServer(server) {
+  if (!server) return true
   killTree(server.child)
   // The pid we hold may be a wrapper (mise) that already exited; kill whoever
-  // still owns the port as a last line of defence.
-  if (server.port) killPortOwner(server.port)
+  // still owns the port, and WAIT for it — exiting early cancels the cleanup.
+  let portFree = true
+  if (server.port) portFree = await killPortOwner(server.port)
   if (server.pidFile) { try { fs.unlinkSync(server.pidFile) } catch {} }
+  return portFree
 }

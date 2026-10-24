@@ -244,7 +244,10 @@ async function runOne({ target, artifact, matrix, runDir, provision, keep, skipI
     result.error = redact(error?.stack ?? String(error))
     bad(`[${version}] ${error?.message ?? error}`)
   } finally {
-    if (server) stopServer(server)
+    if (server) {
+      const portFree = await stopServer(server)
+      if (!portFree) result.notes.push('a dsh web listener was still up after cleanup — check the port by hand')
+    }
     result.timings.totalMs = Date.now() - startedAt
   }
   return result
