@@ -90,4 +90,4 @@ gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> dsh-dbhu
 
 `package.json` 的 `files` 决定 npm 包内容：`lib`、`doc/REQUIREMENTS.md`、`doc/ARCHITECTURE.md`、`doc/DEVELOPMENT.md`、`doc/CLIENT.md`、`doc/RELEASE.md`、`doc/DESENSITIZE.md`、`doc/IMPACT-MATRIX.md`（七份文档供包内 AGENTS.md 链接）、`doc/images`、`test`、`scripts`、`cordis.patch.yml`、`README.md`、`README.en.md`、`AGENTS.md`、`LICENSE`。本地文档（`doc/PLAN-*.md`、`doc/implementation-notes.md`、`doc/RELEASE-NOTES-*.md`）被 `.gitignore` 排除，**永不进 git / npm 包**；`doc/SUPPORT-MATRIX.md` 是生成物，不随包分发。
 
-`prepublishOnly` = `npm run check:secrets && npm run release:preflight`——发布前两道门自动跑。
+`prepublishOnly` = `npm run check:docs && npm run check:secrets && npm run release:preflight`——发布前三道门自动跑。
