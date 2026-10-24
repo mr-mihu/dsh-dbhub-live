@@ -1,7 +1,7 @@
 {
   "name": "dsh-dbhub-live",
   "version": "5.2.0-dev.2",
-  "description": "DSH 数据库 MCP 桥接插件：让 AI 直接查询 MySQL / PostgreSQL / MariaDB / SQLite / SQL Server。按工作区动态配置连接（可改名、可跨工作区复制），AI 自助配置管理，密码与连接串只在界面输入、不作为工具参数传给模型，每次执行独立进程。5.2 起配置页适配弹窗 / 宽屏整页 / 手机小屏三套布局，页头显示版本与更新提示。",
+  "description": "DSH 数据库 MCP 插件：把 DBHub 接入 DeepSeek Harness，让 AI 在对话里直接查询 MySQL / PostgreSQL / MariaDB / SQLite / SQL Server。",
   "type": "module",
   "main": "lib/index.mjs",
   "exports": {
@@ -30,14 +30,21 @@
   ],
   "keywords": [
     "dsh",
-    "dbhub",
+    "dsh-plugin",
+    "deepseek-harness",
     "mcp",
+    "dbhub",
     "database",
+    "sql",
     "mysql",
-    "postgres",
-    "sqlite",
     "mariadb",
+    "postgres",
+    "postgresql",
+    "sqlite",
     "sqlserver",
+    "mssql",
+    "ai",
+    "agent",
     "plugin"
   ],
   "scripts": {
