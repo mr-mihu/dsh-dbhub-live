@@ -43,12 +43,12 @@ Supports **MySQL · PostgreSQL · MariaDB · SQLite · SQL Server**.
 
 | DSH version | UI | Boot | Hard checks | Result | Last verified |
 | --- | --- | --- | --- | --- | --- |
-| `0.1.5-rc.3` | legacy | 7.3s | 19 | ⚠️ pass with notes · manual | 2026-10-24 · 4f6a854a |
-| `0.1.6-alpha.2` | legacy | 3.5s | 19 | ⚠️ pass with notes · manual | 2026-10-24 · 4f6a854a |
-| `0.1.7-rc.2` | legacy | 4.7s | 20 | ⚠️ pass with notes · manual | 2026-10-24 · 4f6a854a |
-| `0.2.0-rc.2` | legacy | 4.9s | 20 | ⚠️ pass with notes · manual | 2026-10-24 · 4f6a854a |
-| `0.2.1-alpha.1` | modern | 5.1s | 20 | ⚠️ pass with notes · manual | 2026-10-24 · 4f6a854a |
-| `0.2.1-rc.2` | modern | 5.3s | 20 | ⚠️ pass with notes · manual | 2026-10-24 · 4f6a854a |
+| `0.1.5-rc.3` | legacy | 39.8s | 19 | ⚠️ pass with notes · manual | 2026-10-24 · 91642fa2 |
+| `0.1.6-alpha.2` | legacy | 13.1s | 19 | ⚠️ pass with notes · manual | 2026-10-24 · 91642fa2 |
+| `0.1.7-rc.2` | legacy | 14.8s | 20 | ⚠️ pass with notes · manual | 2026-10-24 · 91642fa2 |
+| `0.2.0-rc.2` | legacy | 14.8s | 20 | ⚠️ pass with notes · manual | 2026-10-24 · 91642fa2 |
+| `0.2.1-alpha.1` | modern | 15.2s | 20 | ⚠️ pass with notes · manual | 2026-10-24 · 91642fa2 |
+| `0.2.1-rc.2` | modern | 16.9s | 20 | ⚠️ pass with notes · manual | 2026-10-24 · 91642fa2 |
 
 </details>
 
