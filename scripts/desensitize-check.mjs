@@ -4,8 +4,8 @@
 //   * a BACKSTOP over every scanned file (IP literals, secret formats, entropy)
 //     so an unregistered new surface is still caught;
 //   * the registered SLOTS' targeted rules (credentialed URLs, secret-keyword
-//     assignments, internal host suffixes, local denylist names) where real
-//     values are actually plausible.
+//     assignments, internal host suffixes, absolute local paths, local denylist
+//     names) where real values are actually plausible.
 //
 // The repository is treated as content that ships publicly (npm tarball and the
 // public repository), so anything that looks like a real host, account,
@@ -20,7 +20,7 @@ import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   ALL_RULES, BACKSTOP_RULES, DENYLIST_VAR, ENTROPY, IP_ALLOWLIST, INTERNAL_HOST_SUFFIXES,
-  MAX_FILE_BYTES, PLACEHOLDER_HOSTS, PLACEHOLDER_PASSWORDS, PLACEHOLDER_VALUE_RE, PRAGMA,
+  LOCAL_PATH_RE, MAX_FILE_BYTES, PLACEHOLDER_HOSTS, PLACEHOLDER_PASSWORDS, PLACEHOLDER_VALUE_RE, PRAGMA,
   SECRET_FORMATS, SECRET_KEYWORDS, SKIP_DIRS, SKIP_EXT_RE, SKIP_FILES, SLOTS,
 } from './desensitize.config.mjs'
 
@@ -205,6 +205,13 @@ function checkLine(line, rules, denylist) {
   if (rules.includes('name') && denylist) {
     const hit = line.match(denylist)
     if (hit) add('name', `matches the local denylist ("${hit[0]}")`)
+  }
+
+  if (rules.includes('localpath')) {
+    const hit = line.match(LOCAL_PATH_RE)
+    if (hit) {
+      add('localpath', `"${hit[0]}" looks like an absolute local path — use a placeholder such as <repo>`)
+    }
   }
 
   if (rules.includes('entropy')) {

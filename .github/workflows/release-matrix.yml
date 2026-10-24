@@ -1,0 +1,58 @@
+name: Release matrix
+
+# Per-version web testing against real @deepseek-ai/dsh releases.
+#
+# Advisory on purpose: it runs where the network and Node are available, but the
+# release decision is made locally by `npm run release:preflight` plus an AI
+# review of the evidence. Wiring this as a required check would block on
+# registry outages and on dbhub provisioning, neither of which the contributor
+# controls.
+on:
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 'declared (blocking set) or advisory'
+        required: false
+        default: declared
+  schedule:
+    # Weekly drift check: a new DSH release should show up as a matrix gap.
+    - cron: '17 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The harness has no runtime dependencies, so no install step is needed.
+      - name: Pre-install pinned DSH CLIs with mise (no activation)
+        uses: jdx/mise-action@v2
+        with:
+          working_directory: release-test
+          install: true
+      - name: Harness self-test and matrix validation
+        run: |
+          node release-test/run.mjs selftest
+          node release-test/run.mjs matrix
+          node release-test/support-matrix.mjs --check
+      - name: Run the declared matrix against real DSH releases
+        run: node release-test/run.mjs --tier "${{ github.event.inputs.tier || 'declared' }}" --provision cli --cli-source mise
+      - name: Upload evidence and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-matrix-report
+          path: |
+            .release-test/reports/
+          retention-days: 14
+          if-no-files-found: warn

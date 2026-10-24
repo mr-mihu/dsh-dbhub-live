@@ -265,14 +265,16 @@ test('client bundle keeps the source handle copyable instead of echoing it inlin
   assert.doesNotMatch(source, /w\.dsn/)
 })
 
-test('client bundle uses product icons for row actions instead of text labels', () => {
+test('client bundle draws clear row-action icons instead of text labels', () => {
   assert.match(source, /function pickIcon\(name, glyph\)/)
-  assert.match(source, /typeof Icon === "function" \? Icon : function \(\) \{ return h\("span"/)
+  // Test / edit / delete are explicit 16px SVG shapes (the bundled edit glyph is
+  // ambiguous at 1x); copy and close keep their product primitives.
+  assert.match(source, /var svgIcon = function \(children\)/)
+  assert.match(source, /var RunIcon = svgIcon\(/)
+  assert.match(source, /var EditIcon = svgIcon\(/)
+  assert.match(source, /var TrashIcon = svgIcon\(/)
   assert.match(source, /pickIcon\("IconCopyOutline16"/)
-  assert.match(source, /pickIcon\("IconEditOutline16"/)
   assert.match(source, /pickIcon\("IconCloseOutline16"/)
-  assert.match(source, /pickIcon\("IconTrashOutline16"/)
-  assert.match(source, /pickIcon\("IconPlayOutline16"/)
   // icons carry their label in title/aria-label, never as row text
   assert.match(source, /"aria-label": t\("btn\.test"\)/)
   assert.match(source, /"aria-label": t\("btn\.delete"\)/)
@@ -428,4 +430,86 @@ test('client bundle disables what the installed dbhub cannot do', () => {
   assert.match(source, /"cap\.tooOld":/)
   assert.match(source, /disabled: !sshSupported,/)
   assert.match(source, /disabled: !roSupported,/)
+})
+
+test('client bundle gates every modern surface on the Host dsh version', () => {
+  // 5.2 surfaces (title/version header, update prompt, wide settings block,
+  // inline read-only toggle, switch-style controls) exist only on dsh >= 0.2.1.
+  // On 0.1.x the bundle must render the OLD DOM — the offscreen gate's legacy
+  // groups pin that, so the flag is read, never inferred from a slot existing.
+  assert.match(source, /var modern = value\.dshModern === true;/)
+  assert.match(source, /var pluginVersion = typeof value\.pluginVersion === "string"/)
+  assert.match(source, /var dshVersion = typeof value\.dshVersion === "string"/)
+  assert.match(source, /var runtime = value\.runtime === "desktop"/)
+  // The three mounts are named, not guessed: settings dialog vs full pages.
+  assert.match(source, /function SettingsSectionPanel\(props\)/)
+  assert.match(source, /function MainPanel\(props\)/)
+  assert.match(source, /surface: "modal"/)
+  assert.match(source, /surface: "main"/)
+  // Layout follows the measured column, with the phone check on the VIEWPORT
+  // (a narrow settings dialog on a desktop is not a phone).
+  assert.match(source, /function useMeasuredWidth\(ref\)/)
+  assert.match(source, /var isMobile = modern && \(viewportWidth > 0/)
+  assert.match(source, /var isWide = modern && !isMobile && surface !== "modal"/)
+})
+
+test('client bundle shows the plugin version and the quiet update prompt', () => {
+  assert.match(source, /"ver\.link": "可升级到 \{v\}"/)
+  assert.match(source, /"ver\.link": "Upgrade to \{v\}"/)
+  assert.match(source, /function parseUpdate\(value\)/)
+  // A text link by default; the instructions live in a panel opened on demand.
+  assert.match(source, /className: "dbh-updatelink"/)
+  assert.match(source, /className: "dbh-updatepanel"/)
+  assert.match(source, /t\("ver\.copySpec", \{ v: update\.latest \}\)/)
+  // the copy control copies the exact install spec; the web command is copiable too
+  assert.match(source, /dsh-dbhub-live@" \+ update\.latest/)
+  assert.match(source, /dsh plugin --profile web up dsh-dbhub-live@/)
+  // opening the page asks the Host for a throttled check; the button forces one
+  assert.match(source, /op: "updateCheck", force: false/)
+  assert.match(source, /op: "updateCheck", force: force === true/)
+  // Updating is neutral news, not an error: no red card/pill classes remain.
+  assert.doesNotMatch(source, /dbh-latest/)
+  assert.doesNotMatch(source, /dbh-updatecard/)
+  // desktop and web update routes differ
+  assert.match(source, /t\("ver\.desktopHint"/)
+  assert.match(source, /t\("ver\.webHint"/)
+  assert.match(source, /releases\/tag\/v/)
+})
+
+test('client bundle renders DSH-style settings rows, the harness Switch and row read-only chips', () => {
+  assert.match(source, /function switchControl\(opts\)/)
+  // The real toggle comes from the primitives module; the fallback is local.
+  assert.match(source, /primitives\.Switch/)
+  assert.match(source, /className: "dbh-fbswitch"/)
+  assert.match(source, /className: "dbh-settings"/)
+  assert.match(source, /className: "dbh-srow"/)
+  // Non-modal pages always use the horizontal bar (a narrow desktop column gets
+  // the compact variant instead of four stacked rows).
+  assert.match(source, /var useSettingsBar = modern && !isMobile && surface !== "modal"/)
+  assert.match(source, /className: "dbh-settings dbh-settingsbar"/)
+  // State words are two-character, current-state labels — never "已开启".
+  assert.match(source, /"row\.enable": "启用插件"/)
+  assert.match(source, /"state\.show": "显示"/)
+  assert.match(source, /"state\.hide": "隐藏"/)
+  assert.match(source, /"state\.on": "开启"/)
+  assert.match(source, /"state\.off": "关闭"/)
+  // Wide page owns the settings: enable / sidebar / policy switches + interval.
+  assert.match(source, /props\.setEnabled\(next\)/)
+  assert.match(source, /onChange: toggleSidebar/)
+  assert.match(source, /onChange: togglePolicy/)
+  // Read-only is a row chip in every layout, written as an options-only op.
+  assert.match(source, /className: "dbh-rochip"/)
+  assert.match(source, /op: "options", workspace: w\.path, env: w\.env, readOnly: w\.ro !== true/)
+  // The chip shows an OPEN lock + 可写 when writable and a CLOSED lock + 只读
+  // when locked, so a first-time user cannot mistake two writable rows for RO.
+  assert.match(source, /"dbh-roemoji"/)
+  assert.match(source, /on \? "🔒" : "🔓"/)
+  assert.match(source, /t\(on \? "ro\.chip" : "ro\.writable"\)/)
+  assert.match(source, /"ro\.writable": "可写"/)
+  assert.match(source, /"ro\.writable": "Writable"/)
+  // Long explanations are collapsed into the notes block.
+  assert.match(source, /className: "dbh-notes"/)
+  assert.match(source, /"note\.tools":/)
+  assert.match(source, /className: "dbh-titlebar"/)
+  assert.match(source, /className: "dbh-title"/)
 })

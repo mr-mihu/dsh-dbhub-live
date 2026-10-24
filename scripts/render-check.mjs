@@ -148,6 +148,19 @@ const primitivesStub = (() => {
     IconCloseOutline16: icon('ico-close'),
     IconTrashOutline16: icon('ico-trash'),
     IconPlayOutline16: icon('ico-run'),
+    // The harness's real toggle is a controlled `role=switch` button; the stub
+    // mirrors its contract so the gate exercises the primitive path, not just our
+    // fallback.
+    Switch: (props) => react.createElement('button', {
+      type: 'button',
+      role: 'switch',
+      'aria-checked': props.checked === true,
+      'aria-label': props.label,
+      disabled: props.disabled === true,
+      title: props.title,
+      className: 'dsh-switch-stub' + (props.className ? ' ' + props.className : ''),
+      onClick: () => { if (typeof props.onChange === 'function') props.onChange(props.checked !== true) },
+    }, react.createElement('span', { className: 'dsh-switch-thumb' })),
     writeClipboard: () => Promise.resolve(true),
   }
 })()
@@ -461,13 +474,58 @@ function page(rows, opts = {}) {
   const snapshot = snapshotOf(rows, opts.snapshot)
   const m = mount(snapshot, opts)
   liveMount = m
-  const entry = m.registrations['settings.section']
-  if (!entry) throw new Error('settings.section was not registered')
+  const slot = opts.slot || 'settings.section'
+  const entry = m.registrations[slot]
+  if (!entry) throw new Error(`${slot} was not registered`)
   const props = Object.assign({}, entry.def.inject(), opts.props, { view: 'page' })
   const comp = entry.comp
   const renderAgain = () => react.render(comp, props)
   react.reset()
   return Object.assign(m, { props, comp, renderAgain, tree: react.render(comp, props) })
+}
+
+/** The browser viewport width the page sees (the bundle falls back to it when
+ *  ResizeObserver is unavailable — which is this offscreen harness). */
+function viewport(px) {
+  windowShim.innerWidth = px
+}
+
+/** A modern (dsh >= 0.2.1) host view: version fields + an empty update snapshot. */
+const MODERN_DEFAULTS = {
+  dshModern: true,
+  pluginVersion: '5.2.0-dev.1',
+  dshVersion: '0.2.1-rc.2',
+  runtime: 'web',
+  update: '',
+}
+
+/** Set a `.dbh-switch-input` (the modern 显示/隐藏 toggle lives in it). */
+function switchWithin(node, cls, index, checked) {
+  const scope = classed(node, cls)[0]
+  if (!scope) throw new Error(`no .${cls} in the tree`)
+  const inputs = elements(scope, (el) => el.type === 'input'
+    && String(el.props.className || '').split(/\s+/).includes('dbh-switch-input'))
+  const input = inputs[index]
+  if (!input) throw new Error(`no switch ${index} inside .${cls} (found ${inputs.length})`)
+  input.props.onChange({ target: { checked } })
+  return input
+}
+
+/** Click the nth `role=switch` control inside the first `.cls` scope (the
+ *  harness Switch primitive's contract: click asks for the opposite state). */
+function clickSwitchWithin(node, cls, index) {
+  const scope = classed(node, cls)[0]
+  if (!scope) throw new Error(`no .${cls} in the tree`)
+  const switches = elements(scope, (el) => el.type === 'button' && el.props.role === 'switch')
+  const sw = switches[index]
+  if (!sw) throw new Error(`no role=switch ${index} inside .${cls} (found ${switches.length})`)
+  sw.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  return sw
+}
+
+/** All `role=switch` buttons in the tree. */
+function switches(node) {
+  return elements(node, (el) => el.type === 'button' && el.props.role === 'switch')
 }
 
 console.log('\n[1] tiled layout (every workspace has exactly one environment)')
@@ -610,6 +668,19 @@ console.log('\n[8] interaction: add panel (global + per group), settings strip, 
   check('sidebar switch writes showSidebarEntry immediately',
     writes.some(([k, v]) => k === 'showSidebarEntry' && v === false), JSON.stringify(writes))
   check('the settings summary reflects the switch', toHtml(p.tree).includes('侧边栏入口：隐藏'))
+
+  // The policy announcement is a SECOND, independent switch: it changes what
+  // the model sees (one system-prompt section), never what the tools can do.
+  check('strip carries the policy announcement switch', toHtml(p.tree).includes('向模型注入数据库访问策略'))
+  const beforePolicy = p.setCalls.length
+  checkBoxWithin(p.tree, 'dbh-strip', 1, false)
+  p.tree = p.renderAgain()
+  await new Promise((r) => setTimeout(r, 0))
+  const policyWrites = p.setCalls.slice(beforePolicy)
+  check('policy switch writes announceAccessPolicy immediately',
+    policyWrites.some(([k, v]) => k === 'announceAccessPolicy' && v === false), JSON.stringify(policyWrites))
+  check('disabling the announcement does not touch the enabled state',
+    !policyWrites.some(([k]) => k === 'enabled'), JSON.stringify(policyWrites))
 }
 
 console.log('\n[9] summary view (Plugins page one-liner)')
@@ -1076,7 +1147,220 @@ console.log('\n[22] a running probe shows its elapsed time and cleans the ticker
   p.dispose()
 }
 
+console.log('\n[24] modern wide page: quiet header, DSH-style settings rows, inline read-only chip')
+{
+  viewport(1440)
+  const p = page(TILED, {
+    slot: 'main',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  let html = toHtml(p.tree)
+  check('wide surface class applied', classed(p.tree, 'dbh-wide').length === 1, html.slice(0, 200))
+  check('modern class applied', classed(p.tree, 'dbh-modern').length === 1)
+  check('title bar rendered', count(p.tree, 'dbh-titlebar') === 1)
+  check('title is the plugin name', classed(p.tree, 'dbh-title').map((el) => toHtml(el)).some((t) => t.includes('DBHub 数据库工具')), toHtml(classed(p.tree, 'dbh-title')[0]))
+  check('current version shown next to the title', html.includes('v5.2.0-dev.1'))
+  check('no update UI when already current', classed(p.tree, 'dbh-updatelink').length === 0 && count(p.tree, 'dbh-updatepanel') === 0)
+  check('update check button offered (icon only)', classed(p.tree, 'dbh-vercheck').length === 1)
+  check('status line is state + connection count', count(p.tree, 'dbh-statusline') === 1 && html.includes('运行中') && html.includes('个连接'))
+  check('tool count / one-shot mode no longer in the header', !html.includes('4 个工具') && !html.includes('固定'), html.slice(0, 300))
+  check('no runtime badge in the header', !html.includes('Web 版') && !html.includes('桌面版'))
+  check('settings bar visible (wide page owns it)', count(p.tree, 'dbh-settings') === 1 && count(p.tree, 'dbh-settingsbar') === 1)
+  check('four settings groups on one compact line', count(p.tree, 'dbh-bargroup') === 4, `got ${count(p.tree, 'dbh-bargroup')}`)
+  check('three harness Switch controls (enable / sidebar / policy)', switches(p.tree).length === 3, `got ${switches(p.tree).length}`)
+  check('dbhub update interval stays on the same line', classed(p.tree, 'dbh-srow-input').length === 1)
+  check('no stretched settings rows in wide mode', count(p.tree, 'dbh-srow') === 0)
+  check('no old four-cell grid / gear strip', count(p.tree, 'dbh-config') === 0 && count(p.tree, 'dbh-strip') === 0)
+  check('a read-only chip per row (outside the edit form)', classed(p.tree, 'dbh-rochip').length === 3, `got ${classed(p.tree, 'dbh-rochip').length}`)
+  check('row actions stay icon-only (source + test + edit + delete)', classed(p.tree, 'dbh-iconbtn').length === 8, `got ${classed(p.tree, 'dbh-iconbtn').length}`)
+  // Notes are collapsed: the page acts first; the "why" is one click away.
+  check('technical details start collapsed', count(p.tree, 'dbh-notes') === 0)
+  clickClass(p.tree, 'dbh-linkbtn') // ⓘ 说明与技术详情
+  p.tree = p.renderAgain()
+  html = toHtml(p.tree)
+  check('notes expand with tool count / policy / versions', count(p.tree, 'dbh-notes') === 1 && html.includes('4 个工具') && html.includes('v5.2.0-dev.1'))
+  // Opening the page asks the Host for a THROTTLED update check (op only; the
+  // Host owns the network call and the cache).
+  const checks = p.opCalls.filter((o) => o.op === 'updateCheck')
+  check('page open dispatches a throttled update check', checks.length === 1 && checks[0].force === false, JSON.stringify(p.opCalls))
+  const before = p.setCalls.length
+  clickSwitchWithin(p.tree, 'dbh-settingsbar', 0)
+  check('enable switch disables the plugin', p.setCalls.slice(before).some(([k, v]) => k === 'enabled' && v === false), JSON.stringify(p.setCalls.slice(before)))
+  p.tree = p.renderAgain()
+  const beforeSidebar = p.setCalls.length
+  clickSwitchWithin(p.tree, 'dbh-settingsbar', 1)
+  // saveConfig chains one `host.set` per field through a promise, so the write
+  // lands on the next microtask (the immediate-apply contract, not a sync call).
+  await Promise.resolve()
+  await Promise.resolve()
+  check('sidebar switch saves 显示/隐藏 preference', p.setCalls.slice(beforeSidebar).some(([k, v]) => k === 'showSidebarEntry' && v === false), JSON.stringify(p.setCalls.slice(beforeSidebar)))
+  // The row chip is an options-only op: never a DSN.
+  const beforeOps = p.opCalls.length
+  clickClass(p.tree, 'dbh-rochip')
+  const roOp = p.opCalls.slice(beforeOps).find((o) => o.op === 'options')
+  check('row read-only chip writes {op:options, readOnly:true}', !!roOp && roOp.readOnly === true, JSON.stringify(roOp))
+  check('row read-only chip carries no dsn', !!roOp && roOp.dsn === undefined, JSON.stringify(roOp))
+  p.dispose()
+}
+
+console.log('\n[25] modern update link: quiet by default, neutral detail panel on click')
+{
+  const update = JSON.stringify({
+    latest: '5.2.0', latestSpec: 'dsh-dbhub-live@5.2.0', hasUpdate: true,
+    checkedAt: Date.now(), source: 'npm', error: '',
+  })
+  viewport(1440)
+  const p = page(TILED, {
+    slot: 'main',
+    snapshot: Object.assign({}, MODERN_DEFAULTS, { update }),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  let html = toHtml(p.tree)
+  check('update surfaces as a quiet text link', classed(p.tree, 'dbh-updatelink').length === 1 && html.includes('可升级到 5.2.0'), html.slice(0, 300))
+  check('no red/error-styled update card exists', classed(p.tree, 'dbh-latest').length === 0 && count(p.tree, 'dbh-updatecard') === 0)
+  check('details stay collapsed until asked for', count(p.tree, 'dbh-updatepanel') === 0)
+  clickClass(p.tree, 'dbh-updatelink')
+  p.tree = p.renderAgain()
+  html = toHtml(p.tree)
+  check('clicking the link opens the neutral detail panel', count(p.tree, 'dbh-updatepanel') === 1)
+  check('panel carries the install spec', html.includes('dsh-dbhub-live@5.2.0'))
+  check('web runtime gets the web update command', html.includes('dsh plugin --profile web up dsh-dbhub-live@5.2.0'))
+  const releaseHref = elements(p.tree, (el) => typeof el.props.href === 'string').map((el) => el.props.href)
+  check('release notes link points at the GitHub release', releaseHref.some((h) => h.includes('https://github.com/mr-mihu/dsh-dbhub-live/releases/tag/v5.2.0')), JSON.stringify(releaseHref))
+  // The copy control copies the exact install spec (the thing a person pastes).
+  let copied = ''
+  const previousClipboard = primitivesStub.writeClipboard
+  primitivesStub.writeClipboard = (text) => { copied = String(text); return Promise.resolve(true) }
+  clickClass(p.tree, 'dbh-linkbtn')
+  primitivesStub.writeClipboard = previousClipboard
+  check('copy control copies dsh-dbhub-live@<latest>', copied === 'dsh-dbhub-live@5.2.0', JSON.stringify(copied))
+  // The explicit check button forces a refresh (bypassing the Host throttle).
+  const before = p.opCalls.length
+  clickClass(p.tree, 'dbh-vercheck')
+  check('check button forces a fresh check', p.opCalls.slice(before).some((o) => o.op === 'updateCheck' && o.force === true), JSON.stringify(p.opCalls.slice(before)))
+  p.dispose()
+}
+
+console.log('\n[26] modern update panel on desktop: uninstall/reinstall guidance, no web command')
+{
+  viewport(1440)
+  const update = JSON.stringify({
+    latest: '5.2.0', latestSpec: 'dsh-dbhub-live@5.2.0', hasUpdate: true,
+    checkedAt: Date.now(), source: 'npm', error: '',
+  })
+  const p = page(TILED, {
+    slot: 'main',
+    snapshot: Object.assign({}, MODERN_DEFAULTS, { runtime: 'desktop', update }),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  let html = toHtml(p.tree)
+  check('no desktop runtime badge in the header', !html.includes('桌面版'))
+  clickClass(p.tree, 'dbh-updatelink')
+  p.tree = p.renderAgain()
+  html = toHtml(p.tree)
+  check('desktop guidance says uninstall + reinstall', html.includes('卸载') && html.includes('重新安装'))
+  check('desktop guidance keeps the data location', html.includes('~/.dsh/storages/dsh-dbhub-live'))
+  check('desktop panel offers no web install command', !html.includes('dsh plugin --profile web up'), html.slice(0, 400))
+  p.dispose()
+}
+
+console.log('\n[27] modern settings dialog: compact header, 设置 disclosure, read-only chips visible')
+{
+  viewport(1440)
+  const p = page(TILED, {
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  let html = toHtml(p.tree)
+  check('modal surface class applied', classed(p.tree, 'dbh-modal').length === 1)
+  check('modal is not the wide page', classed(p.tree, 'dbh-wide').length === 0)
+  check('modal shows the title + version header', count(p.tree, 'dbh-titlebar') === 1 && html.includes('v5.2.0-dev.1'))
+  check('no legacy header or gear strip in the modern dialog', count(p.tree, 'dbh-head') === 0 && count(p.tree, 'dbh-strip') === 0 && !html.includes('⚙'))
+  check('settings sit behind the status-line toggle (not in the header)', html.includes('设置') && classed(p.tree, 'dbh-linkbtn').length >= 1)
+  check('read-only chip is available in the dialog too', classed(p.tree, 'dbh-rochip').length === 3, `got ${classed(p.tree, 'dbh-rochip').length}`)
+  // uiMemory survives mounts, so an earlier group may have left the disclosure
+  // open; either way the toggle must own the rows and close them on the next click.
+  if (count(p.tree, 'dbh-settings') === 0) {
+    clickClass(p.tree, 'dbh-linkbtn')
+    p.tree = p.renderAgain()
+  }
+  html = toHtml(p.tree)
+  check('the dialog opens the same DSH-style rows', count(p.tree, 'dbh-settings') === 1 && count(p.tree, 'dbh-srow') === 4)
+  check('sidebar/policy controls are harness switches', switches(p.tree).length === 3)
+  const modernRows = classed(p.tree, 'dbh-settings')[0]
+  check('no legacy tick-box left in the settings rows', elements(modernRows, (el) => el.type === 'input' && String(el.props.className || '').includes('dbh-checkbox')).length === 0)
+  clickClass(p.tree, 'dbh-linkbtn')
+  p.tree = p.renderAgain()
+  check('the same toggle collapses the rows again', count(p.tree, 'dbh-settings') === 0)
+  p.dispose()
+}
+
+console.log('\n[28] modern phone browser: stacked layout, chips and settings still reachable')
+{
+  viewport(390)
+  const p = page(TILED, {
+    slot: 'main',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  const html = toHtml(p.tree)
+  check('mobile surface class applied', classed(p.tree, 'dbh-mobile').length === 1, html.slice(0, 200))
+  check('phone layout is not the wide page', classed(p.tree, 'dbh-wide').length === 0)
+  check('phone shows the title + version', count(p.tree, 'dbh-titlebar') === 1 && html.includes('v5.2.0-dev.1'))
+  check('phone keeps the icon-only row actions', classed(p.tree, 'dbh-iconbtn').length === 8)
+  check('read-only chips remain available on the phone', classed(p.tree, 'dbh-rochip').length === 3)
+  if (count(p.tree, 'dbh-settings') === 0) {
+    clickClass(p.tree, 'dbh-linkbtn')
+    p.tree = p.renderAgain()
+  }
+  check('phone can open the settings rows', count(p.tree, 'dbh-srow') === 4)
+  viewport(1440)
+  p.dispose()
+}
+
+console.log('\n[29] dsh version gate: modern host fields on a 0.1.x runtime render the OLD page')
+{
+  viewport(1440)
+  const p = page(TILED, {
+    slot: 'main',
+    snapshot: Object.assign({}, MODERN_DEFAULTS, { dshModern: false }),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  const html = toHtml(p.tree)
+  check('no modern class on a legacy runtime', classed(p.tree, 'dbh-modern').length === 0)
+  check('no title bar on a legacy runtime', count(p.tree, 'dbh-titlebar') === 0)
+  check('no settings rows on a legacy runtime', count(p.tree, 'dbh-settings') === 0)
+  check('no inline read-only chip on a legacy runtime', classed(p.tree, 'dbh-rochip').length === 0)
+  check('no harness Switch on a legacy runtime', switches(p.tree).length === 0)
+  check('no update check dispatched on a legacy runtime', p.opCalls.filter((o) => o.op === 'updateCheck').length === 0, JSON.stringify(p.opCalls))
+  check('legacy header still carries the gear + enable controls', html.includes('⚙') && html.includes('禁用'))
+  check('legacy status text is unchanged (tool count stays)', html.includes('4 个工具'))
+  p.dispose()
+}
+
+console.log('\n[30] narrow desktop window: non-modal pages keep the horizontal settings bar')
+{
+  // 710px viewport: not a phone (>= 700) and not "wide" (< 720), which used to
+  // fall back to four stacked rows — the desktop complaint. The bar must stay
+  // horizontal, with its compact variant applied.
+  viewport(710)
+  const p = page(TILED, {
+    slot: 'main',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  const html = toHtml(p.tree)
+  check('narrow desktop still renders the settings bar', count(p.tree, 'dbh-settingsbar') === 1, html.slice(0, 200))
+  check('narrow bar uses the compact variant', classed(p.tree, 'dbh-barnarrow').length === 1)
+  check('no vertical settings rows on a narrow desktop', count(p.tree, 'dbh-srow') === 0)
+  check('all four controls stay reachable', count(p.tree, 'dbh-bargroup') === 4 && switches(p.tree).length === 3)
+  viewport(1440)
+  p.dispose()
+}
+
 if (liveMount) liveMount.dispose()
 
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`)
 process.exitCode = failures === 0 ? 0 : 1
+
