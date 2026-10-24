@@ -10,8 +10,10 @@ node_modules/
 .env
 .env.local
 
-# Local isolated test home (see AGENTS.md debug workflow).
+# Local isolated test homes (see doc/DEVELOPMENT.md "冷启动验证").
 .dsh-test/
+.dsh-a/
+.dsh-b/
 
 # Release-test work dir: pinned DSH CLIs, isolated DSH homes, per-target evidence
 # and reports. All of it is reproducible output — never commit it.

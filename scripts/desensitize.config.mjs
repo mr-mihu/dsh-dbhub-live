@@ -13,7 +13,7 @@
 //     secret formats, high-entropy strings.
 //   * slot rules — run inside the registered slots only (targeted, lower noise):
 //     credentialed-URL password/host, secret-keyword assignments, internal host
-//     suffixes, and the local denylist of bare names.
+//     suffixes, absolute local paths, and the local denylist of bare names.
 //
 // Rules for editing content (not just for the gate):
 //   * example host      -> 127.0.0.1, localhost, or an RFC 5737 range
@@ -156,8 +156,16 @@ export const ENTROPY = {
 /** Inline escape hatch: a line carrying this marker is skipped. */
 export const PRAGMA = 'desensitize:allow'
 
+/**
+ * Absolute local filesystem paths (a developer machine layout: drive-letter
+ * paths and POSIX home directories). The repository ships publicly, so no real
+ * machine path may appear in it. Applied as a SLOT rule rather than a backstop:
+ * test fixtures legitimately use synthetic drive paths (`C:\\ws\\good`).
+ */
+export const LOCAL_PATH_RE = /(?<![A-Za-z])[A-Za-z]:[\\/]|\/(?:Users|home)\/[A-Za-z0-9._-]+\//
+
 /** Rules the checker understands. */
-export const ALL_RULES = ['ip', 'secret', 'entropy', 'password', 'dsn', 'host', 'name']
+export const ALL_RULES = ['ip', 'secret', 'entropy', 'password', 'dsn', 'host', 'name', 'localpath']
 
 /**
  * Backstop rules: applied to every scanned file, including files no slot
@@ -203,21 +211,21 @@ export const SLOTS = [
   },
   {
     id: 'docs',
-    description: '用户文档示例：安装、配置、故障排查里的连接示例',
+    description: '用户文档示例：安装、配置、故障排查里的连接示例（不得含真实机器路径）',
     globs: ['README.md', 'README.en.md', 'doc/**/*.md'],
-    rules: ['password', 'dsn', 'host', 'name'],
+    rules: ['password', 'dsn', 'host', 'name', 'localpath'],
   },
   {
     id: 'package-meta',
-    description: '包元数据与 bundle patch：description/keywords 不得含内部项目名',
+    description: '包元数据与 bundle patch：description/keywords 不得含内部项目名或机器路径',
     globs: ['package.json', 'cordis.patch.yml'],
-    rules: ['password', 'host', 'name'],
+    rules: ['password', 'host', 'name', 'localpath'],
   },
   {
     id: 'agent-prompt',
-    description: '开发规范（提示词）：只写规则与变量名，绝不写真实值',
+    description: '开发规范（提示词）：只写规则与变量名，绝不写真实值或本机绝对路径',
     globs: ['AGENTS.md'],
-    rules: ['password', 'dsn', 'host', 'name'],
+    rules: ['password', 'dsn', 'host', 'name', 'localpath'],
   },
   {
     id: 'tooling',

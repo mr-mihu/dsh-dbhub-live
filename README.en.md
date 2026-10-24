@@ -8,7 +8,7 @@
 [![npm version](https://img.shields.io/npm/v/dsh-dbhub-live)](https://www.npmjs.com/package/dsh-dbhub-live)
 [![Listed on dsh-plugin.org](https://dsh-plugin.org/badges/listed.svg)](https://dsh-plugin.org/plugins/mr-mihu/dsh-dbhub-live)
 
-> Let the AI inside [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) query your databases directly — **your password never enters the model context**.
+> Let the AI inside [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) query your databases directly — **the password is typed in the UI, not passed to the model as a tool argument**.
 
 Install it and you can simply tell the AI "show me the last 10 rows of the orders table". The AI runs SQL through [DBHub](https://dbhub.ai) (a database MCP server), but all it ever knows is *which environment of which workspace*, plus metadata such as `mysql://host:3306/db`; **passwords, accounts and full connection strings always stay on your machine**, typed only into the box in front of you.
 
@@ -23,7 +23,7 @@ Install it and you can simply tell the AI "show me the last 10 rows of the order
 
 | | |
 | --- | --- |
-| 🔒 **Zero-knowledge credentials** | The model only sees type / host / port / database; the password is typed in the UI and never enters the model context |
+| 🔒 **Credentials stay out of tool arguments** | The model only sees type / host / port / database; the password and the full DSN are not accepted as tool arguments — they are typed in the UI |
 | ⚡ **One-shot process** | No resident dbhub service: every call is its own process, killed the moment it finishes; a failed query only affects itself, and parallel instances never kill each other |
 | 🧮 **Always 4 tools** | However many environments you add, the model context never grows |
 | 🗂 **Per workspace × environment** | One workspace can hold `default` / `prod` / `dev`… (environment names may be Chinese), told apart by their `source` — never the wrong database |
@@ -87,7 +87,7 @@ Then **restart `dsh web`**.
 
 **Desktop**: uninstall the plugin on the **left menu → Plugins** page and reinstall the latest version (desktop updates go through the visual Plugins page). **Connections and credentials survive the reinstall** — they live in `~/.dsh/storages/dsh-dbhub-live`, independent of the module directory.
 
-**No need to remember version numbers**: the configure page header shows the plugin name and the current version; when a newer version exists a light-red "**Upgrade to <latest>**" hint appears and **clicking it copies** `dsh-dbhub-live@<latest>`; the "Check for updates" button next to it checks on demand. Opening the page also triggers one automatic check (throttled, so it does not hit the network on every open). Checks use the **npm registry first, with GitHub Releases as the fallback**; release notes live in [GitHub Releases](https://github.com/mr-mihu/dsh-dbhub-live/releases).
+**No need to remember version numbers**: the configure page header shows the plugin name and the current version; when a newer version exists a quiet "**↑ Upgrade to <latest>**" text link appears and **clicking it copies** `dsh-dbhub-live@<latest>`; the "Check for updates" button next to it checks on demand. Opening the page also triggers one automatic check (throttled, so it does not hit the network on every open). Checks use the **npm registry first, with GitHub Releases as the fallback**; release notes live in [GitHub Releases](https://github.com/mr-mihu/dsh-dbhub-live/releases).
 
 > The version/update hint is part of the new UI and needs plugin 5.2.0+ and DSH 0.2.1+; on 0.1.x it is not shown (see "Configure Page").
 
@@ -110,6 +110,8 @@ AI:  … (query results)
 </details>
 
 The password is only ever typed into the box in front of you. If you give only part of the picture (say "connect to mydb on 192.0.2.10"), the plugin **probes with those non-sensitive facts first**: if it connects, the connection is saved straight away (password-less databases need no input at all); if only the password is missing it asks just for "account (when unknown) + password"; only when the information is incomplete do you choose a full method (enter a DSN / fill in fields / authorise a scan of project config files).
+
+> **Do not paste a password into the chat.** The plugin itself does not hand the password to the model, but **anything you paste into the conversation does enter the context** — the plugin cannot prevent that, and cannot take it back.
 
 When the workspace already has `mise env` or a `.env` (`DSN` / `DB_*`), the plugin discovers it automatically — no manual configuration needed.
 
@@ -157,7 +159,7 @@ The same component offers **three layouts**, picked automatically from the host 
 | --- | --- | --- |
 | Modal | **Settings → DBHub Database Tools** | A narrow modal, same density as before, settings behind the "Settings" disclosure on the status line |
 | Wide page | The **DBHub** entry in the left menu / the Configure control on the Plugins row | A full page in a wide column, with the version and upgrade entry in the header and settings rows expanded inline |
-| Small screen | A mobile browser, width < ~600px | Stacked and compact, controls sized for touch |
+| Small screen | A mobile browser, width < ~700px | Stacked and compact, controls sized for touch |
 
 **Header: version and upgrade entry**: the title is the plugin name with the current version (small, muted) right next to it; when a newer version exists a quiet "**↑ Upgrade to <latest>**" text link appears on the right, and **clicking it expands** the update notes — the `dsh-dbhub-live@<latest>` spec (click to copy), the update command / steps for this deployment, and a link to the release notes; the "↻" button checks on demand. Opening the page also triggers an automatic check (throttled). Checks use the npm registry first, with GitHub Releases as the fallback. **An update is neutral news, never styled as an error.**
 

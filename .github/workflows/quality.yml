@@ -34,6 +34,8 @@ jobs:
         run: npm run check
       - name: Desensitization gate (slots + backstop)
         run: npm run check:secrets
+      - name: Documentation gate (links, anchors, shipped docs, impact matrix)
+        run: npm run check:docs
       - name: Client layout gate (offline render + interaction)
         run: npm run check:ui
       - name: Unit tests
