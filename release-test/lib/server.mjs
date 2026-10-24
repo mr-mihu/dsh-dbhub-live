@@ -3,7 +3,7 @@ import net from 'node:net'
 import fs from 'node:fs'
 import path from 'node:path'
 import { REPO_ROOT, sleep, tail } from './util.mjs'
-import { readIfExists, start, killTree } from './proc.mjs'
+import { readIfExists, start, killTree, killPortOwner } from './proc.mjs'
 import { cliInvocation } from './cli-source.mjs'
 import { dshEnv, workspaceDir } from './home.mjs'
 
@@ -52,6 +52,7 @@ export async function bootServer({ version, cli, port, logFile, home, timeoutMs 
         readyMs: Date.now() - started,
         logTail: tail(text, 2000),
         pidFile,
+        port,
       }
     }
     if (child.exitCode !== null) {
@@ -65,7 +66,11 @@ export async function bootServer({ version, cli, port, logFile, home, timeoutMs 
   throw new Error(`timed out after ${timeoutMs}ms waiting for the "dsh web:" ready line:\n${tail(text)}`)
 }
 
-export function stopServer(child, pidFile = null) {
-  killTree(child)
-  if (pidFile) { try { fs.unlinkSync(pidFile) } catch {} }
+export function stopServer(server) {
+  if (!server) return
+  killTree(server.child)
+  // The pid we hold may be a wrapper (mise) that already exited; kill whoever
+  // still owns the port as a last line of defence.
+  if (server.port) killPortOwner(server.port)
+  if (server.pidFile) { try { fs.unlinkSync(server.pidFile) } catch {} }
 }

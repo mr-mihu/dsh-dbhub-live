@@ -83,25 +83,66 @@ export function start(cmd, args, { cwd = process.cwd(), env = process.env, logFi
   return child
 }
 
-/** Kill a process and its children. Best effort, never throws. */
-export function killTree(child) {
-  if (!child || child.exitCode !== null) return
+/**
+ * Kill a pid and its children. Best effort, never throws.
+ *
+ * Note: this must NOT skip when the direct child already exited. A wrapper such
+ * as `mise x … -- dsh web` can exit while the real server keeps running as a
+ * grandchild; skipping on `child.exitCode !== null` leaked those servers.
+ */
+export function killPid(pid) {
+  const numeric = Number(pid)
+  if (!Number.isFinite(numeric) || numeric <= 0) return
   try {
     if (isWindows) {
-      // taskkill without stdio capture: spawn with 'ignore' is allowed in sandboxes.
-      spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+      // TerminateProcess via process.kill works without elevation; taskkill is
+      // kept as a best-effort tree kill because some sandboxes deny it.
+      try { process.kill(numeric) } catch {}
+      spawn('taskkill', ['/PID', String(numeric), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
     } else {
-      try { process.kill(-child.pid, 'SIGTERM') } catch { child.kill('SIGTERM') }
+      try { process.kill(-numeric, 'SIGTERM') } catch { try { process.kill(numeric, 'SIGTERM') } catch {} }
       setTimeout(() => {
-        try { process.kill(-child.pid, 'SIGKILL') } catch {}
+        try { process.kill(-numeric, 'SIGKILL') } catch {}
       }, 3000).unref()
     }
   } catch {}
+}
+
+export function killTree(child) {
+  if (!child) return
+  killPid(child.pid)
   setTimeout(() => {
     if (child.exitCode === null) {
       try { child.kill('SIGKILL') } catch {}
     }
   }, 5000).unref()
+}
+
+/**
+ * Kill whatever still listens on `port`. Last line of defence for a leaked web
+ * server (the pid we hold may be a wrapper that already exited).
+ */
+export function killPortOwner(port) {
+  if (!isWindows) return
+  const numeric = Number(port)
+  if (!Number.isFinite(numeric) || numeric <= 0) return
+  // Pipes are forbidden in confined sandboxes, so redirect netstat to a file.
+  const outFile = path.join(process.env.TEMP || process.env.TMP || '.', `dsh-release-port-${numeric}.txt`)
+  const child = spawn('cmd', ['/c', `netstat -ano -p tcp | findstr LISTENING | findstr :${numeric} > "${outFile}" 2>nul`], {
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  child.on('close', () => {
+    try {
+      for (const line of fs.readFileSync(outFile, 'utf8').split(/\r?\n/)) {
+        const columns = line.trim().split(/\s+/)
+        const pid = columns[columns.length - 1]
+        if (/^\d+$/.test(pid) && Number(pid) > 0) killPid(pid)
+      }
+    } catch {}
+    try { fs.unlinkSync(outFile) } catch {}
+  })
+  child.on('error', () => {})
 }
 
 /** Read a file if it exists, else ''. */

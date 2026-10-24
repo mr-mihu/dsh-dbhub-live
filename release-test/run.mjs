@@ -244,7 +244,7 @@ async function runOne({ target, artifact, matrix, runDir, provision, keep, skipI
     result.error = redact(error?.stack ?? String(error))
     bad(`[${version}] ${error?.message ?? error}`)
   } finally {
-    if (server) stopServer(server.child, server.pidFile)
+    if (server) stopServer(server)
     result.timings.totalMs = Date.now() - startedAt
   }
   return result
@@ -522,3 +522,12 @@ if (!handler) {
 } else {
   await handler()
 }
+
+// Explicit exit after flushing stdout. A leaked handle (an orphaned web server,
+// a lingering socket) must never keep the calling shell alive after the run has
+// already printed its summary and written its report.
+await new Promise((resolve) => {
+  if (process.stdout.writableLength === 0) resolve()
+  else process.stdout.write('', () => resolve())
+})
+process.exit(process.exitCode ?? 0)
