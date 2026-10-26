@@ -15,7 +15,7 @@
 <details>
 <summary>📷 界面预览：设置 → DBHub 数据库工具</summary>
 
-![DBHub 数据库工具配置页](doc/images/settings-page.png)
+![DBHub 数据库工具宽屏页：状态行 + 一行设置条 + 按工作区分组的连接列表，以及一条「连接测试成功」回执](doc/images/test-success.png)
 
 </details>
 
@@ -147,9 +147,9 @@ AI：…（返回查询结果）
 ## 配置页
 
 <details>
-<summary>📷 连接行编辑器：只读模式与 SSH 隧道</summary>
+<summary>📷 添加连接：只读模式与 SSH 隧道</summary>
 
-![连接行与「测试 SSH 隧道」](doc/images/row-editor.png)
+![添加连接表单，以及「测试 SSH 隧道」成功回执](doc/images/ssh-tunnel.png)
 
 </details>
 

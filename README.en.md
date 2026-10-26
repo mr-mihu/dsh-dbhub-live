@@ -15,7 +15,7 @@ Install it and you can simply tell the AI "show me the last 10 rows of the order
 <details>
 <summary>📷 Preview: Settings → DBHub Database Tools</summary>
 
-![DBHub Database Tools configure page](doc/images/settings-page.png)
+![DBHub Database Tools wide page: status line, one compact settings bar, connections grouped by workspace, and a successful connection-test receipt](doc/images/test-success.png)
 
 </details>
 
@@ -147,9 +147,9 @@ While the plugin is enabled it contributes a **system-prompt section** (about 40
 ## Configure Page
 
 <details>
-<summary>📷 Row editor: read-only mode and SSH tunnel</summary>
+<summary>📷 Add connection: read-only mode and SSH tunnel</summary>
 
-![Connection row and "Test SSH tunnel"](doc/images/row-editor.png)
+![Add-connection form, with a successful "Test SSH tunnel" receipt](doc/images/ssh-tunnel.png)
 
 </details>
 
