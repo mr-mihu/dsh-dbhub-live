@@ -147,14 +147,15 @@ test('both sources failing yields a short error and KEEPS the previous result', 
   assert.equal(bad.latestSpec, 'dsh-dbhub-live@5.2.0')
   assert.equal(bad.source, 'npm')
   assert.equal(bad.hasUpdate, true)
-  assert.equal(bad.checkedAt, 60_000, 'checkedAt advances even on failure')
+  assert.equal(bad.checkedAt, 1_000, 'a FAILED check does not stamp the reuse window')
   assert.equal(bad.error, 'npm: HTTP 503; github: HTTP 500')
 
   // A brand-new checker has nothing to preserve: a failure leaves it empty.
+  const freshFetch = stubFetch({ [NPM_LATEST_URL]: fail(503), [GITHUB_LATEST_URL]: fail(500) })
   const fresh = createUpdateChecker({
     currentVersion: '5.1.1-dev.1',
     now: () => clock,
-    fetchImpl: stubFetch({ [NPM_LATEST_URL]: fail(503), [GITHUB_LATEST_URL]: fail(500) }),
+    fetchImpl: freshFetch,
   })
   const empty = await fresh.check(true)
   assert.equal(empty.latest, '')
@@ -162,6 +163,15 @@ test('both sources failing yields a short error and KEEPS the previous result', 
   assert.equal(empty.hasUpdate, false)
   assert.equal(empty.source, '')
   assert.equal(empty.error, 'npm: HTTP 503; github: HTTP 500')
+  assert.equal(empty.checkedAt, 0, 'nothing was checked successfully, so nothing is stamped')
+  assert.equal(freshFetch.calls.length, 2, 'npm + the github fallback')
+
+  // …and the next NON-forced call goes back to the network. Advancing `checkedAt`
+  // on failure used to park the retry a whole DEFAULT_THROTTLE_MS away: the card
+  // sat on "检查更新失败" for half an hour after the network was already back.
+  const retried = await fresh.check()
+  assert.equal(freshFetch.calls.length, 4, 'the failed check is retried, not reused')
+  assert.equal(retried.error, empty.error)
 })
 
 test('hasUpdate is strictly-newer and prerelease-aware', async () => {
@@ -256,7 +266,7 @@ test('a request that outlives the budget is aborted and reported as timeout', as
   assert.equal(snap.latest, '')
   assert.equal(snap.source, '')
   assert.equal(snap.error, 'npm: timeout; github: timeout')
-  assert.equal(snap.checkedAt, 1)
+  assert.equal(snap.checkedAt, 0, 'a timeout is not a completed check')
 })
 
 test('snapshot() returns a detached copy', async () => {

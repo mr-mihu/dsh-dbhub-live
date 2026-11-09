@@ -40,6 +40,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 ### 执行路径
 - `ro === true || ssh != null` → 临时 `--config`；其余走 `--dsn`。
 - TOML 里秘密只写 `${DSH_DBHUB_SEC_*}` 占位符，真值走子进程 env；**引用集合 == env 键集合**（`test/toml.test.mjs`）。
+- `tomlString` 转义**全部** TOML 禁止的字符：`\\ " \r \n \t` 之外还有 C0 控制符与 DEL（`\b`/`\f` 用短转义，其余 `\uXXXX`）。裸控制符让整份文档不可解析，而 dbhub 的报错不指名字段——一个控制符会伪装成「隧道坏了」（`test/toml.test.mjs`）。
 - `[[tools]]` 是白名单：只读必须写**两条** → [原因](doc/ARCHITECTURE.md#一次性toml的由来)。
 - 版本门槛：1.4.0 起实测；`< 1.0.0` 拒绝（`result.dbhubTooOld`）；不生成未实测写法。
 - 临时文件在 `$DSH_HOME/storages/dsh-dbhub-live/tmp/`：`finally` 尽力删 + boot 时 `sweepTempToml()`。
@@ -49,6 +50,9 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - `setWorkspaceEnv(..., opts?)`：opts 缺省**保留** readOnly/ssh；`{readOnly:false}` / `{ssh:null}` 才是删除。`setWorkspaceEnvOptions` 只改选项不碰 DSN。
 - 模型传 `readOnly:true` 允许、`false` 拒绝（`result.readOnlyUserOnly`，拦截在 `runConfigure`）。
 - `handleConfigOp`：`add` / `set` / `rename` / `remove` / `test` / `options`；`options` 可带 `newEnv`（改名+改选项原子）；行不存在时提升为持久化行（`source:'promoted'`）。实现在 `applyOptionsOp`。
+- **`options` 无选项字段且无 `newEnv` = 零写入**：不调 `setWorkspaceEnvOptions`（它会推进 `updatedAt` 并重写文件），直接返回 `{patches:[], noop:true}`；只有改名时补丁仅含 `rename`。空补丁写成一次"编辑"会让"最近改动时间"失去意义。
+- **test op 的 `ssh:null` 是信息，不是缺省**：`testOpHasOptions` 按「键存在」判断（`op.ssh && …` 的旧判据会把"清隧道后点测试"打回已存行，探的还是被删掉的隧道），`testProbeOptionsOf` 的三态（null / 对象 / 缺省）不变。SSH 层测试的空 `host`/`user` 在**卡片**就拦下（`adv.testSshNeedFields`）——开关打开时 `connDraftOf` 恒返回对象，旧 `if (!ssh)` 是死分支。
+- 扫描候选标签 = **序号 + 是否含密码**（`scanCandidateOptions`）：`connLabel` 只有元数据，同库两条不同凭据会撞成同一标签，"用 prod 那条"可能落库 dev 的 DSN；标签回传即选择键，必须唯一（`test/scan-candidates.test.mjs`）。
 - 秘密字段「留空 = 保持原值」；`auth==='key'` 且无已存路径时落 `DEFAULT_SSH_KEY_PATH = '~/.ssh/id_ed25519'`；载荷统一走 `connDraftOf` / `withConnDraft`。
 - 卡片不回显秘密，所以 `add`/`set` 在写之前也要 `mergeSshOptions(op.ssh, 已存行.ssh)`（与 `options` 同款）；规范化失败 → `result.badSsh` 报错，**不许静默清除隧道**。合并+校验必须发生在**改名之前**（已存行按 `findRow(renameFrom || env)` 取），否则隧道非法时行已改名、回执却说「未做任何修改」（半写）。`ssh` 为任何非 null 值都要校验（含 `''`），不能只在真值时校验。
 - `renameWorkspaceEnv` 返回 `{ name, collided, renamed }`：落到已存在的环境必须先确认（`{confirm:true}` / 卡片 `overwrite:true`），未确认则 `renamed:false` 且零写入；`newEnv` 空 = 不改名（不会归一成 `default`）。**冲突判据是 `collided === true`**——用 `!renamed` 会把「改到自己的名字」（`{renamed:false, collided:false}`）误报成「目标环境已存在」；同名 = 无需改名，继续后续写入。`copyFrom` 覆盖已有环境同样先问，且选项取自**源行**（源行没有的只读/隧道即清掉）。
@@ -82,6 +86,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 ### 版本与更新
 - `dshModern` = DSH >= 0.2.1（含预发布）；解析不到 → desktop true / web false → [原因](doc/ARCHITECTURE.md#版本门与更新检查)。
 - `{op:'updateCheck'}` 在 `runOp` 中先于 `handleConfigOp` 拦截；不改行、不写 store。门禁 `test/meta.test.mjs` / `test/update.test.mjs`。
+- `checkedAt` **只由成功结果推进**：失败只写 `error` 并保留旧 `latest`，不动复用窗口——失败也推进等于把下一次重试推到整个 throttle（30 分钟）之后，网络已恢复而卡片还在报错（`test/update.test.mjs` 断言"失败后下一次非 force 调用会重新请求"）。
 
 ### 自动发现（mise）
 - 每次探测必须有总超时（`MISE_ENV_TIMEOUT_MS`；`graceMs` 不是超时）；结果按 `AUTO_DSN_TTL_MS` 缓存；工作区之间并发。
@@ -93,6 +98,8 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - schema 弹性：`await import('@deepseek-ai/schemastery')` 失败 → 内建最小 schema；不改回静态顶层 import。
 - `policy.mjs` 唯一 system prompt 段（order 8900）：已配置连接走 `dbhub_*`、禁 CLI/脚本/驱动/其它 MCP/其它数据库插件绕过、只读被拒不换途径；不支持的库让给用户其它插件、判不准先问。`announceAccessPolicy=false` 时 `text` 为空。门禁 `test/policy.test.mjs`。
 - 启用/禁用：`state.setEnabled` → `credentials.json`；禁用时工具首行返回「插件已禁用」。
+- `lastError` **只由 boot 失败写入**（`state.recordError` / `clearError`），工具调用错误不进卡片：它是"插件起不来"的诊断位，不是运行日志。要接工具错误必须先有"成功即清空"的语义，否则一次偶发失败会永久挂在页头（本次刻意不做）。
+- SSH 口令弹窗**只在没给 keyPath 时出现**（`tools.mjs` 的 `auth==='key' && !keyPath` 分支）：给了路径就按"无口令"假设，**零打扰是刻意的**（`test/configure-options.test.mjs` 用 `dialogs === 0` 钉住）。带口令的私钥需用户先在界面里配 passphrase，不要让模型路径去追问。
 - 存储：`$DSH_HOME/storages/dsh-dbhub-live/`（credentials / prefs / runtime / dbhub-runtime / tmp）；`writeJsonFile` tmp+rename，失败只 `warnOnce`；load 时清洗 + 一次性回写迁移，**未知字段保留**；进程环境变量不参与连接解析。
 - **写入保留未知字段**：`normalizeStore` 在 load 时保留 workspace 级与 env 级未知字段，写入侧必须同样保留——`setWorkspaceEnv`/`setWorkspaceEnvOptions`/`renameWorkspaceEnv`/`removeWorkspaceEnv` 都用 `{ ...entry, environments }` 与 `{ ...previous, … }` 重建，否则一次写就把旧版留下的字段擦掉（load 的承诺变成空话）。因此 `applyEnvOptions` 的 `false`/`null` 必须是**显式 delete**：spread 会把字段放回来，靠"不赋值"删不掉。门禁 `test/source-identity.test.mjs`。
 - `writeJsonFile` 的临时文件 `mode: 0o600`、`DATA_DIR` / 子目录 `0o700`（Windows 忽略 mode，靠 profile ACL）。**升级来的旧目录/旧文件必须补 chmod**：`mkdirSync(recursive)` 不改已存在目录的 mode，所以 boot 时与每次写入后 best-effort `tightenStorageModes()`（Windows 跳过；失败只 `warnOnce` 一次、文案只带文件名与错误码）。`setFsHooks` 是给测试观察 mode 参数的注入缝，生产恒用 node:fs。旧版明文 `dbhub.toml`（4.0 之前就是连接库）：boot 时 `sweepLegacyConfigFile()` 直接删除并 `warnOnce` 一条不带内容的警告（D1）。
@@ -102,6 +109,9 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - **写失败必须可见**：face 的写 promise 在失败时 reject（失败分支不得写 `noop`），组件渲染 `.dbh-error .dbh-writefail[role=alert]` 且**不置 `saved`**；`/state` 失败时读 `snapshot.status === 'error'` 渲染 `.dbh-loadfail` + 「重试」（`face.refresh()`）；`sidebarWanted()` 只在 `enabled === true` 时注册（未知/失败不注册）；`summary` 与 `page` 两种 view 的 Hook 序列必须一致（summary 早退只能放在所有 Hook 之后）。门禁 `check:ui` 的 `[32]`–`[45]` 用失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读 / 非 JSON / 缺 value）钉住，假 react 按组件身份校验 Hook 数。
 - **写/读两条水位线，`form.set` 只认 `true`，缺 value 不是空页**：读按 `appliedSeq` 丢旧（写发起时占一个更高的读序号），写响应另走 `appliedWriteStamp`（**不**与读序号比，否则「写先发 → 读后发 → 读先回 → 写后回」把写自己的答案丢了）；`form.set` 只有 `ok === true` 算受理（`undefined` 曾导致零 POST 还印「已保存」），其余回落 `POST /options`；`value` 不是非空对象时读进 `status:'error'`（保留旧行）、写 reject，绝不 `publish({status:'ready', value:{}})`；`res.json()` 失败统一本地化；每次写最多等 `WRITE_TIMEOUT_MS = 90s`（> SSH 看门狗，超时只按失败渲染）。门禁 `[39]`–`[42]`。
 - `apply()` 可重入：locale 注册失败降级 `localTranslator`。
+- **实测列宽靠回调 ref**（`attachMeasuredWidth`）：observer 由 callback ref 挂/换/卸，卸载 effect 只 disconnect，**没有计时器**。不要在空依赖 effect 里读一次 `ref.current`——列没在那一刻挂上就永不重测，宽度恒 0、布局静默退回 viewport。门禁 `[46]`。
+- 升级链接的 tooltip = `ver.linkHint`（「展开升级说明与安装命令」）；`ver.copySpec`（「点击复制 …」）**只属于面板内的复制按钮**。门禁 `[25]`。
+- 两个 locale 字典**不得有重复键**（对象字面量静默保留后者，改前一条永远无效）；`test/client-format.test.mjs` 按源码断言去重 + 中英键集相同 + en 表不含中文。
 - 样式只允许 `--dsw-alias-*` token + 中性半透明兜底；组件不接触 ctx。
 - 行内只显示 `w.conn`；操作只用图标；`source` 可复制 chip；库名不截断 → [原因](doc/ARCHITECTURE.md#布局取舍)。
 - 空闲不轮询（残留 interval 会让 `check:ui` 挂住不退出）。

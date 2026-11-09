@@ -21,6 +21,11 @@ const CLIENT = fileURLToPath(new URL('../lib/client.js', import.meta.url))
 const react = (() => {
   const instances = []
   let cursor = 0
+  // One STABLE node object per tree position, replayed on every render pass: the
+  // harness mounts no DOM, but a component that measures a node has to be able to
+  // see the same node twice (a fresh object each pass would look like a remount
+  // and re-trigger every node-bound effect forever).
+  const mountedNodes = new Map()
   let current = null
   let dirty = false
   let pendingEffects = []
@@ -107,6 +112,20 @@ const react = (() => {
       const out = runComponent(el.type, el.props, idx, 0)
       return walk(out, path)
     }
+    // Commit-phase refs. React attaches `ref` BEFORE the effects of that render
+    // run, and a CALLBACK ref is the only way a component learns that a node
+    // mounted (or that a different node replaced it) — that is exactly the defect
+    // the measured-column case pins, so the harness has to honour it.
+    const ref = el.props && el.props.ref
+    if (ref) {
+      let node = mountedNodes.get(path)
+      if (!node) {
+        node = { path }
+        mountedNodes.set(path, node)
+      }
+      if (typeof ref === 'function') ref(node)
+      else if (typeof ref === 'object') ref.current = node
+    }
     const kids = el.props && el.props.children
     const list = kids === undefined ? [] : Array.isArray(kids) ? kids : [kids]
     return {
@@ -120,6 +139,7 @@ const react = (() => {
   /** Drop all hook state: call before mounting a NEW root component. */
   function reset() {
     instances.length = 0
+    mountedNodes.clear()
     pendingEffects = []
     dirty = false
   }
@@ -1211,10 +1231,24 @@ console.log('\n[23] the SSH-layer-only test is a separate button with its own pa
     toHtml(classed(p.tree, 'dbh-advbody')[0]).includes('测试 SSH 隧道'))
   // An empty block is still dispatched: the HOST answers with the named missing
   // fields (one source of truth for that message), and it never spawns dbhub.
+  // A click with host/user still blank is answered LOCALLY (the form names the
+  // missing fields) instead of spending a round-trip on a Host error that says
+  // the same thing without naming the fields.
   const before = p.opCalls.length
   clickWithin(p.tree, 'dbh-advbody', '测试 SSH 隧道')
   p.tree = p.renderAgain()
-  const sent = p.opCalls.slice(before).filter((o) => o.op === 'test' && o.kind === 'ssh').pop()
+  check('the SSH test with a blank host/user does not dispatch',
+    !p.opCalls.slice(before).some((o) => o.op === 'test' && o.kind === 'ssh'), JSON.stringify(p.opCalls.slice(before)))
+  check('…and the form names the missing fields', toHtml(p.tree).includes('请先填 SSH 主机与用户'), toHtml(p.tree).slice(0, 300))
+  // Fill the two required fields: the same click now really dispatches.
+  typeWithin(p.tree, 'dbh-advbody', 0, 'bastion.example.com')
+  p.tree = p.renderAgain()
+  typeWithin(p.tree, 'dbh-advbody', 2, 'deploy')
+  p.tree = p.renderAgain()
+  const beforeReal = p.opCalls.length
+  clickWithin(p.tree, 'dbh-advbody', '测试 SSH 隧道')
+  p.tree = p.renderAgain()
+  const sent = p.opCalls.slice(beforeReal).filter((o) => o.op === 'test' && o.kind === 'ssh').pop()
   check('the SSH test dispatches {op:test, kind:ssh} with the tunnel block',
     !!sent && sent.ssh && sent.ssh.auth === 'key', JSON.stringify(sent))
   check('the SSH test carries its own nonce', !!sent && typeof sent.nonce === 'string' && sent.nonce.includes('sshtest'))
@@ -1318,12 +1352,21 @@ console.log('\n[25] modern update link: quiet by default, neutral detail panel o
   })
   let html = toHtml(p.tree)
   check('update surfaces as a quiet text link', classed(p.tree, 'dbh-updatelink').length === 1 && html.includes('可升级到 5.2.0'), html.slice(0, 300))
+  // The tooltip must describe what the click DOES (expand the panel). It used to
+  // say "点击复制 …", i.e. it promised a copy that only the panel's button
+  // performs — a user clicking it to copy got an expanding panel instead.
+  const updateLink = classed(p.tree, 'dbh-updatelink')[0]
+  check('the link tooltip describes the expansion', updateLink.props.title === '展开升级说明与安装命令', JSON.stringify(updateLink.props.title))
+  check('the link does not advertise a copy', !String(updateLink.props.title).includes('复制'))
   check('no red/error-styled update card exists', classed(p.tree, 'dbh-latest').length === 0 && count(p.tree, 'dbh-updatecard') === 0)
   check('details stay collapsed until asked for', count(p.tree, 'dbh-updatepanel') === 0)
   clickClass(p.tree, 'dbh-updatelink')
   p.tree = p.renderAgain()
   html = toHtml(p.tree)
   check('clicking the link opens the neutral detail panel', count(p.tree, 'dbh-updatepanel') === 1)
+  // …and the copy tooltip lives on the panel's copy button, where the copy is.
+  const copyTitle = elements(p.tree, (el) => el.type === 'button' && String(el.props.title || '').includes('点击复制')).length
+  check('the copy button inside the panel carries the copy tooltip', copyTitle === 1, String(copyTitle))
   check('panel carries the install spec', html.includes('dsh-dbhub-live@5.2.0'))
   check('web runtime gets the web update command', html.includes('dsh plugin --profile web up dsh-dbhub-live@5.2.0'))
   const releaseHref = elements(p.tree, (el) => typeof el.props.href === 'string').map((el) => el.props.href)
@@ -2143,6 +2186,56 @@ console.log('\n[45] a later failure suppresses the older 已保存 tick (R7-3)')
   check('the older 已保存 tick does not survive beside the failure', !html.includes('已保存'), html.slice(0, 400))
   p.dispose()
   viewport(1440)
+}
+
+console.log('\n[46] the layout follows the MEASURED column, not just the viewport')
+{
+  // The measurement effect used to read `ref.current` inside an empty-dependency
+  // effect: once the column was not attached at that instant it never measured
+  // again, so the whole layout silently fell back to `window.innerWidth`. The
+  // bundle now binds the effect to a CALLBACK-ref-published node (the harness
+  // mounts refs) and this block supplies the only in-repo ResizeObserver.
+  viewport(1440)
+  const observers = []
+  globalThis.ResizeObserver = function ResizeObserver(cb) {
+    this.targets = []
+    this.disconnected = false
+    this.cb = cb
+    observers.push(this)
+    this.observe = (el) => {
+      this.targets.push(el)
+      cb([{ target: el, contentRect: { width: 320 } }])
+    }
+    this.disconnect = () => {
+      this.disconnected = true
+      this.targets.length = 0
+    }
+  }
+  try {
+    const p = page(TILED, {
+      slot: 'main',
+      transport: 'http',
+      snapshot: Object.assign({}, MODERN_DEFAULTS),
+      props: { useWorkspaces: wsSnap('D:/work/app') },
+    })
+    await flush()
+    p.tree = p.renderAgain()
+    check('the column was observed after mount', observers.length === 1 && observers[0].targets.length === 1,
+      'observers=' + observers.length + ' targets=' + (observers[0] ? observers[0].targets.length : 'n/a'))
+    check('a 320px column in a 1440px viewport is NOT wide', count(p.tree, 'dbh-wide') === 0,
+      'wide=' + count(p.tree, 'dbh-wide') + ' viewport=' + windowShim.innerWidth)
+    // The viewport alone would have said "wide" — the measured column is what
+    // decided, so this could not pass while the width stayed 0.
+    observers[0].cb([{ contentRect: { width: 900 } }])
+    p.tree = p.renderAgain()
+    check('a real resize to 900px switches to the wide layout', count(p.tree, 'dbh-wide') === 1,
+      'wide=' + count(p.tree, 'dbh-wide'))
+    p.dispose()
+    check('the observer is disconnected on unmount (nothing leaks)', observers[0].disconnected === true)
+  } finally {
+    delete globalThis.ResizeObserver
+    viewport(1440)
+  }
 }
 
 if (liveMount) liveMount.dispose()

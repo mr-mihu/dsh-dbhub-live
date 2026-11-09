@@ -595,8 +595,11 @@ test('client bundle gates every modern surface on the Host dsh version', () => {
   assert.match(source, /surface: "modal"/)
   assert.match(source, /surface: "main"/)
   // Layout follows the measured column, with the phone check on the VIEWPORT
-  // (a narrow settings dialog on a desktop is not a phone).
-  assert.match(source, /function useMeasuredWidth\(ref\)/)
+  // (a narrow settings dialog on a desktop is not a phone). The observer is
+  // attached by a callback ref, never by an effect that reads `ref.current` —
+  // that measured once and was never re-armed (see the measurement test).
+  assert.match(source, /function attachMeasuredWidth\(state\)/)
+  assert.match(source, /var innerRefCb = widthCbRef\.current;/)
   assert.match(source, /var isMobile = modern && \(viewportWidth > 0/)
   assert.match(source, /var isWide = modern && !isMobile && surface !== "modal"/)
 })
@@ -608,7 +611,14 @@ test('client bundle shows the plugin version and the quiet update prompt', () =>
   // A text link by default; the instructions live in a panel opened on demand.
   assert.match(source, /className: "dbh-updatelink"/)
   assert.match(source, /className: "dbh-updatepanel"/)
-  assert.match(source, /t\("ver\.copySpec", \{ v: update\.latest \}\)/)
+  // The header link EXPANDS the detail panel, so its tooltip describes the
+  // expansion; only the copy button INSIDE the panel may advertise a copy.
+  assert.match(source, /title: t\("ver\.linkHint"\),/)
+  assert.match(source, /"ver\.linkHint": "展开升级说明与安装命令"/)
+  assert.match(source, /"ver\.linkHint": "Show the upgrade details and the install command"/)
+  // `ver.copySpec` survives on exactly one control: the panel's copy button.
+  assert.equal([...source.matchAll(/t\("ver\.copySpec"/g)].length, 1,
+    'ver.copySpec belongs to the copy button only — the upgrade link must not claim it')
   // the copy control copies the exact install spec; the web command is copiable too
   assert.match(source, /dsh-dbhub-live@" \+ update\.latest/)
   assert.match(source, /dsh plugin --profile web up dsh-dbhub-live@/)
@@ -660,4 +670,97 @@ test('client bundle renders DSH-style settings rows, the harness Switch and row 
   assert.match(source, /"note\.tools":/)
   assert.match(source, /className: "dbh-titlebar"/)
   assert.match(source, /className: "dbh-title"/)
+})
+
+// ── locale tables ───────────────────────────────────────────────────────────
+//
+// The bundle is hand-written and its dictionaries are plain object literals, so
+// a repeated key is SILENT: the later value wins and the earlier one becomes
+// dead text that a later edit can "fix" forever with no effect. The bundle also
+// exports no dictionary, so the source (the shipping artifact) is the contract.
+
+/**
+ * The `[key, value]` pairs of one locale object literal, in source order.
+ * Values are single-line double-quoted strings; that is true of every entry and
+ * a violation is caught here rather than silently skipped.
+ */
+function localeEntriesOf(name) {
+  const start = source.indexOf("var " + name + " = {")
+  assert.ok(start > 0, name + " not found in the bundle")
+  const end = source.indexOf("\n  };", start)
+  assert.ok(end > start, name + " has no closing brace")
+  const body = source.slice(start, end)
+  const entries = []
+  const re = /^ {4}(?:"([^"]+)"|([A-Za-z_$][\w$]*)):\s*"((?:[^"\\]|\\.)*)",?\s*$/gm
+  let m
+  while ((m = re.exec(body))) entries.push([m[1] || m[2], m[3]])
+  // Every non-comment line in the block must have been consumed: a multi-line or
+  // oddly formatted entry would otherwise drop out of the duplicate check.
+  const valueLines = body.split(/\r?\n/).filter((line) => line.trim() && !/^\s*(\/\/|var )/.test(line))
+  assert.equal(entries.length, valueLines.length,
+    name + " has lines this parser did not understand (the duplicate check would miss them)")
+  return entries
+}
+
+test('client locale tables define every key once and stay language-pure', () => {
+  const zh = localeEntriesOf('LOCALE_ZH')
+  const en = localeEntriesOf('LOCALE_EN')
+  for (const [name, entries] of [['LOCALE_ZH', zh], ['LOCALE_EN', en]]) {
+    const seen = new Set()
+    const dupes = []
+    for (const [key] of entries) {
+      if (seen.has(key)) dupes.push(key)
+      seen.add(key)
+    }
+    assert.deepEqual(dupes, [], name + ' defines a key twice (the literal silently keeps the last one)')
+    assert.ok(entries.length > 100, name + ' is unexpectedly small: ' + entries.length)
+  }
+  // Same keys, both languages: a key that exists on one side only renders as the
+  // raw key (or as the zh fallback) in the other locale.
+  assert.deepEqual(en.map(([k]) => k).sort(), zh.map(([k]) => k).sort(), 'zh/en key sets differ')
+  // No Chinese in the English table. A leftover zh example in a placeholder
+  // ("e.g. prod / dev / test / 线上") is what a user on an en host actually reads.
+  const leaked = en.filter(([, value]) => /[\u4e00-\u9fff]/.test(value)).map(([k]) => k)
+  assert.deepEqual(leaked, [], 'the en table embeds Chinese text')
+})
+
+// ── measured column ─────────────────────────────────────────────────────────
+
+test('the measured column re-arms when the element mounts (no one-shot measure)', () => {
+  // The width effect used to read `ref.current` inside a `[]`-dependency effect:
+  // when the column was not attached yet (a surface switch, a remount, a host that
+  // defers the mount) it measured nothing and NEVER retried, so the layout fell
+  // back to the viewport for the rest of the mount. The observer is now created by
+  // the callback ref: attach, re-attach on a different node, disconnect on detach.
+  // No interval, no timer — either would keep the offscreen gate alive.
+  assert.match(source, /function attachMeasuredWidth\(state\)/)
+  assert.match(source, /if \(innerRef\.current === node\) return;/)
+  assert.match(source, /observerRef\.current = observer;/)
+  assert.doesNotMatch(source, /var el = ref && ref\.current;/, 'the ref-read form is the defect')
+  // Mount + unmount teardown is the ONLY effect left around the measurement.
+  assert.match(source, /react\.useEffect\(function \(\) \{\s*return function \(\) \{\s*if \(!widthObserver\.current\) return;/)
+  // The callback identity is frozen (a fresh function each render would
+  // detach/re-attach the node every pass).
+  assert.match(source, /ref: innerRefCb/)
+  assert.match(source, /if \(!widthCbRef\.current\) \{/)
+  const measure = source.slice(source.indexOf('function attachMeasuredWidth'), source.indexOf('function switchControl'))
+  assert.doesNotMatch(measure, /setInterval|setTimeout|requestAnimationFrame/)
+})
+
+// ── SSH-layer test form validation ──────────────────────────────────────────
+
+test('the ssh-layer test refuses a half-filled tunnel before it dispatches', () => {
+  // `connDraftOf` ALWAYS returns an object while the tunnel switch is on, so the
+  // old `if (!ssh)` guard was dead in the only state where the button exists: a
+  // blank host or user went to the Host and came back as a generic "missing user"
+  // instead of the form's own hint.
+  assert.match(source, /connDraftOf\(form\)/)
+  assert.match(source, /if \(!ssh \|\| !String\(ssh\.host \|\| ""\)\.trim\(\) \|\| !String\(ssh\.user \|\| ""\)\.trim\(\)\) \{/)
+  assert.match(source, /finishTest\(key, nonce, false, t\("adv\.testSshNeedFields"\)\);/)
+  // The guard runs BEFORE the watchdog is armed: an early return must not leave a
+  // timer behind (the gate fails the run on a leaked timer too).
+  const at = source.indexOf('var ssh = d.ssh && typeof d.ssh === "object" ? d.ssh : null;')
+  const guard = source.indexOf('finishTest(key, nonce, false, t("adv.testSshNeedFields"));', at)
+  const watchdog = source.indexOf('testTimers.current[nonce] = setTimeout(function () {', at)
+  assert.ok(at > 0 && guard > at && watchdog > guard, 'the field check must precede the watchdog')
 })

@@ -421,6 +421,51 @@ test('applyOptionsOp without a row and without an auto discovery writes nothing'
   assert.equal(readFileSync(storePath, 'utf8'), before, 'nothing was written')
 })
 
+test('applyOptionsOp with no option field and no rename is a zero-write no-op', async () => {
+  // `{op:'options', env}` with no readOnly and no ssh used to call
+  // `setWorkspaceEnvOptions(path, env, {})`: the file was rewritten and
+  // `updatedAt` moved, so a click that changed nothing looked exactly like an
+  // edit (and could push a row's stamp past a real change).
+  const ws = { path: 'D:/ws/noop', title: 'noop' }
+  seedBase({
+    [ws.path]: {
+      environments: {
+        prod: { dsn: 'mysql://u:CHANGE_ME@127.0.0.1:3306/p', source: 'user', updatedAt: 111, readOnly: true },
+      },
+    },
+  })
+  const before = readFileSync(storePath, 'utf8')
+  const res = await index.applyOptionsOp({ op: 'options', env: 'prod' }, ws, async () => {
+    throw new Error('lookupAuto must not run when nothing was asked for')
+  })
+  assert.deepEqual(res.patches, [], 'no patch to mirror')
+  assert.equal(res.noop, true)
+  assert.equal(res.error, undefined)
+  assert.equal(readFileSync(storePath, 'utf8'), before, 'the store file is byte-identical')
+  const row = readStore()[ws.path].environments.prod
+  assert.equal(row.updatedAt, 111, 'updatedAt must not move for an empty patch')
+  assert.equal(row.readOnly, true, 'the existing options are untouched')
+})
+
+test('applyOptionsOp with a rename but no option field does not write an empty patch', async () => {
+  const ws = { path: 'D:/ws/renameonly', title: 'renameonly' }
+  seedBase({
+    [ws.path]: {
+      environments: {
+        old: { dsn: 'mysql://u:CHANGE_ME@127.0.0.1:3306/r', source: 'user', updatedAt: 5, readOnly: true, ssh: SSH_KEY },
+      },
+    },
+  })
+  const res = await index.applyOptionsOp({ op: 'options', env: 'old', newEnv: 'new' }, ws, async () => undefined)
+  assert.deepEqual(res.patches, [{ op: 'rename', path: ws.path, env: 'new', from: 'old' }],
+    'the rename is the only change: no options patch for an empty patch')
+  assert.equal(res.noop, true)
+  const row = readStore()[ws.path].environments.new
+  assert.equal(Object.hasOwn(readStore()[ws.path].environments, 'old'), false)
+  assert.equal(row.readOnly, true, 'the moved row keeps its options')
+  assert.equal(row.ssh.user, SSH_KEY.user, 'and its tunnel')
+})
+
 test('applyOptionsOp rejects an invalid ssh block before writing anything', async () => {
   const ws = { path: 'D:/ws/badssh', title: 'badssh' }
   seedBase({ [ws.path]: { environments: { prod: { dsn: 'mysql://u:CHANGE_ME@127.0.0.1:3306/p', source: 'user' } } } })

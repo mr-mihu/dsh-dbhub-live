@@ -211,6 +211,21 @@ test('readPluginVersion equals this package.json version and is cached', () => {
   assert.ok(parseSemver(readPluginVersion()), 'package.json version must be semver')
 })
 
+test('the ad-hoc dbhub MCP handshake reports the INSTALLED plugin version', () => {
+  // `initialize` used to hard-code `version: '3.0.0'` — a version this plugin
+  // never shipped. dbhub puts the clientInfo into its own diagnostics, so a user
+  // reporting a problem on 5.2 sent the maintainer looking at 3.0.0's code. The
+  // value now comes from meta (a LEAF module, so `adhoc → meta` cannot cycle);
+  // a detached copy without a readable package.json degrades to '0.0.0'.
+  const source = readFileSync(new URL('../lib/adhoc.mjs', import.meta.url), 'utf8')
+  assert.match(source, /clientInfo: \{ name: 'dsh-dbhub-adhoc', version: readPluginVersion\(\) \|\| '0\.0\.0' \}/)
+  assert.doesNotMatch(source, /version: '3\.0\.0'/, 'the hard-coded version must stay gone')
+  assert.match(source, /import \{ readPluginVersion \} from '\.\/meta\.mjs'/)
+  // …and the value it reads is this package's version (not the dsh runtime's).
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(readPluginVersion(), pkg.version)
+})
+
 test('detectDshRuntime reports a coherent runtime (never throws)', () => {
   const runtime = detectDshRuntime()
   assert.equal(typeof runtime.version, 'string')

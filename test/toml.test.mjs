@@ -288,6 +288,32 @@ test('tomlString escapes backslashes, quotes, newlines and tabs', () => {
   assert.equal(tomlString(7), '"7"')
 })
 
+test('tomlString escapes EVERY control character a basic string forbids', () => {
+  // BEL / ESC / VT / NUL / DEL were written RAW: the document no longer parses,
+  // and dbhub reports a config error that names no field, so a stray control
+  // character in a host or user looked like a broken tunnel.
+  assert.equal(tomlString('bell\u0007'), '"bell\\u0007"')
+  assert.equal(tomlString('\u0000\u001f'), '"\\u0000\\u001f"')
+  assert.equal(tomlString('del\u007f'), '"del\\u007f"')
+  // Short escapes win where TOML has one.
+  assert.equal(tomlString('back\bspace'), '"back\\bspace"')
+  assert.equal(tomlString('form\ffeed'), '"form\\ffeed"')
+  // The already-escaped set is unchanged, and the backslash runs FIRST: an input
+  // that literally contains `\u0007` stays a visible backslash sequence.
+  assert.equal(tomlString('\\u0007'), '"\\\\u0007"')
+  assert.equal(tomlString('tab\there'), '"tab\\there"')
+  // Legal non-ASCII passes through untouched (host names, non-ASCII paths).
+  assert.equal(tomlString('主机.example'), '"主机.example"')
+  // End to end: the control character stays escaped in the generated document.
+  const text = buildDbhubToml({
+    dsn: DSN,
+    ssh: { host: '192.0.2.10', user: 'de\u0007ploy', auth: 'key', keyPath: '~/.ssh/id_ed25519' },
+  }).text
+  assert.ok(hasLine(text, 'ssh_user = "de\\u0007ploy"'), text)
+  assert.equal(text.split('\n').length, text.split('\n').filter((line) => !line.includes('\u0007')).length,
+    'no raw control character may survive into the file')
+})
+
 // ── temp file lifecycle ───────────────────────────────────────────────────
 
 test('writeTempToml returns an absolute path inside TMP_DIR and the file exists', () => {
