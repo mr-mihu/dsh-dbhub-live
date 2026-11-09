@@ -27,6 +27,11 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 
 ### 一次性进程
 - `resolveSource` 解 DSN → `runAdhoc` 起一条 `dbhub --transport stdio`，跑完 terminate。**无常驻服务**（无指纹 / mtime / 空闲回收 / respawn / 孤儿清理 / 配置重启）→ [原因](doc/ARCHITECTURE.md#一次性进程的理由)。
+- **每个请求都必须有请求级超时**：`MCP_INIT_TIMEOUT_MS = 15s`（`initialize`）/ `MCP_CALL_TIMEOUT_MS = 120s`（`tools/call`，**挂死探测不是查询预算**）。唯一其它取消源 `exec.signal` 只在用户取消/轮次中断时触发；超时 → `code:'MCP_TIMEOUT'`、立刻 `terminate()` 该条 dbhub、临时 TOML 照常删、回执走 `result.mcpTimeout`（错误文本只带方法名与毫秒数，不带参数）。
+- **上限与解码**：stdout 用 `StringDecoder('utf8')` 累积解码（`String(chunk)` 会把跨 64KiB 边界的中文切成 `U+FFFD`），行用片段数组而非 `buf +=`（32MB 单行 3.6s 同步拷贝）；超 `MAX_LINE_BYTES = 8 MiB`（单行）/ `MAX_RESPONSE_BYTES = 64 MiB`（累计）→ `code:'MCP_TOO_LARGE'` + 终止本次调用。
+- **pending 的 key 是字符串 id**（`String(msg.id)`，number 与字符串回包都能匹配）；`handle.stdin` 必须挂 `'error'` 监听（写已关闭管道 → `settleAll`，否则是 uncaught）；`waitForExit` 返回 `false` 要再 `terminate()` 一次并 `warnOnce`（不含路径）。
+- 自动安装 npm 也必须 drain stdout 且有总超时（`DBHUB_INSTALL_TIMEOUT_MS = 180s`）：stdout 无人读 → 64KiB 管道写满 → 安装永不退出 → `installingDbhub` 永不落 → 本会话 dbhub 永久不可用。
+- 能力探测按 `exe + mtimeMs` 进程内缓存（`lib/capability.mjs`）：每次 TOML 调用重扫最多 18 个路径 + `readFileSync` 是不必要的。
 - 工具恒 4 个：configure / list_sources / execute_sql / search_objects；不为工作区×环境注册工具。
 - `apply()` 只注册工具 + `startBackgroundBoot` bookkeeping；dbhub 解析发生在每次调用（`runtime.json` 缓存）；无数据源照常启动。
 

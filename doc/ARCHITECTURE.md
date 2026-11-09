@@ -22,6 +22,12 @@
 
 - 常驻 dbhub 服务器会带来一整套生命周期问题：端口/stdio 归属、配置变更重启、指纹与 mtime 监听、空闲回收、孤儿进程、多实例互杀——5.0 之前这些都真实出现过。最终选择"每次调用一条进程"：天然并发隔离、一条进程挂只坏它自己、多实例无共享状态、没有常驻资源可泄漏。
 - 代价是每次的启动延迟（spawn + initialize），换来的是可预测性。**不要以"优化启动"为名把常驻服务装回来。**
+- **请求级超时是挂死探测，不是查询预算**。一次性进程的取消源只有 `exec.signal`（用户取消 / 轮次中断），所以"dbhub 活着但不回包"没有任何东西能 settle：请求永久 pending，`finally` 里的 terminate / `waitForExit` / 删临时 TOML 全部不可达（实测 2.5s 后仍 PENDING），结果是**一整轮对话挂住 + 子进程与临时文件泄漏到会话结束**。现在每个 `request` 各自带 timer（`initialize` 15s / `tools/call` 120s），超时立刻杀进程并按 `result.mcpTimeout` 报告；120s 取得远高于任何正常 SQL，正是为了**不**把慢查询当成故障切断——它是"dbhub 完全不说话"的判据。
+- 同类"挂死"还有三种形态，同样必须从边界上堵住：
+  1. **解码**：`String(chunk)` 逐块解码，跨 64KiB 边界的中文会变成 `U+FFFD`（实测 "中文结果" → "���文结果"）→ 改用 `StringDecoder('utf8')` 累积解码，只在完整行上解析。
+  2. **内存**：`buf +=` 是二次方拷贝且没有上限（实测 32MB 单行 3.6s 纯同步时间，期间所有会话卡住；无换行垃圾可无限吃内存）→ 行的片段数组 + `MAX_LINE_BYTES = 8MiB` / `MAX_RESPONSE_BYTES = 64MiB`，超限 `MCP_TOO_LARGE` 并终止本次调用。
+  3. **管道**：`npm install` 的 stdout 无人读 → 64KiB 管道写满 → 安装进程永不退出 → 单飞的 `installingDbhub` 永不落 → 本会话 dbhub 永久不可用 → stdout 也 drain（尾部 4KB 只留作诊断）+ `DBHUB_INSTALL_TIMEOUT_MS = 180s` 总超时。
+- 还有两处"静默丢弃"：响应 id 只认 `number` 时，dbhub 回 `"3"` 会被丢掉而请求永久 pending（只有加上面的超时才能发现）→ pending 的 key 统一 `String(id)`；`stdin` 没有 `'error'` 监听时，写已关闭管道会逃成 uncaught → 挂监听并 `settleAll`。`waitForExit` 返回 `false`（signal 已 abort 但进程仍在）必须再 terminate 一次，否则会按"已退出"去删临时文件（Windows EBUSY）。
 
 ## 一次性TOML的由来
 
