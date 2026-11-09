@@ -1117,8 +1117,60 @@ test('the mirror receives the connection data the returned patches never carry (
   delete cfg.store[WS]
 })
 
-// ── 11. the legacy plaintext store is swept at BOOT (wiring, not the helper) ──
+// ── 11. a name that only collides through the length cap (PR-5 / P1-12) ────
 
+const WS_LONG = 'D:/work/long-name'
+REGISTRY.push({ path: WS_LONG, title: 'long-name' })
+
+test('the card is told WHY a too-long environment name was refused, and nothing is written', async () => {
+  // Two DISTINCT long names share one store key after the ENV_NAME_MAX cap, so the
+  // write must be refused instead of overwriting (and silently losing) the row
+  // that already sits there — and the card, which has no other feedback channel,
+  // must render the reason.
+  const capped = 'e'.repeat(cfg.ENV_NAME_MAX)
+  cfg.setWorkspaceEnv(WS_LONG, capped, DSN_A, 'user')
+  const before = JSON.stringify(cfg.store[WS_LONG])
+  const ch = channel()
+
+  const returned = await ch.run({ op: 'add', workspace: WS_LONG, env: capped + '2', dsn: DSN_B })
+
+  assert.deepEqual(returned, [], 'a refused command patches nothing')
+  assert.equal(JSON.stringify(cfg.store[WS_LONG]), before, 'and writes nothing')
+  assert.equal(ch.lastNotice(), currentT('result.envNameTruncated', { max: String(cfg.ENV_NAME_MAX) }))
+  assert.equal(ch.lastNotice().includes('CHANGE_ME'), false, 'the receipt quotes no secret')
+  // …and the same refusal cannot be smuggled in through a confirmed overwrite.
+  const renameCh = channel()
+  cfg.setWorkspaceEnv(WS_LONG, 'other', DSN_B, 'user')
+  const beforeRename = JSON.stringify(cfg.store[WS_LONG])
+  await renameCh.run({ op: 'rename', workspace: WS_LONG, env: 'other', newEnv: capped + '3', overwrite: true })
+  assert.equal(JSON.stringify(cfg.store[WS_LONG]), beforeRename, 'a confirmed overwrite cannot merge two long names')
+  assert.equal(renameCh.lastNotice(), currentT('result.envNameTruncated', { max: String(cfg.ENV_NAME_MAX) }))
+  delete cfg.store[WS_LONG]
+})
+
+test('the MODEL path refuses the same truncating name instead of updating a neighbour', async () => {
+  // `dbhub_configure` normalizes `env` before it writes, so without a check on the
+  // RAW argument a model asking for "a new environment" would silently update the
+  // row that shares its capped key — the exact silent merge the store guard exists
+  // to prevent, just through another door.
+  const capped = 'e'.repeat(cfg.ENV_NAME_MAX)
+  cfg.setWorkspaceEnv(WS_LONG, capped, DSN_A, 'user')
+  const before = JSON.stringify(cfg.store[WS_LONG])
+  const tool = captured.dbhub_configure
+  assert.ok(tool, 'the configure tool was registered')
+
+  const res = await tool.execute({ workspace: WS_LONG, env: capped + '2', readOnly: true }, {})
+  assert.equal(res.ok, false)
+  assert.equal(res.text, currentT('result.envNameTruncated', { max: String(cfg.ENV_NAME_MAX) }))
+  assert.equal(JSON.stringify(cfg.store[WS_LONG]), before, 'the model path writes nothing either')
+  // A legal (short) name still goes through the ordinary flow, i.e. the guard is
+  // not a blanket refusal of every write.
+  assert.equal(cfg.envNameTruncatesOntoExisting(WS_LONG, 'short-name'), false)
+  assert.equal(cfg.envNameTruncatesOntoExisting(WS_LONG, capped), false, 'the capped form IS the stored key')
+  delete cfg.store[WS_LONG]
+})
+
+// ── 12. the legacy plaintext store is swept at BOOT (wiring, not the helper) ──
 test('apply() deletes the pre-4.0 plaintext dbhub.toml and never quotes it', async () => {
   // `sweepLegacyConfigFile` has its own unit test; this one pins the WIRING, so a
   // refactor cannot leave the helper uncalled (the file would then sit in the

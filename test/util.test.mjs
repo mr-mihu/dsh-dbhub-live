@@ -26,11 +26,18 @@ test('slugify normalizes titles', () => {
 })
 
 test('envSlug keeps ASCII names stable and gives non-ASCII names distinct handles', () => {
-  // default stays bare (the legacy source id) and ASCII names never move
+  // default stays bare (the legacy source id) and pure lowercase ASCII names never
+  // move: `slug === name` is exactly the historical handle.
   assert.equal(cfg.envSlug('default'), '')
   assert.equal(cfg.envSlug('test'), 'test')
   assert.equal(cfg.envSlug('dev'), 'dev')
-  assert.equal(cfg.envSlug('my env'), 'my-env')
+  assert.equal(cfg.envSlug('prod'), 'prod')
+  // A name whose ASCII projection is LOSSY keeps the readable prefix but carries a
+  // hash, so it can never share an id with the plain name (`my env` vs `my-env`,
+  // `PROD` vs `prod`, `!!!` vs `env`).
+  assert.match(cfg.envSlug('my env'), /^my-env-[a-z0-9]+$/)
+  assert.notEqual(cfg.envSlug('my env'), cfg.envSlug('my-env'))
+  assert.notEqual(cfg.envSlug('PROD'), cfg.envSlug('prod'))
   // Chinese (or any non-ASCII) name: deterministic, prefixed, UNIQUE per name
   const online = cfg.envSlug('线上')
   const local = cfg.envSlug('本地开发环境')

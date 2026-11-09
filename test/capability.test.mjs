@@ -9,7 +9,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -124,17 +124,11 @@ test('a managed install resolves the version from its package.json', () => {
   const { exe } = managedInstall('1.4.0')
   const detected = cap.detectVersion(exe)
   const c = cap.detectDbhubCapabilities(exe)
-  // KNOWN GAP, reported rather than worked around: versionFromPackageJson only
-  // probes `<dir>/package.json` and `<dir>/node_modules/dbhub/package.json`, so
-  // the SCOPED manifest of this plugin's own managed install
-  // (`<dir>/node_modules/@bytebase/dbhub/package.json`, see runtime.mjs) is
-  // never read. Fix: probe `join(dir, 'node_modules', '@bytebase', 'dbhub',
-  // 'package.json')` as well.
-  assert.equal(
-    detected,
-    '1.4.0',
-    'managed install not detected (see the KNOWN GAP note above)',
-  )
+  // The SCOPED manifest of this plugin's own managed install
+  // (`<dir>/node_modules/@bytebase/dbhub/package.json`, see runtime.mjs) is one of
+  // the probed candidates — without it this layout would resolve to '' and an
+  // unknown version is ALLOWED, which silently disabled the `tooOld` refusal.
+  assert.equal(detected, '1.4.0', 'managed install not detected')
   assert.equal(c.version, '1.4.0')
   assert.equal(c.readonlyTools, true)
   assert.equal(c.ssh, true)
@@ -228,4 +222,71 @@ test('an unrelated manifest above the executable never lends its version', () =>
   assert.equal(cap.detectVersion(''), '')
   assert.equal(cap.detectVersion('   '), '')
   assert.equal(cap.detectDbhubCapabilities('').warning, 'unknown')
+})
+
+// ── classic `npm i -g` layout (P0-6) ──────────────────────────────────────
+
+/**
+ * The layout `npm install -g @bytebase/dbhub` produces:
+ *   <prefix>/bin/dbhub
+ *   <prefix>/lib/node_modules/@bytebase/dbhub/package.json
+ * Nothing lives in `bin/` except the shim, and nothing sits directly above it —
+ * which is why this layout used to resolve to '' (an unknown version is ALLOWED
+ * by R62, so the `< 1.0.0` refusal was unreachable on the DEFAULT install form).
+ */
+function npmGlobalInstall(version) {
+  const prefix = tempDir('npmg')
+  const pkgDir = join(prefix, 'lib', 'node_modules', '@bytebase', 'dbhub')
+  mkdirSync(pkgDir, { recursive: true })
+  writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@bytebase/dbhub', version }))
+  mkdirSync(join(prefix, 'bin'), { recursive: true })
+  writeFileSync(join(prefix, 'bin', 'dbhub'), '#!/usr/bin/env node\n')
+  return { prefix, exe: join(prefix, 'bin', 'dbhub') }
+}
+
+test('an npm -g layout resolves the version from <prefix>/lib/node_modules', () => {
+  const { exe } = npmGlobalInstall('0.9.3')
+  assert.equal(cap.detectVersion(exe), '0.9.3')
+  // The whole point of detecting it: a 0.x dbhub must REFUSE the generated TOML
+  // features (it would silently ignore `[[tools]] readonly`).
+  const c = cap.detectDbhubCapabilities(exe)
+  assert.equal(c.version, '0.9.3')
+  assert.equal(c.readonlyTools, false)
+  assert.equal(c.ssh, false)
+  assert.equal(c.warning, 'tooOld')
+  // A modern global install reports no warning at all.
+  const modern = npmGlobalInstall('1.5.2')
+  assert.equal(cap.detectDbhubCapabilities(modern.exe).warning, '')
+})
+
+test('a dbhub reached through a link is resolved from its TARGET', (t) => {
+  // npm -g creates `bin/dbhub` as a SYMLINK into lib/node_modules; nvm / volta /
+  // pnpm shim the same way. Walking up from the link's own directory finds no
+  // manifest, so the detector has to realpath first.
+  const { prefix } = npmGlobalInstall('1.4.0')
+  const linkRoot = tempDir('linkroot')
+  const link = join(linkRoot, 'linked-prefix')
+  try {
+    // Junctions need no privilege on Windows and are the closest analogue of a
+    // symlinked prefix there.
+    if (process.platform === 'win32') symlinkSync(prefix, link, 'junction')
+    else symlinkSync(prefix, link, 'dir')
+  } catch (e) {
+    t.skip('this filesystem cannot create a ' + (process.platform === 'win32' ? 'junction' : 'symlink') + ' (' + String((e && e.code) || e) + ')')
+    return
+  }
+  const exe = join(link, 'bin', 'dbhub')
+  assert.equal(cap.detectVersion(exe), '1.4.0', 'a linked prefix must resolve through realpath')
+  assert.equal(cap.detectDbhubCapabilities(exe).readonlyTools, true)
+})
+
+test('a sibling prefix that merely resembles the layout does not borrow a version', () => {
+  // Guard against a future "helpful" scan that widens the candidate list too far:
+  // the manifest must still be dbhub's own.
+  const root = tempDir('sibling')
+  const other = join(root, 'lib', 'node_modules', 'other-tool')
+  mkdirSync(other, { recursive: true })
+  writeFileSync(join(other, 'package.json'), JSON.stringify({ name: 'other-tool', version: '9.9.9' }))
+  mkdirSync(join(root, 'bin'), { recursive: true })
+  assert.equal(cap.detectVersion(join(root, 'bin', 'dbhub')), '')
 })

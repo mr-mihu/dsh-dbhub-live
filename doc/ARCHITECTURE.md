@@ -50,6 +50,8 @@
 ## envSlug事故
 
 - 早期实现把非 ASCII 环境名统一 slug 化成一个值，`线上` 与 `测试` 拿到同一个 source 句柄 → 解析时**静默查错库**（模型以为在测环境，实际打线上）。现在：`default` 裸值、纯 ASCII 保留原 slug（既有 source 不变）、非 ASCII 取 `env-<shortHash>`。这是回归红线，不是风格问题。
+- **补充规则（source 身份单射）**：只修非 ASCII 那一类还不够——ASCII 投影本身也是多对一的。实测 `envSlug('prod') === envSlug('PROD') === envSlug('Prod')`；`!!!` 的 slug 是空串，落回 `env`，与真的叫 `env` 的环境撞车；`normalizeEnvName` 又按 64 字符截断，两个只差在第 65 字符的长名共用同一个 store key。后果不是"名字难看"：同工作区两行拿到**同一个 srcId**，`resolveSource` 对任何写法都只能返回 `{ambiguous}`，模型对该工作区的连接**全部不可达**。因此 `envSlug` 只在「规范化后的名字就是 slug」时保留可读句柄（`prod`/`test`/`dev`/纯非 ASCII 的 `env-<hash>` 一个字节都不变），其余一律 `<slug>-<shortHash(原名)>`——可读前缀仍在，单射靠哈希，且 `prod-<hash>` 永不等于 `prod`。哈希取**原名**（不是截断后的名字），否则截断后仍会撞。
+- **截断冲突为什么在写入侧拒绝**：slug 层面已能区分，可 store key 仍是截断后的名字，两条连接会挤在同一行（后写覆盖前写 = 静默丢一条连接，且剩下那条会替另一个环境应答）。`setWorkspaceEnv` / `renameWorkspaceEnv` 因此在「长度上限改变了名字 且 目标 key 已存在」时抛 `code:'envNameTruncated'`（`{confirm:true}` 也不能绕过），并且**零写入**。只有长度上限受保护：`prod ` 与 `prod` 归一后仍是同一行——卡片回传的本来就是存储里的显示名，误判成冲突会让普通更新无法保存。已存在的超长行可以用截断后的名字继续更新，所以不会变成"改不动的行"。
 
 ## 状态通道与inject根因
 

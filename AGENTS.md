@@ -31,7 +31,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - **上限与解码**：stdout 用 `StringDecoder('utf8')` 累积解码（`String(chunk)` 会把跨 64KiB 边界的中文切成 `U+FFFD`），行用片段数组而非 `buf +=`（32MB 单行 3.6s 同步拷贝）；超 `MAX_LINE_BYTES = 8 MiB`（单行）/ `MAX_RESPONSE_BYTES = 64 MiB`（累计）→ `code:'MCP_TOO_LARGE'` + 终止本次调用。
 - **pending 的 key 是字符串 id**（`String(msg.id)`，number 与字符串回包都能匹配）；`handle.stdin` 必须挂 `'error'` 监听（写已关闭管道 → `settleAll`，否则是 uncaught）；`waitForExit` 返回 `false` 要再 `terminate()` 一次并 `warnOnce`（不含路径）。
 - 自动安装 npm 也必须 drain stdout 且有总超时（`DBHUB_INSTALL_TIMEOUT_MS = 180s`）：stdout 无人读 → 64KiB 管道写满 → 安装永不退出 → `installingDbhub` 永不落 → 本会话 dbhub 永久不可用。
-- 能力探测按 `exe + mtimeMs` 进程内缓存（`lib/capability.mjs`）：每次 TOML 调用重扫最多 18 个路径 + `readFileSync` 是不必要的；命中返回**副本**，调用方改不动缓存。
+- 能力探测按 `exe + mtimeMs` 进程内缓存（`lib/capability.mjs`）：每次 TOML 调用重扫 6 个候选 × 6 层 + `readFileSync` 是不必要的；命中返回**副本**，调用方改不动缓存。
 - `waitForExit` 的等待也是**有界**的（`EXIT_WAIT_MS = 5s`）：逃出受管进程组的后代会让它永不 settle，超时按 `false` 处理（再杀一次 + 只警告一次）。
 - `MAX_RESPONSE_BYTES` 是**每个客户端一生累计**：单次超过 64 MiB 的合法导出会被 `MCP_TOO_LARGE` 切断，这是有意的取舍（宁可明确失败，也不把宿主内存吃满）。
 - 工具恒 4 个：configure / list_sources / execute_sql / search_objects；不为工作区×环境注册工具。
@@ -58,7 +58,9 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 
 ### source 身份
 - 每条 source 只属于一个工作区，同名不同区是不同目标；`sourceIdOf(row)` 是唯一构造点（`<标题slug>_<路径哈希>[_<envSlug>]`）。
-- `envSlug`：`default` 裸值 / 纯 ASCII 原 slug / 非 ASCII `env-<shortHash>` → [原因](doc/ARCHITECTURE.md#envslug事故)。
+- `envSlug`：`default` 裸值 / 纯小写 ASCII 且名即 slug 时原样（`prod`/`test`/`dev`，**逐字节不变**）/ 其余（`PROD`、`Prod`、`dev!`、`!!!`、名字被长度上限截断）一律 `<slug>-<shortHash(原名)>`，非 ASCII 仍 `env-<hash>` → [原因](doc/ARCHITECTURE.md#envslug事故)。
+- **id 必须单射**：投影是有损的（大小写折叠、`!!!`→空、`@*`→`env`），两个不同环境名落到同一句柄时 `resolveSource` 恒返回 `{ambiguous}`，模型对**两条连接都不可达**。所以只保留「名 == slug」的可读句柄，其余全部加短哈希；`prod-<hash>` 永不等于 `prod`。
+- **截断冲突拒绝**：`normalizeEnvName` 按 `ENV_NAME_MAX = 64` 截断，两个不同的长名会共用同一个 store key。写入侧（`setWorkspaceEnv` / `renameWorkspaceEnv`）在「截断改变了名字 且 目标 key 已存在」时抛 `code:'envNameTruncated'`，**不静默合并两条连接**；卡片/模型侧各有一份本地化文案（`result.envNameTruncated`）。**模型路径要自查**：`dbhub_configure` 在写之前就归一化了名字，所以它先用 `envNameTruncatesOntoExisting(wsPath, args.env)` 按**原始**入参判断（否则 raw 名字已被截断、store 无从区分）。仅长度上限受此保护——`prod ` 与 `prod` 仍是同一行（卡片回传的就是显示名）。已存在的超长行改用截断后的名字更新。
 - `resolveSource`：精确 → 当前会话工作区 → `{ambiguous}` 澄清，**不按列表顺序猜**。
 - `dbhub_configure` 不回退 `workspaces[0]`（`result.unknownWorkspace` / `result.needWorkspace`）；跨区复用走 `copyFrom`。
 
@@ -92,6 +94,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - `policy.mjs` 唯一 system prompt 段（order 8900）：已配置连接走 `dbhub_*`、禁 CLI/脚本/驱动/其它 MCP/其它数据库插件绕过、只读被拒不换途径；不支持的库让给用户其它插件、判不准先问。`announceAccessPolicy=false` 时 `text` 为空。门禁 `test/policy.test.mjs`。
 - 启用/禁用：`state.setEnabled` → `credentials.json`；禁用时工具首行返回「插件已禁用」。
 - 存储：`$DSH_HOME/storages/dsh-dbhub-live/`（credentials / prefs / runtime / dbhub-runtime / tmp）；`writeJsonFile` tmp+rename，失败只 `warnOnce`；load 时清洗 + 一次性回写迁移，**未知字段保留**；进程环境变量不参与连接解析。
+- **写入保留未知字段**：`normalizeStore` 在 load 时保留 workspace 级与 env 级未知字段，写入侧必须同样保留——`setWorkspaceEnv`/`setWorkspaceEnvOptions`/`renameWorkspaceEnv`/`removeWorkspaceEnv` 都用 `{ ...entry, environments }` 与 `{ ...previous, … }` 重建，否则一次写就把旧版留下的字段擦掉（load 的承诺变成空话）。因此 `applyEnvOptions` 的 `false`/`null` 必须是**显式 delete**：spread 会把字段放回来，靠"不赋值"删不掉。门禁 `test/source-identity.test.mjs`。
 - `writeJsonFile` 的临时文件 `mode: 0o600`、`DATA_DIR` / 子目录 `0o700`（Windows 忽略 mode，靠 profile ACL）。**升级来的旧目录/旧文件必须补 chmod**：`mkdirSync(recursive)` 不改已存在目录的 mode，所以 boot 时与每次写入后 best-effort `tightenStorageModes()`（Windows 跳过；失败只 `warnOnce` 一次、文案只带文件名与错误码）。`setFsHooks` 是给测试观察 mode 参数的注入缝，生产恒用 node:fs。旧版明文 `dbhub.toml`（4.0 之前就是连接库）：boot 时 `sweepLegacyConfigFile()` 直接删除并 `warnOnce` 一条不带内容的警告（D1）。
 
 ### 客户端半（细节见 [doc/CLIENT.md](doc/CLIENT.md)）
