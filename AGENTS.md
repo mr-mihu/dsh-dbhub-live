@@ -31,7 +31,9 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - **上限与解码**：stdout 用 `StringDecoder('utf8')` 累积解码（`String(chunk)` 会把跨 64KiB 边界的中文切成 `U+FFFD`），行用片段数组而非 `buf +=`（32MB 单行 3.6s 同步拷贝）；超 `MAX_LINE_BYTES = 8 MiB`（单行）/ `MAX_RESPONSE_BYTES = 64 MiB`（累计）→ `code:'MCP_TOO_LARGE'` + 终止本次调用。
 - **pending 的 key 是字符串 id**（`String(msg.id)`，number 与字符串回包都能匹配）；`handle.stdin` 必须挂 `'error'` 监听（写已关闭管道 → `settleAll`，否则是 uncaught）；`waitForExit` 返回 `false` 要再 `terminate()` 一次并 `warnOnce`（不含路径）。
 - 自动安装 npm 也必须 drain stdout 且有总超时（`DBHUB_INSTALL_TIMEOUT_MS = 180s`）：stdout 无人读 → 64KiB 管道写满 → 安装永不退出 → `installingDbhub` 永不落 → 本会话 dbhub 永久不可用。
-- 能力探测按 `exe + mtimeMs` 进程内缓存（`lib/capability.mjs`）：每次 TOML 调用重扫最多 18 个路径 + `readFileSync` 是不必要的。
+- 能力探测按 `exe + mtimeMs` 进程内缓存（`lib/capability.mjs`）：每次 TOML 调用重扫最多 18 个路径 + `readFileSync` 是不必要的；命中返回**副本**，调用方改不动缓存。
+- `waitForExit` 的等待也是**有界**的（`EXIT_WAIT_MS = 5s`）：逃出受管进程组的后代会让它永不 settle，超时按 `false` 处理（再杀一次 + 只警告一次）。
+- `MAX_RESPONSE_BYTES` 是**每个客户端一生累计**：单次超过 64 MiB 的合法导出会被 `MCP_TOO_LARGE` 切断，这是有意的取舍（宁可明确失败，也不把宿主内存吃满）。
 - 工具恒 4 个：configure / list_sources / execute_sql / search_objects；不为工作区×环境注册工具。
 - `apply()` 只注册工具 + `startBackgroundBoot` bookkeeping；dbhub 解析发生在每次调用（`runtime.json` 缓存）；无数据源照常启动。
 

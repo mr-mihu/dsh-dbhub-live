@@ -394,7 +394,11 @@ test('a failed npm install scrubs credentials out of its message', async () => {
     spawn: () => {
       const done = new Promise((resolve) => {
         setTimeout(() => {
-          stderr.emit('data', 'npm error network https://deploy:' + canary + '@registry.example.invalid/pkg')
+          // Split inside a 3-byte character: an install message decoded per chunk
+          // would carry U+FFFD here, and this text reaches the model.
+          const head = Buffer.from('npm error 连接失败 https://deploy:' + canary, 'utf8')
+          stderr.emit('data', head.subarray(0, head.length - 2))
+          stderr.emit('data', Buffer.concat([head.subarray(head.length - 2), Buffer.from('@registry.example.invalid/pkg', 'utf8')]))
           resolve({ exitCode: 1, signal: null })
         }, 5)
       })
@@ -412,7 +416,112 @@ test('a failed npm install scrubs credentials out of its message', async () => {
     assert.match(err.message, /npm exit 1/)
     assert.ok(!err.message.includes(canary), 'the proxy credential must not reach the message')
     assert.match(err.message, /\*\*\*\*/, 'the userinfo is folded, not dropped silently')
+    assert.match(err.message, /连接失败/)
+    assert.doesNotMatch(err.message, /\uFFFD/, 'the stderr tail is decoded across chunk boundaries')
     return true
   })
   assert.ok(terminated >= 1, 'the failed install process is terminated')
+})
+
+// ── PR-3 review punch list: the assertions a mutation used to slip past ────
+
+test('the TOTAL response cap rejects the stream and keeps rejecting (MAX_RESPONSE_BYTES)', async () => {
+  const handle = silentHandle()
+  const client = mcp.createMcpClient(handle, () => {})
+  const pending = client.request('tools/call', {}, { timeoutMs: 20000 })
+  pending.catch(() => {})
+  // Whole lines, each under MAX_LINE_BYTES, whose SUM passes MAX_RESPONSE_BYTES.
+  // The count is FIXED: deriving it from the constant would loop forever under the
+  // very mutation this test exists to catch (`MAX_RESPONSE_BYTES = Infinity`).
+  const chunk = 'x'.repeat(1024 * 1024)
+  for (let i = 0; i < 70; i += 1) handle.stdout.emit('data', chunk + '\n')
+  await assert.rejects(withDeadline(pending, 20000), (err) => {
+    assert.equal(err.code, 'MCP_TOO_LARGE')
+    assert.equal(err.limitKind, 'total')
+    assert.equal(err.limitBytes, mcp.MAX_RESPONSE_BYTES)
+    return true
+  })
+  // The stream is unusable, so later requests must not sit and wait for it.
+  await assert.rejects(withDeadline(client.request('tools/call', {}, { timeoutMs: 5000 }), 6000), /too large|MCP_TOO_LARGE/i)
+})
+
+test('a reply with id 0 settles nothing and is NOT routed as a notification (P2-30)', async () => {
+  const handle = silentHandle()
+  const notifications = []
+  const client = mcp.createMcpClient(handle, () => {}, (n) => notifications.push(n))
+  const pending = client.request('tools/call', {}, { timeoutMs: 60 })
+  // An id of 0 IS an id: `!!msg.id` would treat this frame as a notification and
+  // hand it to the notification handler, which is how a reply goes missing.
+  handle.stdout.emit('data', JSON.stringify({ jsonrpc: '2.0', id: 0, method: 'notifications/progress', result: { ok: true } }) + '\n')
+  await assert.rejects(pending, (err) => err.code === 'MCP_TIMEOUT')
+  assert.deepEqual(notifications, [], 'id 0 is a reply id, not a notification')
+})
+
+test('the capability cache hands out copies, so a caller cannot poison it (P2-19)', () => {
+  const dir = mkdtempSync(join(home, 'cap-copy-'))
+  const pkgDir = join(dir, 'node_modules', '@bytebase', 'dbhub')
+  mkdirSync(pkgDir, { recursive: true })
+  writeFileSync(join(pkgDir, 'package.json'), JSON.stringify({ name: '@bytebase/dbhub', version: '1.4.0' }))
+  const exe = join(dir, 'node_modules', '.bin', 'dbhub.cmd')
+  try {
+    // Warm the cache first: the copy guarantee matters most on a HIT, where a
+    // naive implementation hands out the cached object itself.
+    cap.detectDbhubCapabilities(exe)
+    const hit = cap.detectDbhubCapabilities(exe)
+    // A caller (or a future code path) mutating its copy must not shrink the
+    // capabilities every later caller sees.
+    hit.readonlyTools = false
+    hit.ssh = false
+    hit.version = '0.0.0'
+    const second = cap.detectDbhubCapabilities(exe)
+    assert.equal(second.version, '1.4.0')
+    assert.equal(second.readonlyTools, true)
+    assert.equal(second.ssh, true)
+  } finally {
+    cap.setFsHooks(null)
+  }
+})
+
+test('the dbhub stderr diagnostic survives a multi-byte character split across blocks', async () => {
+  const handle = silentHandle()
+  handle.stdin.write = (text) => {
+    const msg = JSON.parse(String(text).trim())
+    if (msg.method === 'initialize') {
+      emitJson(handle, { jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-03-26', capabilities: {} } })
+      return
+    }
+    // Split INSIDE a 3-byte character: a `String(chunk)` decoder would emit U+FFFD.
+    const stderrText = Buffer.from('连接失败：认证被拒绝\n', 'utf8')
+    handle.stderr.emit('data', stderrText.subarray(0, 4))
+    handle.stderr.emit('data', stderrText.subarray(4))
+    handle.stdout.emit('data', JSON.stringify({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'boom' } }) + '\n')
+  }
+  const subprocess = { resolveExecutable: async () => '/fake/bin/dbhub', spawn: () => handle }
+  const report = await withDeadline(
+    adhoc.runAdhoc(subprocess, { dsn: DSN, ro: false, ssh: null }, 'execute_sql', {}, { mcpTimeoutMs: 2000 }),
+    5000,
+  )
+  assert.equal(report.ok, false)
+  assert.match(report.text, /连接失败/)
+  assert.doesNotMatch(report.text, /\uFFFD/)
+})
+
+test('waitForExit that never settles cannot hang the call (bounded exit wait)', async () => {
+  const handle = silentHandle()
+  handle.waitForExit = () => new Promise(() => {})
+  handle.stdin.write = (text) => {
+    const msg = JSON.parse(String(text).trim())
+    if (msg.method === 'initialize') {
+      emitJson(handle, { jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-03-26', capabilities: {} } })
+      return
+    }
+    emitJson(handle, { jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'ok' }] } })
+  }
+  const subprocess = { resolveExecutable: async () => '/fake/bin/dbhub', spawn: () => handle }
+  const report = await withDeadline(
+    adhoc.runAdhoc(subprocess, { dsn: DSN, ro: false, ssh: null }, 'execute_sql', {}, { mcpTimeoutMs: 2000, exitWaitMs: 40 }),
+    5000,
+  )
+  assert.equal(report.ok, true, 'the call answers instead of hanging on the exit wait')
+  assert.ok(handle.terminated >= 2, 'the bounded wait still tried to kill the child twice')
 })
