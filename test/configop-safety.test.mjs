@@ -680,17 +680,21 @@ test('a rename that landed is still published when the options write cannot foll
   const WS = 'D:/work/partial'
   REGISTRY.push({ path: WS, title: 'partial' })
   cfg.setWorkspaceEnv(WS, 'old', DSN_A, 'user')
-  const realEntry = cfg.store[WS]
+  let liveEntry = cfg.store[WS]
   let entryReads = 0
   Object.defineProperty(cfg.store, WS, {
     configurable: true,
     enumerable: true,
     get() {
       entryReads += 1
-      return entryReads === 1 ? realEntry : undefined
+      return liveEntry
     },
     set() {
-      /* the slot has moved on: the write is accepted and dropped */
+      // The slot has moved on: the write is accepted and dropped, and every read
+      // after it finds nothing — that is what a second writer does to this one
+      // shared store object. Hiding on the WRITE (not on a read count) keeps the
+      // fixture independent of how many lookups a command performs.
+      liveEntry = undefined
     },
   })
   const ch = channel()
@@ -1145,6 +1149,45 @@ test('the card is told WHY a too-long environment name was refused, and nothing 
   await renameCh.run({ op: 'rename', workspace: WS_LONG, env: 'other', newEnv: capped + '3', overwrite: true })
   assert.equal(JSON.stringify(cfg.store[WS_LONG]), beforeRename, 'a confirmed overwrite cannot merge two long names')
   assert.equal(renameCh.lastNotice(), currentT('result.envNameTruncated', { max: String(cfg.ENV_NAME_MAX) }))
+  delete cfg.store[WS_LONG]
+})
+
+test('the card cannot flip or delete a row through an over-long name (D7)', async () => {
+  // The read-only chip and the delete button address a row by the name the card
+  // displays. A 65-character name reached the store, was capped onto the stored
+  // 64-character row, and the options / remove writers acted on THAT environment:
+  // one click silently locked (or deleted) a connection nobody named.
+  const capped = 'k'.repeat(cfg.ENV_NAME_MAX)
+  cfg.setWorkspaceEnv(WS_LONG, capped, DSN_A, 'user')
+  cfg.setWorkspaceEnv(WS_LONG, 'keep', DSN_B, 'user')
+  const before = tallyOf()
+  await settle()
+
+  const applied = await index.applyOptionsOp(
+    { op: 'options', env: capped + '2', readOnly: true },
+    wsOf(WS_LONG),
+    async () => undefined,
+  )
+  assert.deepEqual(applied.patches, [], 'a refused options command patches nothing')
+  assert.equal(applied.error, 'envNameTruncated', 'the card gets an attributable reason')
+  assertUntouched(before, 'an over-long options name writes nothing')
+
+  const ch = channel()
+  const removed = await ch.run({ op: 'remove', workspace: WS_LONG, env: capped + '2' })
+  assert.deepEqual(removed, [], 'a refused remove patches nothing')
+  assert.equal(ch.lastNotice(), currentT('result.envNameTruncated', { max: String(cfg.ENV_NAME_MAX) }))
+  assertUntouched(before, 'an over-long remove deletes nothing')
+
+  // The reverse: the REAL capped name still flips and still deletes — the gate
+  // refuses truncation, not long names.
+  const ok = channel()
+  const optsResult = await ok.run({ op: 'options', workspace: WS_LONG, env: capped, readOnly: true })
+  assert.ok(optsResult.some((p) => p.op === 'options'), JSON.stringify(optsResult))
+  assert.equal(entryOf(WS_LONG, capped).readOnly, true)
+  const removedOk = await ok.run({ op: 'remove', workspace: WS_LONG, env: capped })
+  assert.ok(removedOk.some((p) => p.op === 'remove'), JSON.stringify(removedOk))
+  assert.equal(entryOf(WS_LONG, capped), undefined)
+  assert.ok(entryOf(WS_LONG, 'keep'), 'only the named row is removed')
   delete cfg.store[WS_LONG]
 })
 

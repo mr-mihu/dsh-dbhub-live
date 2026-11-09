@@ -2238,6 +2238,79 @@ console.log('\n[46] the layout follows the MEASURED column, not just the viewpor
   }
 }
 
+console.log('\n[47] a FAILED update check re-arms the button and shows the error (R8)')
+{
+  viewport(1440)
+  // The Host answers a failed check by writing `update.error` and NOT advancing
+  // `checkedAt` (the reuse window is deliberately untouched). The card's cleanup
+  // effect watched `checkedAt` only, so a failure cleared nothing: the button
+  // stayed disabled with the tooltip pinned on 「检查中…」 for the whole 20s
+  // watchdog — and the error the Host had just written stayed invisible.
+  const CHECKED_AT = 1_700_000_000_000
+  const successUpdate = JSON.stringify({
+    latest: '', latestSpec: '', hasUpdate: false, checkedAt: CHECKED_AT, source: 'npm', error: '',
+  })
+  const failureUpdate = JSON.stringify({
+    latest: '', latestSpec: '', hasUpdate: false, checkedAt: CHECKED_AT, source: 'npm', error: 'npm: 连接超时',
+  })
+  let updatePosts = 0
+  const p = page(TILED, {
+    slot: 'main',
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: ({ body }) => {
+      if (!body || !body.op || body.op.op !== 'updateCheck') return undefined
+      updatePosts += 1
+      // The page-open check succeeds; the user's explicit re-check fails with the
+      // SAME timestamp, which is exactly the shape that used to lock the button.
+      const update = updatePosts === 1 ? successUpdate : failureUpdate
+      return { payload: { ok: true, value: snapshotOf(TILED, Object.assign({}, MODERN_DEFAULTS, { update })) } }
+    },
+  })
+  // One round trip = read/write answer → publish → subscriber → render. The
+  // page-open check only fires once the first view has landed (it is `modern`
+  // gated), so two rounds are the minimum before the button can be asserted.
+  const settle = async () => {
+    await flush()
+    p.tree = p.renderAgain()
+    await flush()
+    p.tree = p.renderAgain()
+  }
+  await settle()
+  await settle()
+  const button = () => classed(p.tree, 'dbh-vercheck')[0] || { props: {} }
+  check('the check button is offered and enabled after a successful check',
+    button().props.disabled !== true,
+    JSON.stringify({ title: button().props.title, ops: p.opCalls.length, update: (p.props.getSnapshot().value || {}).update }))
+  check('the successful check landed (timestamp painted)', String(button().props.title || '').includes('检查于'),
+    JSON.stringify({ title: button().props.title, update: p.props.getSnapshot().value.update }))
+
+  clickClass(p.tree, 'dbh-vercheck')
+  p.tree = p.renderAgain()
+  check('a running check disables the button', button().props.disabled === true, JSON.stringify(button().props.title))
+  check('a running check says 检查中…', button().props.title === '检查中…', JSON.stringify(button().props.title))
+
+  await settle()
+  check('a FAILED check re-arms the button instead of leaving it disabled',
+    button().props.disabled !== true, JSON.stringify(button().props.title))
+  check('the tooltip leaves 检查中… and names the failure',
+    String(button().props.title || '').includes('检查更新失败') && String(button().props.title || '').includes('连接超时'),
+    JSON.stringify(button().props.title))
+
+  const beforeSecond = p.opCalls.length
+  clickClass(p.tree, 'dbh-vercheck')
+  check('the button can be clicked again immediately',
+    p.opCalls.slice(beforeSecond).some((o) => o.op === 'updateCheck' && o.force === true),
+    JSON.stringify(p.opCalls.slice(beforeSecond)))
+  p.tree = p.renderAgain()
+  p.dispose()
+  check('every click dispatched exactly one check',
+    p.opCalls.filter((o) => o.op === 'updateCheck').length === 3,
+    JSON.stringify(p.opCalls.filter((o) => o.op === 'updateCheck').length))
+  viewport(1440)
+}
+
 if (liveMount) liveMount.dispose()
 
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`)

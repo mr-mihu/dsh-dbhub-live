@@ -335,7 +335,11 @@ test('client bundle keeps the database name visible when the row is narrow', () 
 // Property names whose value paints a colour. Shadows, fills, strokes and
 // outlines colour the page just as much as `background` does, so they are in the
 // same set: a `box-shadow:0 0 8px #0d1117` is an opaque literal in a themed UI.
-const COLOR_PROP = /([a-z-]*(?:color|background|border|box-shadow|text-shadow|fill|stroke|outline))\s*:\s*([^;"]+)/g
+// Custom properties (`--w:#0d1117`) and `filter` (`drop-shadow(…)`) are included
+// as well: a custom property becomes a paint the moment anything reads it, and a
+// drop-shadow paints an opaque silhouette — both used to be invisible here
+// because the property name was not in the list.
+const COLOR_PROP = /((?:--[a-z0-9-]+)|[a-z-]*(?:color|background|border|box-shadow|text-shadow|fill|stroke|outline|filter))\s*:\s*([^;"]+)/g
 
 // The ONLY literals allowed in a themed surface: the neutral translucent grey the
 // bundle uses as a token fallback (`rgba(127,127,127,α)` — inherits light/dark),
@@ -343,7 +347,87 @@ const COLOR_PROP = /([a-z-]*(?:color|background|border|box-shadow|text-shadow|fi
 // black, named greys, saturated rgba) is an opaque literal.
 const NEUTRAL_COLOR_RE = /^\s*(?:transparent|none|rgba\(\s*127\s*,\s*127\s*,\s*127\s*,\s*(?:0?\.\d+|1|0)\s*\))\s*$/i
 const HAIRLINE_SHADOW = /^0 1px 2px rgba\(0,0,0,\.05\)$/
-const LITERAL_RE = /#[0-9a-f]{3,8}|(?:rgba?|hsla?)\(|\b(?:white|black|gray|grey|silver)\b/i
+// Modern colour FUNCTIONS pick a colour without ever writing `#`:
+// `oklch(0.7 0.2 30)`, `lab(52% 40 -20)`, `color(display-p3 1 0 0)`. A hex-only
+// pattern cannot see them, and neither can it see `color-mix()` components.
+const COLOR_FN_NAMES = new Set(['rgb', 'rgba', 'hsl', 'hsla', 'hwb', 'lab', 'lch', 'oklab', 'oklch', 'color', 'light-dark'])
+const LITERAL_RE = /#[0-9a-f]{3,8}|\b(?:white|black|gray|grey|silver|whitesmoke)\b/i
+
+/**
+ * Split a declaration value into top-level pieces (commas and whitespace), so a
+ * function's arguments are judged as a unit and `rgba(0,0,0,.05)` stays whole.
+ */
+function topLevelPieces(value) {
+  const pieces = []
+  let depth = 0
+  let current = ''
+  for (const ch of value) {
+    if (ch === '(') depth += 1
+    if (ch === ')') depth = Math.max(0, depth - 1)
+    if (depth === 0 && (ch === ',' || /\s/.test(ch))) {
+      if (current) pieces.push(current)
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  if (current) pieces.push(current)
+  return pieces
+}
+
+/**
+ * The first opaque literal inside a paint value — `''` when every component is
+ * theme-safe.
+ *
+ * `color-mix()` is decided by its ARGUMENTS (`in oklab` names the interpolation
+ * space, percentages are amounts), every other colour function is a picked
+ * colour, and every other function (`drop-shadow`, `linear-gradient`, `blur`) is
+ * structural, so the walk looks inside it — that is how `drop-shadow(0 0 2px
+ * #0d1117)` still names its hex.
+ */
+function opaqueColorOf(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  for (const piece of topLevelPieces(raw)) {
+    const text = piece.trim()
+    if (!text) continue
+    const call = text.match(/^([a-z-]+)\((.*)\)$/is)
+    if (call) {
+      const name = call[1].toLowerCase()
+      const inner = call[2]
+      // A runtime reference and an arithmetic wrapper carry no colour of their own.
+      if (name === 'var' || name === 'env' || name === 'calc' || name === 'clamp' || name === 'min' || name === 'max') continue
+      if (name === 'color-mix') {
+        for (const arg of topLevelPieces(inner)) {
+          const part = arg.trim()
+          if (!part) continue
+          if (/^in\s+[a-z0-9-]+(?:\s+[a-z0-9-]+)*$/i.test(part)) continue // interpolation space
+          if (/^(?:shorter|longer|increasing|decreasing)\s+hue$/i.test(part)) continue
+          const bad = opaqueColorOf(part)
+          if (bad) return bad
+        }
+        continue
+      }
+      if (COLOR_FN_NAMES.has(name)) {
+        // The neutral grey fallback is the one colour this bundle may name.
+        if (NEUTRAL_COLOR_RE.test(text)) continue
+        return text
+      }
+      const inside = opaqueColorOf(inner)
+      if (inside) return inside
+      continue
+    }
+    if (text === 'TOKEN') continue // a `var(--dsw-alias-…)` reference
+    if (NEUTRAL_COLOR_RE.test(text)) continue
+    // Named colours BEFORE the generic keyword rule: `white` is a keyword too,
+    // and the old order let `outline:1px solid white` pass as "just a keyword".
+    const hit = text.match(LITERAL_RE)
+    if (hit) return hit[0]
+    if (/^[-+]?(?:\d*\.)?\d+(?:[a-z%]+)?$/i.test(text)) continue // length / angle / number
+    if (/^[a-z-]+$/i.test(text)) continue // keyword: solid, center, auto, currentColor
+  }
+  return ''
+}
 
 /**
  * Split a declaration value into its `var(--dsw-alias-…)` references and the
@@ -388,12 +472,11 @@ function splitAliasVars(value) {
 /** @returns the offending literal(s) of a declaration value, '' when theme-safe. */
 function literalColorOf(value) {
   const { rest, fallbacks } = splitAliasVars(value)
-  const badFallback = fallbacks.find((fallback) => !NEUTRAL_COLOR_RE.test(fallback))
-  if (badFallback) return badFallback.trim()
+  const badFallback = fallbacks.find((fallback) => opaqueColorOf(fallback))
+  if (badFallback) return opaqueColorOf(badFallback)
   const stripped = rest.replace(/\b(?:transparent|none)\b/gi, ' ').trim()
-  if (HAIRLINE_SHADOW.test(stripped)) return ''
-  const hit = stripped.match(LITERAL_RE)
-  return hit ? hit[0] : ''
+  if (HAIRLINE_SHADOW.test(stripped.replace(/\s+/g, ' '))) return ''
+  return opaqueColorOf(stripped)
 }
 
 /** @returns declarations that paint an opaque literal colour. */
@@ -435,6 +518,18 @@ test('the token-only rule actually rejects literals (fallbacks, shadows, svg pai
     'text-shadow:0 0 2px rgba(0,0,0,.8)',
     'outline:1px solid white',
     'border-color:var(--dsw-alias-border-l1,#d0d7de)',
+    // Modern colour functions pick a colour without a `#`; a hex-only pattern
+    // (and a property list that stopped at the layout properties) let every one
+    // of these through — including a custom property and a drop-shadow.
+    'background:oklch(0.7 0.2 30)',
+    'color:oklch(0.7 0.2 30)',
+    'background:lab(52% 40 -20)',
+    'background:lch(52% 50 30)',
+    'background:color(display-p3 1 0 0)',
+    'background:color-mix(in oklab, var(--dsw-alias-bg-primary) 50%, #0d1117)',
+    'filter:drop-shadow(0 0 2px #0d1117)',
+    '--w:#0d1117',
+    '--surface-color:oklch(0.7 0.2 30)',
   ]
   for (const declaration of bad) {
     assert.deepEqual(colorOffenders(declaration), [declaration], `must be rejected: ${declaration}`)
@@ -451,6 +546,14 @@ test('the token-only rule actually rejects literals (fallbacks, shadows, svg pai
     'border:0',
     'box-shadow:0 1px 2px rgba(0,0,0,.05)',
     'stroke:var(--dsw-alias-label-secondary)',
+    // The new coverage must not swallow the theme-safe shapes: a custom property
+    // holding a token reference, `filter:none`, and a colour mix whose only
+    // components are a token and `transparent`.
+    '--w:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.1))',
+    'filter:none',
+    '--w:transparent',
+    'background:color-mix(in oklab, var(--dsw-alias-bg-primary) 50%, transparent)',
+    'border-color:transparent',
   ]
   for (const declaration of good) {
     assert.deepEqual(colorOffenders(declaration), [], `must stay allowed: ${declaration}`)

@@ -94,12 +94,52 @@ function globToRegExp(glob) {
 const IPV4_RE = /\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b/g
 const CREDENTIAL_URL_RE = /\b([a-z][a-z0-9+.-]*):\/\/([^/@\s:]+):([^@\s]*)@([A-Za-z0-9._:-]+)/gi
 const URL_HOST_RE = /\b[a-z][a-z0-9+.-]*:\/\/([A-Za-z0-9._-]+)/gi
+// The keyword may itself be QUOTED — that is how a JSON/JS object literal writes
+// it (`{"password":"…"}`, `"api_key": "…"`), and the unquoted-only pattern used
+// to walk straight past every one of them.
 const SECRET_ASSIGN_RE = new RegExp(
-  `\\b(${SECRET_KEYWORDS.join('|')})\\b\\s*[:=]\\s*(['"]?)([^\\s'"]+)\\2`,
+  `['"]?\\b(${SECRET_KEYWORDS.join('|')})\\b['"]?\\s*[:=]\\s*(['"]?)([^\\s'"]+)\\2`,
   'gi',
 )
+
+/**
+ * Files whose assigned values are TYPED IN by a human (documentation, example
+ * configs, dotenv files) instead of computed by code. An unquoted value there is
+ * a written-down value — `password: hunter2` in a README is the shape every
+ * leak has — so the bare-identifier exemption must not apply to them.
+ */
+/** DB_PASSWORD=... style: the secret word sits INSIDE the key, so \b cannot see it. */
+const ENV_SECRET_LINE_RE = /^\s*(?:export\s+)?([A-Za-z0-9_]*(?:PASS|PWD|SECRET|TOKEN|AUTH|CRED)[A-Za-z0-9_]*)\s*=\s*(["']?)([^"'\s]+)\2\s*$/gi
+const CONFIG_FILE_RE = /(?:^|[\\/])[^\\/]*\.env(?:\.[^\\/]*)?$|\.(?:md|markdown|ya?ml|toml|json)$/i
 const HOSTNAME_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/
 const QUOTED_TOKEN_RE = /(['"`])([A-Za-z0-9_+/=.-]{8,})\1/g
+
+/**
+ * Whether an UNQUOTED assigned value is a reference to the runtime value rather
+ * than a typed-in secret. Only CODE files get this exemption, and only for these
+ * shapes:
+ *
+ *   * a SCREAMING_SNAKE constant — first letter uppercase, every remaining
+ *     character uppercase, a digit or `_` (`PASSWORD_FIELD`, `API_KEY_ENV`);
+ *   * a member path — at least one dot between identifier-ish segments
+ *     (`req.body.password`, `process.env.DB_PASSWORD`);
+ *   * a plain word — letters and underscores only, no digits (`auth`, `keep`,
+ *     `undefined`, `pwdItem`). That is a variable name or a word in a sentence,
+ *     which is what the flagged code comments and ternaries actually contain. A
+ *     credential typed into source carries a digit or a punctuation character
+ *     (`hunter2`, `abc123`, `p@ss`), so it does not qualify.
+ *
+ * `hunter2` is the shape this gate exists for and stays a finding in EVERY file
+ * type; documentation and config files get no exemption at all (see
+ * CONFIG_FILE_RE), because an unquoted value there was typed by a human.
+ */
+function isCodeReference(value, allow) {
+  if (!allow) return false
+  if (/^[A-Z][A-Z0-9_]*$/.test(value)) return true // CONSTANT / ENV_VAR_NAME
+  if (/^[A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)+$/.test(value)) return true // member path
+  if (/^[A-Za-z_]+$/.test(value)) return true // plain word: variable name / prose
+  return false
+}
 
 /**
  * Whether an assigned value looks like a written-down credential rather than a
@@ -108,20 +148,30 @@ const QUOTED_TOKEN_RE = /(['"`])([A-Za-z0-9_+/=.-]{8,})\1/g
  *
  * @param raw - the assigned value as matched.
  * @param quoted - the value was written inside quotes in the matched source.
+ * @param codeFile - the file is CODE (not a `.md` / `.yml` / `.toml` / `.env`).
  *
  * A QUOTED literal is a typed-in value, not a code reference: the bare-identifier
  * exemption exists for `password: req.body.password`, and applying it to quotes
  * is how a quoted bare word (the shape of a written-down password) used to pass a
  * clean gate. Quoted values are therefore only accepted as an explicit
- * placeholder (CHANGE_ME / ${VAR} / …).
+ * placeholder (CHANGE_ME / ${VAR} / …). An UNQUOTED value is exempt only when it
+ * is a code reference in a code file: in a documentation or config file an
+ * unquoted `hunter2` is a value someone typed in, which is exactly the leak this
+ * gate exists for.
  */
-function looksLikeSecretLiteral(raw, quoted = false) {
+function looksLikeSecretLiteral(raw, quoted = false, codeFile = false) {
   const value = raw.replace(/[,;)\]}"']+$/, '')
   if (value.length < 4) return false
-  if (PLACEHOLDER_VALUE_RE.test(value) || PLACEHOLDER_PASSWORDS.includes(value)) return false
+  if (PLACEHOLDER_VALUE_RE.test(value) || isPlaceholderPassword(value)) return false
   if (/[([{$\\|`]/.test(value)) return false // call / index / template / escape / regex alternation
-  if (!quoted && /^[A-Za-z_$][A-Za-z0-9_$.]*$/.test(value)) return false // bare identifier or member path
+  if (!quoted && isCodeReference(value, codeFile)) return false
   return true
+}
+
+/** A placeholder might be capitalized as a UI label (`"Password"`). */
+function isPlaceholderPassword(value) {
+  const lower = String(value).toLowerCase()
+  return PLACEHOLDER_PASSWORDS.some((placeholder) => placeholder.toLowerCase() === lower)
 }
 
 /** Host-shaped quoted token (rejects config keys like `.env.local`, code like `process.env.HOME`). */
@@ -153,9 +203,12 @@ function hostAllowed(host) {
  * @param line - the source line.
  * @param rules - rule ids enabled for this file (backstop + slot rules).
  * @param denylist - compiled local denylist, or undefined.
+ * @param spec - `{ codeFile }`: false for documentation/config files, where an
+ *   unquoted assigned value is a typed-in value, never a runtime reference.
  * @returns findings as `{ rule, message }`.
  */
-function checkLine(line, rules, denylist) {
+function checkLine(line, rules, denylist, spec = {}) {
+  const codeFile = spec.codeFile === true
   const found = []
   const add = (rule, message) => found.push({ rule, message })
 
@@ -184,8 +237,19 @@ function checkLine(line, rules, denylist) {
     for (const match of line.matchAll(SECRET_ASSIGN_RE)) {
       // match[2] is the quote character (empty for an unquoted value): it decides
       // whether the bare-identifier exemption may apply at all.
-      if (!looksLikeSecretLiteral(match[3], match[2] !== '')) continue
+      if (!looksLikeSecretLiteral(match[3], match[2] !== '', codeFile)) continue
       add('password', `${match[1]} is assigned the literal "${match[3]}" — use a placeholder or a reference`)
+    }
+    // `.env` convention puts the keyword INSIDE the key (`DB_PASSWORD=`), and `_`
+    // is a word character, so `\bpassword\b` never matches it: the most common
+    // shape in an env file was invisible. Only applies to config-shaped files, and
+    // only to a whole `KEY=value` line, so a code identifier is unaffected.
+    if (!codeFile) {
+      for (const match of line.matchAll(ENV_SECRET_LINE_RE)) {
+        // match[1] = key, match[2] = quote (may be empty), match[3] = value.
+        if (!looksLikeSecretLiteral(match[3], match[2] !== '', false)) continue
+        add('password', `${match[1]} is assigned the literal "${match[3]}" — use a placeholder or a reference`)
+      }
     }
   }
 
@@ -294,7 +358,18 @@ if (badRule) {
 
   for (const file of files) {
     const path = rel(file)
+    // Values in docs/config are typed in; values in code may be references. The
+    // distinction is what stops `password: hunter2` in a README from looking like
+    // `password: req.body.password` in a source file.
+    const codeFile = !CONFIG_FILE_RE.test(path)
     const rules = new Set(BACKSTOP_RULES)
+    // A config-shaped file is a place where a value is TYPED IN, whether or not
+    // anyone registered it as a slot. Without this, `password: hunter2` in a brand
+    // new `.yml` was invisible (the password rule only ran on registered slots and
+    // on code), which is exactly the shape D1 was about — the fixed judgement
+    // never got a chance to run. `dsn` stays slot-only: URLs in an unregistered
+    // JSON/TOML are usually documentation, and that rule is the noisiest one.
+    if (!codeFile) rules.add('password')
     for (const { slot, res } of slotMatchers) {
       if (!res.some((re) => re.test(path))) continue
       slotFileCounts.set(slot.id, slotFileCounts.get(slot.id) + 1)
@@ -312,7 +387,7 @@ if (badRule) {
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i]
       if (line.includes(PRAGMA)) continue
-      for (const { rule, message } of checkLine(line, ruleList, denylist)) {
+      for (const { rule, message } of checkLine(line, ruleList, denylist, { codeFile })) {
         findings.push(`${path}:${i + 1}: [${rule}] ${message}`)
       }
     }

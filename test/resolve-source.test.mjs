@@ -80,3 +80,30 @@ test('unknown source resolves to undefined', async () => {
   assert.equal(await mcp.resolveSource(ctx, subprocess, ''), undefined)
   assert.equal(await mcp.resolveSource(ctx, subprocess, undefined), undefined)
 })
+
+test('a MISSING handle never falls back to the base row (no substring match)', async () => {
+  // The old `wanted.includes(k.id)` fallback was a prefix match: a handle that
+  // merely CONTAINED a real id resolved to that row — so `testapp_1nb1w50_dmeo`
+  // (the demo env, misspelled) sent the query to the DEFAULT connection's DSN.
+  // A near miss must be "not found", never "whichever row it resembles".
+  const wrongEnv = await mcp.resolveSource(ctx, subprocess, baseId + '_dmeo')
+  assert.equal(wrongEnv, undefined, 'a misspelled environment suffix must not resolve')
+  const wrongId = await mcp.resolveSource(ctx, subprocess, 'testap_' + cfg.shortHash(WS_PATH) + '_demo')
+  assert.equal(wrongId, undefined, 'a misspelled workspace slug must not resolve')
+  const noSuchEnv = await mcp.resolveSource(ctx, subprocess, baseId + '_staging')
+  assert.equal(noSuchEnv, undefined, 'a suffix naming a nonexistent environment must not resolve')
+  const suffixedDefault = await mcp.resolveSource(ctx, subprocess, baseId + '_default')
+  assert.equal(suffixedDefault, undefined, '`default` has no slug suffix, so `<base>_default` names nothing')
+  // A trailing fragment, an extra segment and a truncated hash are all near
+  // misses: none of them is the row it resembles.
+  assert.equal(await mcp.resolveSource(ctx, subprocess, baseId + '_demo_extra'), undefined)
+  assert.equal(await mcp.resolveSource(ctx, subprocess, baseId.slice(0, -1)), undefined)
+  assert.equal(await mcp.resolveSource(ctx, subprocess, baseId + '_DEMO2'), undefined)
+  // Exact handles still work, including the case-insensitive form the resolver
+  // has always accepted (handles are lowercase ASCII by construction): a model
+  // echoing the title's original casing is not a different connection.
+  const exact = await mcp.resolveSource(ctx, subprocess, demoId)
+  assert.equal(exact.row.env, 'demo')
+  const cased = await mcp.resolveSource(ctx, subprocess, 'TESTAPP_' + cfg.shortHash(WS_PATH).toUpperCase() + '_DEMO')
+  assert.equal(cased.row.env, 'demo', 'case-only variants of a REAL handle stay resolvable')
+})

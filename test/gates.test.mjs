@@ -15,7 +15,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { appendFileSync, closeSync, cpSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -135,6 +135,85 @@ test('check:secrets — an uncompilable local denylist fails instead of warning 
   }
 })
 
+test('check:secrets — an unquoted or JSON-keyed literal is a leak in every file type (D1/D2)', () => {
+  const dir = stageRepo()
+  try {
+    const clean = run('scripts/desensitize-check.mjs', [], dir)
+    assert.equal(clean.code, 0, `pristine copy must be clean:\n${clean.out}`)
+    // The bare-identifier exemption used to apply to EVERY unquoted value in EVERY
+    // file, so the most common leak shape passed everywhere: a value typed after
+    // `password:` in a README, an example YAML/TOML/dotenv, a JSON object, and even
+    // plain code. Only a code REFERENCE may be exempt, and only in a code file.
+    const cases = [
+      ['lib/i18n.mjs', `const fixtureLeak = { password: ${BARE_WORD} }`, 'code'],
+      ['doc/DESENSITIZE.md', `password: ${BARE_WORD}`, 'doc'],
+      ['cordis.patch.yml', `password: ${BARE_WORD}`, 'yml'],
+      ['release-test/mise.toml', `password = ${BARE_WORD}`, 'toml'],
+      ['package.json', `"password": "${BARE_WORD}",`, 'json key (D2)'],
+    ]
+    for (const [rel, line, label] of cases) {
+      const file = join(dir, rel)
+      const original = readFileSync(file, 'utf8')
+      try {
+        appendFileSync(file, `\n${line}\n`)
+        const bad = run('scripts/desensitize-check.mjs', [], dir)
+        assert.equal(bad.code, 1, `${label}: an assigned literal must fail the gate:\n${bad.out}`)
+        assert.match(
+          bad.out,
+          new RegExp(`${rel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}:\\d+: \\[password\\]`),
+          `${label}: the finding must name the file and the password rule:\n${bad.out}`,
+        )
+      } finally {
+        writeFileSync(file, original)
+      }
+    }
+    // The other direction: a real code REFERENCE must stay clean, or the gate
+    // would be unusable and everyone would reach for the pragma.
+    const refFile = join(dir, 'lib', 'i18n.mjs')
+    const before = readFileSync(refFile, 'utf8')
+    try {
+      appendFileSync(refFile, '\nconst fixtureRef = { password: req.body.password, token: PASSWORD_FIELD }\n')
+      const stillClean = run('scripts/desensitize-check.mjs', [], dir)
+      assert.equal(stillClean.code, 0, `a member path / CONSTANT reference must stay clean:\n${stillClean.out}`)
+    } finally {
+      writeFileSync(refFile, before)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('check:secrets — a config file nobody registered is still covered (D1 scope)', () => {
+  // The judgement was fixed first, but the RULE never reached an unregistered
+  // file: only slots and code got `password`, so a brand-new .yml/.env stayed
+  // invisible. Worse, `.env` keys embed the keyword (`DB_PASSWORD=`), and `_` is
+  // a word character, so `\bpassword\b` cannot match them at all.
+  const dir = stageRepo()
+  const cases = [
+    { rel: 'doc/NEW.yml', text: `password: ${BARE_WORD}\n`, red: true },
+    { rel: 'doc/nested/NEW.toml', text: `password = "${BARE_WORD}"\n`, red: true },
+    { rel: 'doc/NEW.json', text: `{ "password": "${BARE_WORD}" }\n`, red: true },
+    { rel: 'doc/NEW.env', text: `DB_PASSWORD=${BARE_WORD}\n`, red: true },
+    { rel: 'doc/NEW2.env.local', text: `export SMTP_PASSWORD="${BARE_WORD}"\n`, red: true },
+    { rel: 'doc/safe.yml', text: 'password: CHANGE_ME\n', red: false },
+    { rel: 'doc/safe.env', text: 'DB_PASSWORD=${DB_PASSWORD}\n', red: false },
+    { rel: 'doc/safe2.env', text: 'DB_PASSWORD=\n', red: false },
+    { rel: 'lib/safe.mjs', text: 'const cfg = { password: req.body.password }\n', red: false },
+    { rel: 'lib/safe2.mjs', text: 'const cfg = { password: PASSWORD_FIELD }\n', red: false },
+  ]
+  try {
+    for (const cs of cases) {
+      const p = join(dir, cs.rel)
+      mkdirSync(dirname(p), { recursive: true })
+      writeFileSync(p, cs.text)
+      const run1 = run('scripts/desensitize-check.mjs', [], dir)
+      assert.equal(run1.code, cs.red ? 1 : 0, `${cs.rel} must be ${cs.red ? 'CAUGHT' : 'clean'}:\n${run1.out}`)
+      rmSync(p, { force: true })
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 test('check:docs — a dead link in either README fails the gate (G3)', () => {
   const dir = stageRepo()
   try {
@@ -227,7 +306,7 @@ async function stagePreflightFixture() {
   mkdirSync(runDir, { recursive: true })
 
   /** Write report.json + a valid verdict for a given per-target check mix. */
-  const writeRun = ({ pass, skip }) => {
+  const writeRun = ({ pass, skip, git: gitRef }) => {
     const report = {
       schemaVersion: 1,
       runId,
@@ -235,7 +314,7 @@ async function stagePreflightFixture() {
       startedAt: new Date(Date.now() - 600_000).toISOString(),
       status: 'green',
       plugin: { name: pkg.name, version: pkg.version, tarball: 'fixture.tgz', size: 1, sha256: 'a'.repeat(64) },
-      git: { branch: 'dev', commit: head, tree, dirty: false, tag: null },
+      git: { branch: 'dev', commit: gitRef?.commit ?? head, tree: gitRef?.tree ?? tree, dirty: false, tag: null },
       matrix: { hash: matrixLib.matrixHash(matrix), updatedAt: matrix.updatedAt, targetCount: matrix.targets.length },
       environment: { node: process.versions.node, platform: process.platform, dbhub: '1.4.0' },
       options: { provision: 'manual', only: [], tier: 'declared', keepHomes: false },
@@ -272,13 +351,93 @@ async function stagePreflightFixture() {
     )
   }
 
-  return { dir, writeRun }
+  return { dir, writeRun, git, head, tree }
 }
 
-test('release:preflight — a declared target with no executed check cannot pass (G6)', async () => {
+test('release:preflight — an earlier diff cannot fail a later, clean run (D4)', async (t) => {
   const fixture = await stagePreflightFixture()
   if (!fixture) {
-    console.warn('[gates] git is not available — skipping the release-preflight fixture')
+    t.skip('git is not available — the preflight fixture needs a real commit')
+    return
+  }
+  const { dir, writeRun, git } = fixture
+  /** Commit everything and report the new {commit, tree}. */
+  const commitAll = (message) => {
+    const added = git('add', '-A')
+    assert.equal(added.code, 0, added.out)
+    const committed = git(
+      '-c', 'user.email=fixture@example.invalid', '-c', 'user.name=fixture', 'commit', '-q', '-m', message,
+    )
+    assert.equal(committed.code, 0, committed.out)
+    return {
+      commit: runCapture('git', ['rev-parse', 'HEAD'], dir).out.trim(),
+      tree: runCapture('git', ['rev-parse', 'HEAD^{tree}'], dir).out.trim(),
+    }
+  }
+  const preflight = () => {
+    const result = run('scripts/release-preflight.mjs', ['--json'], dir)
+    let json = null
+    try {
+      json = JSON.parse(result.out)
+    } catch {
+      json = null
+    }
+    return { ...result, json }
+  }
+  try {
+    // The report describes the commit the fixture was staged at.
+    writeRun({ pass: 18, skip: 0 })
+
+    // ① A SHIPPED file really changed: the report must be refused (correct red).
+    const shipped = join(dir, 'lib', 'config.mjs')
+    const shippedOriginal = readFileSync(shipped, 'utf8')
+    const readme = join(dir, 'README.md')
+    const readmeOriginal = readFileSync(readme, 'utf8')
+    appendFileSync(shipped, '\n// fixture change A (shipped code)\n')
+    appendFileSync(readme, '\nfixture change B (generated doc)\n')
+    commitAll('A: shipped code + doc changed')
+    const red = preflight()
+    assert.equal(red.code, 1, `a shipped change must block the release:\n${red.out}`)
+    assert.match(red.out, /内容变了，必须重跑/)
+
+    // ② That change is REVERTED; only the generated doc differs from the report's
+    // tree now. The report is valid again — unless the gate is still reading the
+    // paths of the previous diff out of the shared log file (D4).
+    writeFileSync(shipped, shippedOriginal)
+    commitAll('B: revert A, keep the doc change')
+    const green = preflight()
+    assert.equal(green.code, 0, `only generated docs differ, so the report stays valid:\n${green.out}`)
+    assert.equal(green.json?.pass, true, `--json must report pass:\n${green.out}`)
+    assert.ok(
+      (green.json?.warnings || []).some((w) => String(w).includes('README.md')),
+      `the diff must be the CURRENT one (README.md only):\n${green.out}`,
+    )
+    assert.ok(
+      !(green.json?.problems || []).some((p) => String(p).includes('config.mjs')),
+      `a reverted path must not come back: ${JSON.stringify(green.json?.problems)}`,
+    )
+    // The shared log is not evidence and is cleared on start; per-call files are
+    // removed after they are read.
+    assert.equal(existsSync(join(dir, '.release-test', 'preflight-git.log')), false,
+      'the shared diff log must not survive a run')
+    assert.deepEqual(
+      readdirSync(join(dir, '.release-test')).filter((f) => f.startsWith('preflight-git-')),
+      [],
+      'a per-call diff log must be deleted after it is read',
+    )
+    // Keep the baseline content reachable for a readable diff on failure.
+    assert.equal(readmeOriginal.length > 0, true)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('release:preflight — a declared target with no executed check cannot pass (G6)', async (t) => {
+  const fixture = await stagePreflightFixture()
+  if (!fixture) {
+    // SKIP, not PASS: a silently-returning test is reported as `ok` and a suite
+    // that ran nothing looks exactly like a suite that verified something.
+    t.skip('git is not available — the preflight fixture needs a real commit')
     return
   }
   const { dir, writeRun } = fixture
@@ -300,11 +459,15 @@ test('release:preflight — a declared target with no executed check cannot pass
   }
 })
 
-test('release:preflight — stale evidence still blocks the release (sanity)', async () => {
+test('release:preflight — stale evidence still blocks the release (sanity)', async (t) => {
   // The same fixture, aged past the freshness window: proves the "good" result
   // above is not the only thing this gate knows how to say.
   const fixture = await stagePreflightFixture()
-  if (!fixture) return
+  if (!fixture) {
+    // SKIP, not PASS (see the case above): "not run" must be visible as such.
+    t.skip('git is not available — the preflight fixture needs a real commit')
+    return
+  }
   const { dir, writeRun } = fixture
   try {
     writeRun({ pass: 18, skip: 0 })

@@ -182,15 +182,48 @@ function finish() {
   process.exitCode = pass ? 0 : 1
 }
 
+// A log left behind by THIS or an older build of the gate takes part in nothing:
+// `changedPaths` below reads its own per-call file. Deleting the shared log keeps
+// a stale history from being mistaken for evidence and keeps `.release-test/`
+// honest. `diffSeq` is declared HERE (not next to `changedPaths` at the bottom)
+// because that function is hoisted and runs during `main`: a `let` down there
+// would still be in its temporal dead zone on the first diff.
+let diffSeq = 0
+try {
+  fs.unlinkSync(path.join(REPO_ROOT, '.release-test', 'preflight-git.log'))
+} catch {
+  /* absent is the normal case */
+}
+
 await main()
 
 /** Files that differ between two tree hashes (null when git refuses). */
 async function changedPaths(treeA, treeB) {
-  const logFile = path.join(REPO_ROOT, '.release-test', 'preflight-git.log')
+  // ONE FILE PER CALL. `run()` APPENDS a `===== … =====` section to whatever the
+  // log already holds; parsing that shared file meant the paths of every EARLIER
+  // diff came back on every later run, so a README-only change was reported as
+  // "content changed, rerun" because a long-gone `lib/` edit was still in the log
+  // (and `.release-test/` is machine-local, so this false red depended on history).
+  const logFile = path.join(REPO_ROOT, '.release-test', `preflight-git-${process.pid}-${++diffSeq}.log`)
   const result = await run('git', ['diff', '--name-only', treeA, treeB], { cwd: REPO_ROOT, logFile, timeoutMs: 30_000 })
+  let text = ''
+  try {
+    text = fs.readFileSync(logFile, 'utf8')
+  } catch {
+    text = ''
+  }
+  try {
+    fs.unlinkSync(logFile)
+  } catch {
+    /* best effort: a leftover log is debug output, never evidence */
+  }
   if (result.code !== 0) return null
+  // Defensive: only the LAST `===== ` section belongs to this call, so a future
+  // caller that reuses a log file still cannot read another command's output.
+  const start = text.lastIndexOf('===== ')
+  const body = start === -1 ? text : text.slice(start)
   // run() captures output into the log with framing lines; keep only path lines.
-  return fs.readFileSync(logFile, 'utf8')
+  return body
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('=====') && !line.startsWith('[') && !line.startsWith('$'))

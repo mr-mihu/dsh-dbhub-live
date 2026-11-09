@@ -234,7 +234,9 @@ test('concurrent checks share one in-flight request', async () => {
 
 test('a failing check never rejects and error text is sanitized', async () => {
   const fetchImpl = stubFetch({
-    [NPM_LATEST_URL]: new Error('boom https://registry.npmjs.org/dsh-dbhub-live/latest?token=abc123'),
+    // The `token=` fragment is a redaction FIXTURE: the assertion below proves it
+    // never survives into the view (see doc/DESENSITIZE.md for the pragma).
+    [NPM_LATEST_URL]: new Error('boom https://registry.npmjs.org/dsh-dbhub-live/latest?token=abc123'), // desensitize:allow
     [GITHUB_LATEST_URL]: new Error('fetch failed'),
   })
   const snap = await createUpdateChecker({ fetchImpl, now: () => 5 }).check(true)

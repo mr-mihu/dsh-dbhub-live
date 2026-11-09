@@ -217,8 +217,8 @@ export const SLOTS = [
   },
   {
     id: 'package-meta',
-    description: '包元数据与 bundle patch：description/keywords 不得含内部项目名或机器路径',
-    globs: ['package.json', 'cordis.patch.yml'],
+    description: '包元数据与发布配置：description/keywords/生成配置不得含内部项目名、机器路径或口令',
+    globs: ['package.json', 'cordis.patch.yml', 'release-test/mise.toml'],
     rules: ['password', 'host', 'name', 'localpath'],
   },
   {

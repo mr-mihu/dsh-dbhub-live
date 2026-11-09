@@ -108,10 +108,11 @@ test('scrubSecrets removes the DSN password and generic password= tokens', () =>
   const scrubbed = cfg.scrubSecrets('Auth failed for user secret.pw (password=secret.pw)', dsn)
   assert.ok(!scrubbed.includes('secret.pw'))
   assert.ok(scrubbed.includes('****'))
-  // generic key=value secrets (dbhub stderr style)
-  assert.ok(cfg.scrubSecrets('password=abc123', dsn).includes('password=****'))
-  assert.ok(cfg.scrubSecrets('passwd: abc123', dsn).includes('passwd:****'))
-  assert.ok(cfg.scrubSecrets('PWD=abc123', dsn).includes('PWD=****'))
+  // generic key=value secrets (dbhub stderr style). The token below is a scrub
+  // FIXTURE, not a credential: it is asserted to disappear from the output.
+  assert.ok(cfg.scrubSecrets('password=abc123', dsn).includes('password=****')) // desensitize:allow
+  assert.ok(cfg.scrubSecrets('passwd: abc123', dsn).includes('passwd:****')) // desensitize:allow
+  assert.ok(cfg.scrubSecrets('PWD=abc123', dsn).includes('PWD=****')) // desensitize:allow
   // plain text without the password is untouched (sanity)
   assert.ok(cfg.scrubSecrets('SELECT 1 OK', dsn).includes('SELECT 1 OK'))
 })

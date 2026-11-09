@@ -186,6 +186,42 @@ test('a short name that normalizes onto an existing key still updates that row',
   assert.equal(Object.keys(doc[WS].environments).length, 1)
 })
 
+test('the options and remove writers refuse a truncating name and leave the store untouched (D7)', async () => {
+  // Same data-safety class as the DSN writer above, but reachable through the
+  // read-only chip / the delete button: a 65-character name normalizes (caps) onto
+  // the stored 64-character row, and these two writers used to act on that other
+  // environment — flipping its read-only flag, or deleting it outright.
+  const cfg = await configWith(undefined)
+  const capped = 'g'.repeat(cfg.ENV_NAME_MAX)
+  assert.equal(cfg.setWorkspaceEnv(WS, capped, 'mysql://u:p@127.0.0.1:3306/one', 'user'), capped)
+  cfg.setWorkspaceEnv(WS, 'keep', 'mysql://u:p@127.0.0.1:3306/two', 'user')
+  const before = readStore()
+  const tooLong = capped + '2'
+
+  assert.throws(
+    () => cfg.setWorkspaceEnvOptions(WS, tooLong, { readOnly: true }),
+    (e) => e && e.code === 'envNameTruncated',
+    'an options write must not address the capped row',
+  )
+  assert.deepEqual(readStore(), before, 'the refused options write must not touch the store')
+  assert.equal(readStore()[WS].environments[capped].readOnly, undefined)
+
+  assert.throws(
+    () => cfg.removeWorkspaceEnv(WS, tooLong),
+    (e) => e && e.code === 'envNameTruncated',
+    'a remove must not delete the capped row',
+  )
+  assert.deepEqual(readStore(), before, 'the refused remove must not touch the store')
+  assert.ok(readStore()[WS].environments[capped], 'the 64-character row is still there')
+
+  // The other direction: the REAL capped name the card displays still works.
+  assert.equal(cfg.setWorkspaceEnvOptions(WS, capped, { readOnly: true }), capped)
+  assert.equal(readStore()[WS].environments[capped].readOnly, true)
+  assert.equal(cfg.removeWorkspaceEnv(WS, capped), true)
+  assert.equal(Object.prototype.hasOwnProperty.call(readStore()[WS].environments, capped), false)
+  assert.ok(readStore()[WS].environments.keep, 'only the named row is removed')
+})
+
 // ── unknown store fields survive a write (P1-13) ──────────────────────────
 
 function seededDoc() {
