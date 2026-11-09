@@ -26,7 +26,9 @@
    - `name`：本地 denylist。
 3. **本地 denylist（补充）**：pattern 抓不到的**裸名字**（项目 / 公司 / 库名）放在 `.env` 的 `DSH_DBHUB_DESENSITIZE_RE`（`|` 分隔、正则转义、多条取并集）。CI 里没有 `.env`，该层自动降级为提示，不影响其余两层。
 
-`SKIP_DIRS` 跳过 `.git`、`node_modules`、`.dsh-test`、`.release-test`、`dist`、`coverage`；两个本地开发文档（`doc/PLAN-*.md`、`doc/implementation-notes.md`）不进 git 也不进包，因此不扫。
+`SKIP_DIRS` 跳过 `.git`、`node_modules`、`.dsh-test`、**`.dsh-a` / `.dsh-b` / `.pnpm-store`**、`.release-test`、`dist`、`coverage`。后三个 `.` 目录是 [DEVELOPMENT.md](DEVELOPMENT.md) 让开发者建**在仓库里**的：`.dsh-a` / `.dsh-b` 是隔离 `DSH_HOME`（里面是真实本地凭据），`.pnpm-store` 是本机打包用的 store（`.gitignore` 也排除它，否则脏工作区会挡住 `release:preflight`）。扫它们只会把开发者自己的机器误报成泄漏。两个本地开发文档（`doc/PLAN-*.md`、`doc/implementation-notes.md`）不进 git 也不进包，因此不扫。
+
+本地 denylist 编译失败是**门禁失败**（`exit 1`），不是提示：这一层是唯一能看见裸项目名/库名的规则，坏了不能报 clean。
 
 ## 写法约定（新增内容一律照此）
 

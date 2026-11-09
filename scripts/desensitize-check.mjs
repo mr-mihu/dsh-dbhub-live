@@ -105,13 +105,22 @@ const QUOTED_TOKEN_RE = /(['"`])([A-Za-z0-9_+/=.-]{8,})\1/g
  * Whether an assigned value looks like a written-down credential rather than a
  * code expression (identifier, call, index, template, escape sequence). Only the
  * former is a leak; the latter is how source code reads values at runtime.
+ *
+ * @param raw - the assigned value as matched.
+ * @param quoted - the value was written inside quotes in the matched source.
+ *
+ * A QUOTED literal is a typed-in value, not a code reference: the bare-identifier
+ * exemption exists for `password: req.body.password`, and applying it to quotes
+ * is how a quoted bare word (the shape of a written-down password) used to pass a
+ * clean gate. Quoted values are therefore only accepted as an explicit
+ * placeholder (CHANGE_ME / ${VAR} / …).
  */
-function looksLikeSecretLiteral(raw) {
+function looksLikeSecretLiteral(raw, quoted = false) {
   const value = raw.replace(/[,;)\]}"']+$/, '')
   if (value.length < 4) return false
   if (PLACEHOLDER_VALUE_RE.test(value) || PLACEHOLDER_PASSWORDS.includes(value)) return false
   if (/[([{$\\|`]/.test(value)) return false // call / index / template / escape / regex alternation
-  if (/^[A-Za-z_$][A-Za-z0-9_$.]*$/.test(value)) return false // bare identifier or member path
+  if (!quoted && /^[A-Za-z_$][A-Za-z0-9_$.]*$/.test(value)) return false // bare identifier or member path
   return true
 }
 
@@ -173,7 +182,9 @@ function checkLine(line, rules, denylist) {
       }
     }
     for (const match of line.matchAll(SECRET_ASSIGN_RE)) {
-      if (!looksLikeSecretLiteral(match[3])) continue
+      // match[2] is the quote character (empty for an unquoted value): it decides
+      // whether the bare-identifier exemption may apply at all.
+      if (!looksLikeSecretLiteral(match[3], match[2] !== '')) continue
       add('password', `${match[1]} is assigned the literal "${match[3]}" — use a placeholder or a reference`)
     }
   }
@@ -261,7 +272,11 @@ if (badRule) {
 } else {
   const { matcher: denylist, count, broken } = readDenylist()
   if (broken) {
-    console.error('[check:secrets] .env denylist could not be compiled — fix it before continuing')
+    // A denylist that cannot be compiled is a BROKEN GATE, not a note: the layer
+    // that catches bare project/database names is silently inert, so the run must
+    // fail exactly like the unknown-rule branch above instead of reporting clean.
+    console.error('[check:secrets] .env denylist could not be compiled — the local denylist layer is inert, fix it before continuing')
+    process.exitCode = 1
   } else if (!denylist) {
     console.warn(
       `[check:secrets] note: no local denylist (${DENYLIST_VAR} in .env) — bare project/database names are\n` +
@@ -323,6 +338,8 @@ if (badRule) {
         `               positive with the inline marker "${PRAGMA}".`,
     )
     process.exitCode = 1
+  } else if (broken) {
+    console.error('[check:secrets] no finding in the scanned files, but the gate still fails: the local denylist is broken (see above).')
   } else {
     console.log(
       `[check:secrets] clean: ${files.length} file(s), ${SLOTS.length} slot(s) covered — rules: ${activeRules.join(', ')}`,

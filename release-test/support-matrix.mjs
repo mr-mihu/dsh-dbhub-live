@@ -5,15 +5,25 @@
 //   README.md / README.en.md       — the "supported version range" section,
 //                                    collapsed detail under a one-line range
 //
-// One source of truth (release-test/matrix.json + the newest evidence), three
-// renderings, so a claim cannot drift from what was tested.
+// One source of truth (release-test/matrix.json + release-test/evidence-summary.json),
+// three renderings, so a claim cannot drift from what was tested.
 //
-//   node release-test/support-matrix.mjs --write   # regenerate all three
-//   node release-test/support-matrix.mjs --check   # fail if any is stale (CI)
-//   node release-test/support-matrix.mjs           # print the document
+//   node release-test/support-matrix.mjs --write           # refresh evidence + regenerate
+//   node release-test/support-matrix.mjs --check           # fail if structure is stale (CI)
+//   node release-test/support-matrix.mjs --check-evidence  # fail if the local reports moved on
+//   node release-test/support-matrix.mjs                   # print the document
+//
+// WHY THE EVIDENCE IS A COMMITTED FILE: the rendered documents used to embed
+// whatever `.release-test/reports/` happened to hold, and that directory is
+// gitignored (it is reproducible output, and it contains per-machine homes and
+// caches). A clean checkout therefore recomputed "未验证" against documents that
+// said "已通过", so `--check` could never pass in CI. The distilled evidence now
+// lives in `release-test/evidence-summary.json` — committed, free of paths and
+// secrets — and every rendering depends on shipped inputs only. `--write` is the
+// only thing that reads `.release-test/`; `--check` never does.
 import fs from 'node:fs'
 import path from 'node:path'
-import { REPO_ROOT } from './lib/util.mjs'
+import { REPO_ROOT, readJson } from './lib/util.mjs'
 import { loadMatrix, matrixClaimWarnings, matrixHash } from './lib/matrix.mjs'
 import { packageMeta } from './lib/artifact.mjs'
 import { latestRun, listRuns } from './lib/runs.mjs'
@@ -22,6 +32,7 @@ import { compareVersions } from './lib/semver.mjs'
 
 const OUT_DOC = path.join(REPO_ROOT, 'doc', 'SUPPORT-MATRIX.md')
 const OUT_MISE = path.join(REPO_ROOT, 'release-test', 'mise.toml')
+const EVIDENCE_FILE = path.join(REPO_ROOT, 'release-test', 'evidence-summary.json')
 const READMES = [
   { file: path.join(REPO_ROOT, 'README.md'), lang: 'zh' },
   { file: path.join(REPO_ROOT, 'README.en.md'), lang: 'en' },
@@ -30,13 +41,17 @@ const BEGIN = '<!-- release-test:versions:begin -->'
 const END = '<!-- release-test:versions:end -->'
 
 const argv = process.argv.slice(2)
-const mode = argv.includes('--write') ? 'write' : argv.includes('--check') ? 'check' : 'print'
+const mode = argv.includes('--write')
+  ? 'write'
+  : argv.includes('--check-evidence')
+    ? 'check-evidence'
+    : argv.includes('--check')
+      ? 'check'
+      : 'print'
 
 const pkg = packageMeta()
 const matrix = loadMatrix()
 const matrixHashValue = matrixHash(matrix)
-const runs = listRuns()
-const latest = latestRun()
 const declared = matrix.targets.filter((t) => t.tier === 'declared')
 const advisory = matrix.targets.filter((t) => t.tier === 'advisory')
 
@@ -76,44 +91,109 @@ function applyPeerRange() {
   fs.writeFileSync(file, text)
 }
 
-// Sync package.json BEFORE claims are read, so --write produces a document whose
-// "known drift" section reflects the range it just wrote.
-if (mode === 'write') applyPeerRange()
-
 const claims = matrixClaimWarnings(matrix)
 
-/** Newest evidence per version: runId + status + timing + provenance. */
-function evidenceFor(version) {
-  for (const run of [...runs].reverse()) {
-    const target = run.report?.targets?.find((t) => t.version === version)
-    if (target) {
-      return {
-        runId: run.runId,
-        generatedAt: run.report.generatedAt,
-        status: target.status,
-        provisionMode: target.provisionMode ?? null,
-        cliSource: target.cliSource ?? null,
-        readyMs: target.timings?.readyMs ?? null,
-        pluginVersion: run.report.plugin?.version ?? null,
-        commit: run.report.git?.commit?.slice(0, 8) ?? null,
-        counts: target.checksCounts ?? {},
-      }
+/**
+ * Distil `.release-test/reports/` into the committed evidence summary.
+ * LOCAL ONLY: only `--write` calls this, so a clean checkout (no reports) still
+ * renders from the committed summary alone.
+ * @returns the summary, or null when there is nothing to distil.
+ */
+function collectEvidence() {
+  const runs = listRuns()
+  if (runs.length === 0) return null
+  const latest = latestRun()
+  // Newest evidence per version: status + timing + provenance.
+  const targets = {}
+  for (const target of matrix.targets) {
+    const run = [...runs].reverse().find((r) => r.report?.targets?.some((x) => x.version === target.version))
+    if (!run) continue
+    const hit = run.report.targets.find((x) => x.version === target.version)
+    targets[target.version] = {
+      runId: run.runId,
+      generatedAt: run.report.generatedAt,
+      status: hit.status,
+      provisionMode: hit.provisionMode ?? null,
+      cliSource: hit.cliSource ?? null,
+      readyMs: hit.timings?.readyMs ?? null,
+      pluginVersion: run.report.plugin?.version ?? null,
+      commit: run.report.git?.commit ? String(run.report.git.commit).slice(0, 8) : null,
+      counts: hit.checksCounts ?? {},
     }
   }
-  return null
+  // "Latest complete test" means a run that covered every declared target; a
+  // single-target debug run must not masquerade as the release evidence.
+  const fullRun = [...runs].reverse().find((run) => run.report?.targets && declared.every((t) => run.report.targets.some((x) => x.version === t.version))) ?? null
+  const verdictSource = fullRun ?? latest
+  const loaded = verdictSource ? loadVerdict(verdictSource.dir) : { ok: false }
+  const complete = Boolean(loaded.ok && loaded.verdict?.overall && loaded.verdict?.reviewer && loaded.verdict?.reviewedAt)
+  const verdict = complete
+    ? { state: 'complete', overall: loaded.verdict.overall, reviewer: loaded.verdict.reviewer, reviewedAt: loaded.verdict.reviewedAt }
+    : loaded.ok
+      ? { state: 'incomplete' } // verdict.json exists but the template is not filled in
+      : { state: 'none' }
+  return {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    pluginVersion: pkg.version,
+    matrixHash: latest?.report?.matrix?.hash ?? null,
+    fullRun: fullRun
+      ? { runId: fullRun.runId, generatedAt: fullRun.report?.generatedAt ?? null, status: fullRun.report?.status ?? null }
+      : null,
+    verdict,
+    targets,
+  }
 }
 
-// "Latest complete test" means a run that covered every declared target; a
-// single-target debug run must not masquerade as the release evidence.
-const fullRun = [...runs].reverse().find((run) => run.report?.targets && declared.every((t) => run.report.targets.some((x) => x.version === t.version))) ?? null
-const verdictSource = fullRun ?? latest
-const verdict = verdictSource ? loadVerdict(verdictSource.dir) : { ok: false }
-const verdictComplete = verdict.ok && verdict.verdict?.overall && verdict.verdict?.reviewer && verdict.verdict?.reviewedAt
-const verdictText = verdictComplete
-  ? `${verdict.verdict.overall} — ${verdict.verdict.reviewer} @ ${verdict.verdict.reviewedAt}`
-  : verdict.ok
-    ? '未完成 AI 判定（verdict.json 模板还没填完）'
-    : '未做 AI 判定'
+/** Persist the summary, keeping the old timestamp when nothing but time changed. */
+function writeEvidence(next) {
+  const withoutStamp = (summary) => JSON.stringify({ ...summary, generatedAt: null })
+  let previous = null
+  try {
+    previous = readJson(EVIDENCE_FILE)
+  } catch {
+    /* first write */
+  }
+  const stable = previous && withoutStamp(previous) === withoutStamp(next) ? previous.generatedAt : next.generatedAt
+  fs.writeFileSync(EVIDENCE_FILE, JSON.stringify({ ...next, generatedAt: stable }, null, 2) + '\n')
+}
+
+function loadEvidence() {
+  if (!fs.existsSync(EVIDENCE_FILE)) {
+    console.error(
+      `missing ${path.relative(REPO_ROOT, EVIDENCE_FILE)} — it is committed evidence; regenerate it from a completed\n` +
+        'matrix run with: node release-test/support-matrix.mjs --write',
+    )
+    process.exit(1)
+  }
+  return readJson(EVIDENCE_FILE)
+}
+
+// Sync package.json BEFORE claims are read, so --write produces a document whose
+// "known drift" section reflects the range it just wrote.
+if (mode === 'write') {
+  applyPeerRange()
+  const refreshed = collectEvidence()
+  if (refreshed) {
+    writeEvidence(refreshed)
+    console.log(`refreshed ${path.relative(REPO_ROOT, EVIDENCE_FILE)} from .release-test/reports/`)
+  } else {
+    console.warn('no .release-test/reports/ run found — keeping the committed evidence summary as is')
+  }
+}
+
+const evidence = loadEvidence()
+/** Newest evidence per version, from the committed summary. */
+const evidenceFor = (version) => evidence.targets?.[version] ?? null
+
+const fullRun = evidence.fullRun ?? null
+const verdict = evidence.verdict ?? { state: 'none' }
+const verdictText =
+  verdict.state === 'complete'
+    ? `${verdict.overall} — ${verdict.reviewer} @ ${verdict.reviewedAt}`
+    : verdict.state === 'incomplete'
+      ? '未完成 AI 判定（verdict.json 模板还没填完）'
+      : '未做 AI 判定'
 
 // A "line" is a major.minor.patch release line (0.1.5 / 0.1.6 / 0.2.1 …); the
 // prerelease suffix is not part of the identity.
@@ -189,12 +269,13 @@ ${END}`
 const doc = `# 支持的 DSH 版本（发布测试矩阵）
 
 > **本文件由脚本生成，请勿手工编辑。**
-> 数据源：\`release-test/matrix.json\`（声明）+ \`.release-test/reports/\`（最近验证证据）。
-> 重新生成：\`node release-test/support-matrix.mjs --write\`　校验是否同步：\`node release-test/support-matrix.mjs --check\`
+> 数据源：\`release-test/matrix.json\`（声明）+ \`release-test/evidence-summary.json\`（最近验证证据摘要，随包提交）。
+> \`.release-test/reports/\` 只被 \`--write\` 读取一次并蒸馏成上面这份摘要，渲染不依赖本机目录，所以干净检出也能复现。
+> 重新生成：\`node release-test/support-matrix.mjs --write\`　校验结构：\`--check\`　校验证据是否过期（仅本机有报告时）：\`--check-evidence\`
 
 - 插件版本：\`${pkg.version}\`
 - 矩阵指纹：\`${matrixHashValue.slice(0, 12)}\`（矩阵变了，旧报告就不再被采信）
-- 最近一次完整测试：${fullRun ? `\`${fullRun.runId}\`（${fullRun.report?.generatedAt ?? '?'}，${fullRun.report?.status ?? '?'}）` : '尚无完整矩阵运行'}
+- 最近一次完整测试：${fullRun ? `\`${fullRun.runId}\`（${fullRun.generatedAt ?? '?'}，${fullRun.status ?? '?'}）` : '尚无完整矩阵运行'}
 - 最近一次 AI 判定：${verdictText}
 - 声明范围：${lowest} 起至 ${highest}（${versionLines.join(' / ')}，含预发布）
 
@@ -287,23 +368,59 @@ const artifacts = [
 
 if (mode === 'write') {
   console.log(`peer range: ${peerRange}`)
+  // Preserve the line endings the file already has: this generator writes LF, but
+  // a Windows checkout (core.autocrlf) holds CRLF, so rewriting a file whose
+  // CONTENT did not change used to leave it "modified" in `git status` with an
+  // empty `git diff` — and a dirty tree blocks `release:preflight`.
+  const eolOf = (text) => (text.includes('\r\n') ? '\r\n' : '\n')
   for (const artifact of artifacts) {
+    const existing = fs.existsSync(artifact.file) ? fs.readFileSync(artifact.file, 'utf8') : ''
+    const body = eolOf(existing) === '\r\n' ? artifact.content.replace(/\r?\n/g, '\r\n') : artifact.content
     fs.mkdirSync(path.dirname(artifact.file), { recursive: true })
-    fs.writeFileSync(artifact.file, artifact.content)
+    fs.writeFileSync(artifact.file, body)
     console.log(`wrote ${artifact.label}`)
   }
-} else if (mode === 'check') {
-  const stale = []
-  for (const artifact of artifacts) {
-    const current = fs.existsSync(artifact.file) ? fs.readFileSync(artifact.file, 'utf8') : ''
-    if (current !== artifact.content) stale.push(artifact.label)
-  }
-  if (!peerRangeUpToDate()) stale.push('package.json peerDependencies (run --write to sync)')
-  if (stale.length) {
-    console.error(`out of date: ${stale.join(', ')} — run: node release-test/support-matrix.mjs --write`)
-    process.exitCode = 1
+} else if (mode === 'check' || mode === 'check-evidence') {
+  // Line endings are not content: the generator writes LF, a Windows checkout can
+  // hold CRLF (see .gitattributes), and comparing raw text made `--check` red on
+  // every Windows machine while `git diff` stayed empty.
+  const sameText = (a, b) => a.replace(/\r\n/g, '\n') === b.replace(/\r\n/g, '\n')
+
+  if (mode === 'check-evidence') {
+    // Evidence freshness is only answerable where the reports exist; a clean
+    // checkout has none, so this step self-skips instead of failing the job.
+    const refreshed = collectEvidence()
+    if (!refreshed) {
+      console.log('evidence check skipped: no local .release-test/reports/ (structural check still applies)')
+    } else {
+      const committed = loadEvidence()
+      const withoutStamp = (summary) => JSON.stringify({ ...summary, generatedAt: null, pluginVersion: null })
+      if (withoutStamp(committed) !== withoutStamp(refreshed)) {
+        console.error(
+          'release-test/evidence-summary.json is older than the local reports — the shipped evidence table no longer\n' +
+            'matches what was tested here. Regenerate: node release-test/support-matrix.mjs --write',
+        )
+        process.exitCode = 1
+      } else {
+        console.log('evidence summary matches the local .release-test/reports/ runs')
+      }
+    }
   } else {
-    console.log('support matrix, mise.toml and both READMEs are up to date')
+    const stale = []
+    if (evidence.matrixHash && evidence.matrixHash !== matrixHashValue) {
+      stale.push('release-test/evidence-summary.json was collected against a different matrix.json (rerun the matrix, then --write)')
+    }
+    for (const artifact of artifacts) {
+      const current = fs.existsSync(artifact.file) ? fs.readFileSync(artifact.file, 'utf8') : ''
+      if (!sameText(current, artifact.content)) stale.push(artifact.label)
+    }
+    if (!peerRangeUpToDate()) stale.push('package.json peerDependencies (run --write to sync)')
+    if (stale.length) {
+      console.error(`out of date: ${stale.join(', ')} — run: node release-test/support-matrix.mjs --write`)
+      process.exitCode = 1
+    } else {
+      console.log('support matrix, mise.toml and both READMEs are up to date (structure; evidence freshness: --check-evidence)')
+    }
   }
 } else {
   process.stdout.write(doc)

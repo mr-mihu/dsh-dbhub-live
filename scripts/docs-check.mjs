@@ -4,10 +4,12 @@
 // points at `doc/` chapters that hold the reasoning. That only works while the
 // pointers are real. This gate makes drift mechanical:
 //
-//   1. every relative markdown link in AGENTS.md and doc/*.md resolves to an
-//      existing file (and, when it carries `#anchor`, to an existing heading);
-//   2. every `doc/` document AGENTS.md links is shipped in package.json `files`
-//      (the package contains AGENTS.md, so its links must not dangle);
+//   1. every relative markdown link in AGENTS.md, README.md, README.en.md and
+//      doc/*.md resolves to an existing file (and, when it carries `#anchor`, to
+//      an existing heading);
+//   2. every `doc/` document those ENTRY documents link is shipped in
+//      package.json `files` (the package contains all three, so their links must
+//      not dangle);
 //   3. every shipped `doc/*.md` path in `files` exists on disk;
 //   4. AGENTS.md still points at the impact matrix, and every repo path quoted
 //      in that matrix (doc/IMPACT-MATRIX.md) exists.
@@ -22,6 +24,12 @@ const ROOT = dirname(dirname(fileURLToPath(import.meta.url)))
 const ENTRY = 'AGENTS.md'
 const DOC_DIR = 'doc'
 const MATRIX_DOC = 'doc/IMPACT-MATRIX.md'
+
+// Every hand-written entry document the repository ships. The READMEs are the
+// files npm users and GitHub visitors read first, so a dead link in one of them is
+// exactly the drift this gate exists to catch (it used to scan AGENTS.md + doc/
+// only, which let a broken README link through).
+const ENTRY_DOCS = [ENTRY, 'README.md', 'README.en.md']
 
 const findings = []
 const record = (where, message) => findings.push(`${where}: ${message}`)
@@ -76,7 +84,7 @@ function readDoc(absPath) {
 // clean CI checkout by scanning only documented, distributable documents.
 const LOCAL_DOC_RE = /^(PLAN-.*\.md|implementation-notes\.md|RELEASE-NOTES-.*\.md)$/
 
-const scanned = [ENTRY]
+const scanned = [...ENTRY_DOCS]
 const docDirAbs = join(ROOT, DOC_DIR)
 if (existsSync(docDirAbs)) {
   for (const name of readdirSync(docDirAbs)) {
@@ -134,20 +142,27 @@ try {
 const shipped = new Set(Array.isArray(pkg?.files) ? pkg.files : [])
 
 const linkedDocs = new Set()
-for (const { target } of markdownLinks(readDoc(join(ROOT, ENTRY)))) {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue
-  const clean = target.split('#')[0]
-  if (!clean.endsWith('.md')) continue
-  const normalized = posix.normalize(clean)
-  if (normalized.startsWith(`${DOC_DIR}/`)) linkedDocs.add(normalized)
+for (const source of ENTRY_DOCS) {
+  const abs = join(ROOT, source)
+  if (!existsSync(abs)) {
+    record(source, 'entry document is missing')
+    continue
+  }
+  for (const { target } of markdownLinks(readDoc(abs))) {
+    if (/^[a-z][a-z0-9+.-]*:/i.test(target)) continue
+    const clean = target.split('#')[0]
+    if (!clean.endsWith('.md')) continue
+    const normalized = posix.normalize(clean)
+    if (normalized.startsWith(`${DOC_DIR}/`)) linkedDocs.add(normalized)
+  }
 }
 for (const doc of linkedDocs) {
   if (!existsSync(join(ROOT, doc))) {
-    record(ENTRY, `linked document "${doc}" is missing on disk`)
+    record('AGENTS.md / README.md / README.en.md', `linked document "${doc}" is missing on disk`)
     continue
   }
   if (!shipped.has(doc)) {
-    record(ENTRY, `linked document "${doc}" is not in package.json "files" — the published package would have a dangling link`)
+    record('AGENTS.md / README.md / README.en.md', `linked document "${doc}" is not in package.json "files" — the published package would have a dangling link`)
   }
 }
 for (const entry of shipped) {

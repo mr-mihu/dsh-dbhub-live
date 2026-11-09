@@ -247,6 +247,10 @@ On desktop you can also uninstall directly on the **left menu → Plugins** page
 
 **Environment variables** (only these two, not exposed in the UI): `DSH_DBHUB_PACKAGE` (the package that gets auto-installed, default `@bytebase/dbhub`), `DSH_DBHUB_UPDATE_DAYS` (the seed for the auto-update interval, default `7`, overridden by the value saved on the configure page).
 
+## Changelog
+
+Highlights of every released version live in [doc/CHANGELOG.md](doc/CHANGELOG.md); per-release notes are on [GitHub Releases](https://github.com/mr-mihu/dsh-dbhub-live/releases).
+
 ## License
 
 [MIT](./LICENSE)

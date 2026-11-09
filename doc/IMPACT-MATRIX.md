@@ -16,9 +16,10 @@
 | 模型可见文案 / 工具描述 / i18n | `test/zero-knowledge.test.mjs` + `scripts/desensitize.config.mjs` 槽位表 + `README.md` 与 `README.en.md`（用户可见时） | `check:secrets` + 零知识单测 |
 | 配置页布局 / 交互 / 文案 | `doc/CLIENT.md` + `scripts/render-check.mjs` 断言 + AGENTS.md「客户端半」 | `check:ui` + `test/client-format.test.mjs` |
 | 调试方式 / 隔离实例 / 验证清单 | `doc/DEVELOPMENT.md` | 无（人工） |
-| 发布流程 / 版本号 / 支持矩阵 | `doc/RELEASE.md` + `release-test/matrix.json` → `npm run support:matrix` 重生成 `doc/SUPPORT-MATRIX.md` + `package.json` 的 `dsh.compatibility.dshReleases` | `support:check` + `release:preflight` |
+| 发布流程 / 版本号 / 支持矩阵 | `doc/RELEASE.md` + `release-test/matrix.json` → `npm run support:matrix`（同时刷新 `release-test/evidence-summary.json` 并重生成 `doc/SUPPORT-MATRIX.md` + `release-test/mise.toml` + 两个 README 的版本段）+ `package.json` 的 `dsh.compatibility.dshReleases` | `support:check` + `support:evidence` + `release:preflight` |
 | 脱敏规则 / 槽位 / 示例值 / 测试夹具 | `scripts/desensitize.config.mjs` + `doc/DESENSITIZE.md` | `check:secrets` |
-| npm 脚本 / 包内容（`files`、`exports`、`dsh.client`） | `package.json` + AGENTS.md「质量门」+ `doc/RELEASE.md`「包内容」 | `check:docs` |
+| 门禁脚本 / 闸门判定逻辑（`scripts/*.mjs`、`release-test/support-matrix.mjs`、`release-test/lib/report.mjs`） | `test/gates.test.mjs` 里加一条「坏样本必须红」的用例 + AGENTS.md「质量门」+ 本表 | `test:unit` + 对应门禁 |
+| npm 脚本 / 包内容（`files`、`exports`、`dsh.client`） | `package.json` + AGENTS.md「质量门」+ `doc/RELEASE.md`「包内容」+ `doc/REQUIREMENTS.md` R70 | `check:docs` |
 | 文档新增 / 改名 / 调整章节（含 `doc/` 与 `AGENTS.md`） | AGENTS.md 里的指针 + **本表** + `package.json` 的 `files`（需随包分发时） | `check:docs` |
 | 需求条目（R 编号） | `doc/REQUIREMENTS.md` + AGENTS.md（有行为约束时） | 人工 |
 | 用户可见行为 / 界面文案 | `README.md`（唯一真源）→ 同次派生 `README.en.md` + `doc/REQUIREMENTS.md` | `check:secrets` |
@@ -29,8 +30,8 @@
 
 `npm run check:docs` 机械校验的是**提醒本身不烂**：
 
-- AGENTS.md 与各文档的链接、锚点真实存在；
+- `AGENTS.md`、`README.md`、`README.en.md` 与各文档的链接、锚点真实存在；
 - 本表引用的每个仓库路径真实存在；
-- AGENTS.md 指向 `doc/` 的文档都随 npm 包分发（`files`）。
+- 三份入口文档指向 `doc/` 的文档都随 npm 包分发（`files`）；
 
-它**不能**判断内容是否真的同步了——那仍靠评审时按本表逐项核对。
+它**不能**判断内容是否真的同步了——那仍靠评审时按本表逐项核对。同理 `test/gates.test.mjs` 只保证「门禁能红」，不保证门禁的规则是对的：规则的取舍写在 AGENTS.md「质量门」里。

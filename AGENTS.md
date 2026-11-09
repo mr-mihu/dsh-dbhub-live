@@ -108,16 +108,25 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 ## 质量门
 
 ```bash
-npm run check         # 语法：全部 lib + client.js
-npm run check:secrets # 脱敏门禁（槽位 + 兜底 + 本地 denylist）
-npm run check:ui      # 客户端离屏渲染 + 点击交互
-npm run check:docs    # 文档链接/锚点、影响矩阵路径、包内文档一致性
+npm run check            # 语法：全部 lib + client.js
+npm run check:secrets    # 脱敏门禁（槽位 + 兜底 + 本地 denylist）
+npm run check:ui         # 客户端离屏渲染 + 点击交互
+npm run check:docs       # 文档链接/锚点、影响矩阵路径、包内文档一致性
+npm run test:unit        # 全部 test/*.test.mjs（每文件一个 node 进程，跨平台）
+npm run support:check    # 支持矩阵结构：生成物 vs matrix.json + 已提交证据摘要
+npm run support:evidence # 证据摘要是否落后于本机 .release-test/reports（没有报告就跳过）
 
-# 单测必须逐文件跑（沙箱内 node --test 的 runner 子进程 EPERM）
+# 单测也可逐文件跑（沙箱内 node --test 的 runner 子进程 EPERM）
 Get-ChildItem test/*.test.mjs | ForEach-Object { node $_.FullName }
 ```
 
-- CI：`.github/workflows/quality.yml` job **`gate`**（ubuntu-latest + Node 22），push `main`/`dev`、所有 PR、`workflow_dispatch`；`main` 分支保护把它设为必需检查。另有 `release-matrix.yml` 定时跑 `support:check`。
+- **`test/gates.test.mjs` 是「门禁的门禁」**：每个门禁都拿 `%TEMP%` 仓库副本喂坏样本，断言「好样本 exit 0 / 坏样本 exit 1」。**改任何门禁脚本，先让自测红一次再改**——不能失败的检查只是装饰。
+- **`check:docs` 的覆盖面**：`AGENTS.md` + `README.md` + `README.en.md` + `doc/*.md`。三份入口文档里指向 `doc/` 的链接目标**必须都在 `package.json` 的 `files` 里**（README 会随包发布，死链就是发货缺陷）。
+- **`check:secrets` 的两个硬点**：① 带引号的赋值**不享受**裸标识符豁免（裸标识符豁免只给 `password: req.body.password` 这类代码引用；`password: '<裸单词>'` 就是写下来的口令，必须红）；② 本地 `.env` denylist 的正则编译失败 = 门禁失败（`exit 1`），不是提示——那一层是唯一能看见裸项目名/库名的规则，坏了不能报 clean。
+- **`support:check` 只比结构**：`doc/SUPPORT-MATRIX.md`、`release-test/mise.toml`、两个 README 的版本段，输入是 `release-test/matrix.json` + **已提交的** `release-test/evidence-summary.json`；比较前归一化行尾（生成器写 LF，Windows 检出可能是 CRLF，`git diff` 却为空）。**证据必须随包**：`.release-test/reports/` 被 gitignore，渲染若依赖它，干净 checkout 重算得到「未验证」与提交版不等——旧版每周 CI 必死在第一步。`support:evidence` 才是「本机报告 vs 摘要」的新鲜度校验，没有 `.release-test/reports/` 时自跳过。
+- **`release:preflight` 不认「空报告」**：声明版本必须 `checksCounts.pass >= 1 && skip === 0`。`aggregate()` 把全 skip 折成 `warn`，只看 `fail|error` 会让「一项都没跑」通过发版闸门。
+- **`prepublishOnly`** = `check` + `check:ui` + `test:unit` + `check:docs` + `check:secrets` + `release:preflight`（发布前自动跑全套，不只是文档/脱敏/闸门三样）。
+- CI：`.github/workflows/quality.yml` job **`gate`**（ubuntu-latest + Node 22），push `main`/`dev`、所有 PR、`workflow_dispatch`；`main` 分支保护把它设为必需检查。另有 `release-matrix.yml` 定时跑 `support:check`（结构）与 `support:evidence`（仅本地有报告时才有意义，CI 自跳过）。
 - **CI 是真实执行**，Linux 会暴露 Windows 掩盖的缺陷 → [原因](doc/ARCHITECTURE.md#自动发现的代价与unref教训)。
 - 发布前在隔离实例完整冷启动一遍：见 [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) 第 3 步（含 200/401 与 bundle 校验）。
 

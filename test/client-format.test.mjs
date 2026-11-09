@@ -295,6 +295,78 @@ test('client bundle keeps the database name visible when the row is narrow', () 
   assert.match(source, /className: "dbh-conn-db"/)
 })
 
+// Property names whose value paints a colour. Shadows, fills, strokes and
+// outlines colour the page just as much as `background` does, so they are in the
+// same set: a `box-shadow:0 0 8px #0d1117` is an opaque literal in a themed UI.
+const COLOR_PROP = /([a-z-]*(?:color|background|border|box-shadow|text-shadow|fill|stroke|outline))\s*:\s*([^;"]+)/g
+
+// The ONLY literals allowed in a themed surface: the neutral translucent grey the
+// bundle uses as a token fallback (`rgba(127,127,127,α)` — inherits light/dark),
+// `transparent`/`none`, and the hairline card shadow. Everything else (hex, white,
+// black, named greys, saturated rgba) is an opaque literal.
+const NEUTRAL_COLOR_RE = /^\s*(?:transparent|none|rgba\(\s*127\s*,\s*127\s*,\s*127\s*,\s*(?:0?\.\d+|1|0)\s*\))\s*$/i
+const HAIRLINE_SHADOW = /^0 1px 2px rgba\(0,0,0,\.05\)$/
+const LITERAL_RE = /#[0-9a-f]{3,8}|(?:rgba?|hsla?)\(|\b(?:white|black|gray|grey|silver)\b/i
+
+/**
+ * Split a declaration value into its `var(--dsw-alias-…)` references and the
+ * literal text around them, honouring nested parens so a fallback such as
+ * `var(--dsw-alias-bg-primary,rgba(255,255,255,.95))` is seen whole.
+ *
+ * The old gate exempted the ENTIRE declaration as soon as the substring
+ * `var(--dsw-alias-` appeared, so anything hidden in the fallback was invisible.
+ * @returns `{ rest, fallbacks }` — `rest` has every token reference replaced.
+ */
+function splitAliasVars(value) {
+  let rest = ''
+  const fallbacks = []
+  let i = 0
+  for (;;) {
+    const start = value.indexOf('var(--dsw-alias-', i)
+    if (start === -1) {
+      rest += value.slice(i)
+      return { rest, fallbacks }
+    }
+    rest += value.slice(i, start)
+    let depth = 0
+    let j = start
+    for (; j < value.length; j++) {
+      if (value[j] === '(') depth += 1
+      else if (value[j] === ')') {
+        depth -= 1
+        if (depth === 0) {
+          j += 1
+          break
+        }
+      }
+    }
+    const inner = value.slice(start + 'var('.length, j - 1) // `--dsw-alias-x,<fallback>`
+    const comma = inner.indexOf(',')
+    if (comma !== -1) fallbacks.push(inner.slice(comma + 1))
+    rest += ' TOKEN '
+    i = j
+  }
+}
+
+/** @returns the offending literal(s) of a declaration value, '' when theme-safe. */
+function literalColorOf(value) {
+  const { rest, fallbacks } = splitAliasVars(value)
+  const badFallback = fallbacks.find((fallback) => !NEUTRAL_COLOR_RE.test(fallback))
+  if (badFallback) return badFallback.trim()
+  const stripped = rest.replace(/\b(?:transparent|none)\b/gi, ' ').trim()
+  if (HAIRLINE_SHADOW.test(stripped)) return ''
+  const hit = stripped.match(LITERAL_RE)
+  return hit ? hit[0] : ''
+}
+
+/** @returns declarations that paint an opaque literal colour. */
+function colorOffenders(css) {
+  return [...css.matchAll(COLOR_PROP)]
+    .map((m) => ({ prop: m[1], value: m[2] }))
+    .filter((decl) => literalColorOf(decl.value))
+    .map((decl) => `${decl.prop}:${decl.value}`)
+}
+
 test('client bundle styles stay theme-safe (tokens only, no opaque literals)', () => {
   // A themed or translucent skin may redefine the tokens or leave some
   // undefined: surfaces must inherit the page background instead of painting a
@@ -304,17 +376,48 @@ test('client bundle styles stay theme-safe (tokens only, no opaque literals)', (
   const end = source.indexOf('].join("");', start)
   assert.ok(start > 0 && end > start, 'CSS_TEXT block must exist')
   const css = source.slice(start, end)
-  const offenders = [...css.matchAll(/([a-z-]*(?:color|background|border))\s*:\s*([^;"]+)/g)]
-    .map((m) => `${m[1]}:${m[2]}`)
-    .filter((decl) => {
-      const value = decl.slice(decl.indexOf(':') + 1)
-      if (value.includes('var(--dsw-alias-')) return false
-      // a literal colour is the problem; `transparent`/`none`/lengths are fine
-      return /#[0-9a-f]{3,8}|(?:rgba?|hsla?)\(|\b(?:white|black|gray|grey|silver)\b/i.test(value)
-    })
-  assert.deepEqual(offenders, [])
+  // Compare as text so a failure names the offending declarations instead of
+  // printing `actual: [Array]`.
+  const offenders = colorOffenders(css)
+  assert.equal(JSON.stringify(offenders), '[]', `opaque literals in the stylesheet: ${offenders.join(' | ')}`)
   // the only literal left is the (theme-neutral) hairline card shadow
   assert.match(css, /box-shadow:0 1px 2px rgba\(0,0,0,\.05\)/)
+})
+
+test('the token-only rule actually rejects literals (fallbacks, shadows, svg paints)', () => {
+  // Every shape below used to be PERMITTED by this gate: the substring
+  // `var(--dsw-alias-` exempted the whole declaration (so a literal in the
+  // fallback was invisible), the property set stopped at border/background, and
+  // `#0d1117` in a shadow or a stroke was never inspected at all.
+  const bad = [
+    'background:var(--dsw-alias-bg-primary,#0d1117)',
+    'background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.95))',
+    'box-shadow:0 0 8px #0d1117',
+    'stroke:#0d1117',
+    'fill:#fff',
+    'text-shadow:0 0 2px rgba(0,0,0,.8)',
+    'outline:1px solid white',
+    'border-color:var(--dsw-alias-border-l1,#d0d7de)',
+  ]
+  for (const declaration of bad) {
+    assert.deepEqual(colorOffenders(declaration), [declaration], `must be rejected: ${declaration}`)
+  }
+  // ... while the neutrals the bundle actually uses stay allowed: token
+  // references with translucent-grey fallbacks, transparent/none, lengths and
+  // the hairline card shadow.
+  const good = [
+    'background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.1))',
+    'border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.3))',
+    'background:var(--dsw-alias-bg-layer-3,transparent)',
+    'background:transparent',
+    'outline:none',
+    'border:0',
+    'box-shadow:0 1px 2px rgba(0,0,0,.05)',
+    'stroke:var(--dsw-alias-label-secondary)',
+  ]
+  for (const declaration of good) {
+    assert.deepEqual(colorOffenders(declaration), [], `must stay allowed: ${declaration}`)
+  }
 })
 
 test('client bundle manages workspace connections through configOp', () => {

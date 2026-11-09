@@ -14,6 +14,10 @@ node_modules/
 .dsh-test/
 .dsh-a/
 .dsh-b/
+# pnpm store for local packing (doc/DEVELOPMENT.md step 3 keeps it inside the
+# repo): without this entry `pnpm store` content shows up as an untracked tree,
+# and a dirty worktree blocks `npm run release:preflight`.
+.pnpm-store/
 
 # Release-test work dir: pinned DSH CLIs, isolated DSH homes, per-target evidence
 # and reports. All of it is reproducible output — never commit it.

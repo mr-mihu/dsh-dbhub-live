@@ -247,6 +247,10 @@ dsh plugin --profile desktop remove dsh-dbhub-live
 
 **环境变量**（仅这两项，不在 UI 暴露）：`DSH_DBHUB_PACKAGE`（自动安装的包名，默认 `@bytebase/dbhub`）、`DSH_DBHUB_UPDATE_DAYS`（自动更新间隔种子，默认 `7`，被配置页保存的值覆盖）。
 
+## 版本历史
+
+每个正式版本的变更摘要见 [doc/CHANGELOG.md](doc/CHANGELOG.md)；逐版本的发布说明在 [GitHub Releases](https://github.com/mr-mihu/dsh-dbhub-live/releases)。
+
 ## 许可证
 
 [MIT](./LICENSE)

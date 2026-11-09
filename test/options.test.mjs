@@ -8,11 +8,17 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const home = mkdtempSync(join(tmpdir(), 'dbhub-options-'))
+// The only test file that used to leave its temp DSH_HOME behind (every other
+// fixture does this cleanup): a per-file runner would accumulate one directory
+// per run, so the temp tree is removed once this file's tests are done.
+test.after(() => {
+  rmSync(home, { recursive: true, force: true })
+})
 // env seeding happens at import time — set these before importing.
 process.env.DSH_HOME = home
 process.env.DSH_DBHUB_PACKAGE = 'test/fork-package'

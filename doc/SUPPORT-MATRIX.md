@@ -1,8 +1,9 @@
 # 支持的 DSH 版本（发布测试矩阵）
 
 > **本文件由脚本生成，请勿手工编辑。**
-> 数据源：`release-test/matrix.json`（声明）+ `.release-test/reports/`（最近验证证据）。
-> 重新生成：`node release-test/support-matrix.mjs --write`　校验是否同步：`node release-test/support-matrix.mjs --check`
+> 数据源：`release-test/matrix.json`（声明）+ `release-test/evidence-summary.json`（最近验证证据摘要，随包提交）。
+> `.release-test/reports/` 只被 `--write` 读取一次并蒸馏成上面这份摘要，渲染不依赖本机目录，所以干净检出也能复现。
+> 重新生成：`node release-test/support-matrix.mjs --write`　校验结构：`--check`　校验证据是否过期（仅本机有报告时）：`--check-evidence`
 
 - 插件版本：`5.2.0`
 - 矩阵指纹：`40a3fcef6607`（矩阵变了，旧报告就不再被采信）

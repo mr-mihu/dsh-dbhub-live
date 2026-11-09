@@ -113,14 +113,31 @@ async function main() {
     for (const claim of claims) problems.push(`声明偏差：${claim.detail}`)
   }
 
-  // 5. No failing declared target, and every declared target was actually run.
+  // 5. No failing declared target, and every declared target was actually run
+  //    WITH EXECUTED ASSERTIONS. `aggregate()` maps an all-skip target to `warn`,
+  //    so "every check was skipped because the environment was not ready" used to
+  //    satisfy this gate: skip is an assertion that did NOT run, not evidence.
   const declared = matrix.targets.filter((t) => t.tier === 'declared').map((t) => t.version)
   const tested = new Map((report.targets ?? []).map((t) => [t.version, t]))
   for (const version of declared) {
     const target = tested.get(version)
-    if (!target) problems.push(`声明支持的 ${version} 未出现在这次测试里（用了 --only/--tier 的局部运行不能作为发版依据）`)
-    else if (target.status === 'fail' || target.status === 'error') problems.push(`${version} 未通过：${target.status}${target.error ? ` — ${String(target.error).split('\n')[0]}` : ''}`)
-    else if (target.status === 'warn') warnings.push(`${version} 通过但有告警（见 AI 判定）`)
+    if (!target) {
+      problems.push(`声明支持的 ${version} 未出现在这次测试里（用了 --only/--tier 的局部运行不能作为发版依据）`)
+      continue
+    }
+    if (target.status === 'fail' || target.status === 'error') {
+      problems.push(`${version} 未通过：${target.status}${target.error ? ` — ${String(target.error).split('\n')[0]}` : ''}`)
+      continue
+    }
+    const counts = target.checksCounts ?? {}
+    const pass = Number(counts.pass ?? 0)
+    const skip = Number(counts.skip ?? 0)
+    if (!(pass >= 1)) {
+      problems.push(`${version} 没有任何通过的检查（pass=${Number.isFinite(pass) ? pass : 0}）：整目标 skip/空报告不算证据，重跑该版本`)
+    } else if (skip > 0) {
+      problems.push(`${version} 有 ${skip} 项检查被跳过：声明版本必须全部实跑，跳过项证明不了支持`)
+    }
+    if (target.status === 'warn') warnings.push(`${version} 通过但有告警（见 AI 判定）`)
   }
   if (report.status === 'red') problems.push('报告总体为 red')
 

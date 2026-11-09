@@ -19,9 +19,12 @@
     "doc/RELEASE.md",
     "doc/DESENSITIZE.md",
     "doc/IMPACT-MATRIX.md",
+    "doc/SUPPORT-MATRIX.md",
+    "doc/CHANGELOG.md",
     "doc/images",
     "test",
     "scripts",
+    "release-test",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
@@ -50,6 +53,7 @@
   "scripts": {
     "check": "node --check ./lib/index.mjs && node --check ./lib/meta.mjs && node --check ./lib/update.mjs && node --check ./lib/bridge.mjs && node --check ./lib/config.mjs && node --check ./lib/i18n.mjs && node --check ./lib/state.mjs && node --check ./lib/options.mjs && node --check ./lib/runtime.mjs && node --check ./lib/mcp.mjs && node --check ./lib/adhoc.mjs && node --check ./lib/collect.mjs && node --check ./lib/tools.mjs && node --check ./lib/policy.mjs && node --check ./lib/toml.mjs && node --check ./lib/capability.mjs && node --check ./lib/client.js",
     "test": "node --test test/",
+    "test:unit": "node scripts/test-all.mjs",
     "check:ui": "node scripts/render-check.mjs",
     "check:secrets": "node scripts/desensitize-check.mjs",
     "check:docs": "node scripts/docs-check.mjs",
@@ -59,7 +63,8 @@
     "release:verdict": "node release-test/run.mjs verdict --check",
     "support:matrix": "node release-test/support-matrix.mjs --write",
     "support:check": "node release-test/support-matrix.mjs --check",
-    "prepublishOnly": "npm run check:docs && npm run check:secrets && npm run release:preflight"
+    "support:evidence": "node release-test/support-matrix.mjs --check-evidence",
+    "prepublishOnly": "npm run check && npm run check:ui && npm run test:unit && npm run check:docs && npm run check:secrets && npm run release:preflight"
   },
   "dsh": {
     "bundle": {

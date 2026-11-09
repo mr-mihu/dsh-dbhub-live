@@ -239,7 +239,11 @@ export const SLOTS = [
 export const DENYLIST_VAR = 'DSH_DBHUB_DESENSITIZE_RE'
 
 /** Paths the walk never enters and files it never reads. */
-export const SKIP_DIRS = ['.git', 'node_modules', '.dsh-test', '.release-test', 'dist', 'coverage']
+// `.dsh-a` / `.dsh-b` / `.pnpm-store` are the isolated dev directories
+// doc/DEVELOPMENT.md tells you to create INSIDE the repo; they hold real local
+// credentials and package store content, so scanning them would report the
+// developer's own machine as a leak (and `.pnpm-store` makes the tree dirty).
+export const SKIP_DIRS = ['.git', 'node_modules', '.dsh-test', '.dsh-a', '.dsh-b', '.pnpm-store', '.release-test', 'dist', 'coverage']
 // The two local-dev documents are never committed and never published (see
 // package.json → files), so the gate has no reason to scan them: they legitimately
 // carry plan-era placeholders (`REAL_PASSWORD`, `host:port`) that are not shipped

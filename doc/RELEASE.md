@@ -12,12 +12,15 @@ mise -C release-test install  # 一次性预装矩阵里的全部 DSH 版本（�
 npm run test:release          # declared 矩阵：钉版 CLI + 隔离 DSH_HOME + 真实 dsh web + HTTP/日志探针
 npm run test:release:all      # 连 advisory 观察项一起跑
 node release-test/run.mjs --only 0.2.1-rc.2   # 只跑一个版本（调试用，不能当发版依据）
-npm run support:matrix        # 重新生成 doc/SUPPORT-MATRIX.md（矩阵或证据变了就重生成）
-npm run support:check         # 校验文档与 matrix/最近证据一致（CI 用）
+npm run support:matrix        # 重新生成 doc/SUPPORT-MATRIX.md（矩阵或证据变了就重生成；会先刷新证据摘要）
+npm run support:check         # 校验结构：生成物 vs 已提交的 matrix.json + evidence-summary.json（CI 用）
+npm run support:evidence      # 校验证据摘要是否落后于本机 .release-test/reports（没有报告就跳过）
 npm run release:preflight     # 闸门：报告新鲜 + tree 一致 + 矩阵未变 + 声明无偏差 + AI 判定通过 + 工作区干净
 ```
 
 - 产物：`.release-test/reports/<run>/` —— `report.md`（人看）、`report.json`（机器）、`judge-prompt.md`（给 AI）、`evidence/<版本>/`（安装/启动日志与探针回执）。**`.release-test/` 不进 git**（`.gitignore` 已排除，脱敏门禁 `SKIP_DIRS` 已跳过）。
+- **证据摘要随包，报告目录不随包**：`support:matrix` 把本机报告蒸馏成 `release-test/evidence-summary.json`（提交、无路径无秘密），`doc/SUPPORT-MATRIX.md` / 两个 README 只从它渲染。所以干净 checkout（CI）重算得到同一份文档，`support:check` 不会再因为「本机没有报告」变红。**矩阵或证据变了必须重跑 `npm run support:matrix` 并把摘要一起提交**。
+- `support:check` 只比**结构**，且比较前归一化行尾（生成器写 LF，Windows 检出可能是 CRLF）。`support:evidence` 才是「本机报告 vs 摘要」的新鲜度校验，CI 里自动跳过。
 - **AI 判定是流程的一步，不是可选项**：按 `judge-prompt.md` 复核证据 → `node release-test/run.mjs verdict --template --run <dir>` 生成骨架 → 逐版本写结论、逐条回答 open question → `npm run release:verdict`（即 `verdict --check`）校验（硬失败不能判成 pass，报告哈希必须对得上）。
 - 结果解读：`fail` = 硬失败，禁止发版；`warn`/`skip` = 进 open questions 由 AI 判定（例如沙箱里被迫手工装配）；`claim drift` = 声明与 manifest 矛盾（典型：peerDependencies 范围排除预发布版）——**报告照跑，但闸门会拦住发版**。
 - 增删支持版本：只改 `release-test/matrix.json`，再 `npm run support:matrix` 重生成文档；`package.json` 的 `dsh.compatibility.dshReleases` 必须与矩阵一致（`node release-test/run.mjs matrix` 会列出偏差）。
@@ -88,6 +91,8 @@ gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> dsh-dbhu
 
 ## 包内容
 
-`package.json` 的 `files` 决定 npm 包内容：`lib`、`doc/REQUIREMENTS.md`、`doc/ARCHITECTURE.md`、`doc/DEVELOPMENT.md`、`doc/CLIENT.md`、`doc/RELEASE.md`、`doc/DESENSITIZE.md`、`doc/IMPACT-MATRIX.md`（七份文档供包内 AGENTS.md 链接）、`doc/images`、`test`、`scripts`、`cordis.patch.yml`、`README.md`、`README.en.md`、`AGENTS.md`、`LICENSE`。本地文档（`doc/PLAN-*.md`、`doc/implementation-notes.md`、`doc/RELEASE-NOTES-*.md`）被 `.gitignore` 排除，**永不进 git / npm 包**；`doc/SUPPORT-MATRIX.md` 是生成物，不随包分发。
+`package.json` 的 `files` 决定 npm 包内容：`lib`、`doc/REQUIREMENTS.md`、`doc/ARCHITECTURE.md`、`doc/DEVELOPMENT.md`、`doc/CLIENT.md`、`doc/RELEASE.md`、`doc/DESENSITIZE.md`、`doc/IMPACT-MATRIX.md`、`doc/SUPPORT-MATRIX.md`、`doc/CHANGELOG.md`（九份文档：`AGENTS.md` 与两份 README 链接到的都要随包，否则发布出去的链接是死的）、`doc/images`、`test`、`scripts`、`release-test`（`test:release` / `support:*` / `release:verdict` / `release-preflight` 这些脚本都在包里，缺它必 `ERR_MODULE_NOT_FOUND`；它是纯 ESM、无依赖、无证据，`.release-test/` 仍被 `.gitignore` 排除）、`cordis.patch.yml`、`README.md`、`README.en.md`、`AGENTS.md`、`LICENSE`。
 
-`prepublishOnly` = `npm run check:docs && npm run check:secrets && npm run release:preflight`——发布前三道门自动跑。
+本地文档（`doc/PLAN-*.md`、`doc/implementation-notes.md`、`doc/RELEASE-NOTES-*.md`）被 `.gitignore` 排除，**永不进 git / npm 包**；`doc/IDEAS.md` 是未排期的想法池，同样不随包分发（README 不链接它）。`doc/SUPPORT-MATRIX.md` 是生成物但**随包**（README 链接它），它的输入只有 `release-test/matrix.json` 与提交的 `release-test/evidence-summary.json`。
+
+`prepublishOnly` = `npm run check && npm run check:ui && npm run test:unit && npm run check:docs && npm run check:secrets && npm run release:preflight`——发布前自动跑全套（语法 / 客户端离屏门禁 / 全部单测 / 文档 / 脱敏 / 发版闸门），不只是原来那三样。
