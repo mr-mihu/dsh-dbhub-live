@@ -1359,6 +1359,42 @@ console.log('\n[30] narrow desktop window: non-modal pages keep the horizontal s
   p.dispose()
 }
 
+console.log('\n[31] a refused card command is visible on both faces (opNotice)')
+{
+  // The browser half never reads /op response bodies, so the Host's transient
+  // `opNotice` line is the ONLY feedback for "your click was refused". Both faces
+  // must render it; a silent refusal looks exactly like a saved one.
+  const notice = JSON.stringify({ ok: false, message: '找不到工作区 "D:/work/gone"' })
+  viewport(1440)
+  const modernPage = page(TILED, {
+    slot: 'main',
+    snapshot: Object.assign({}, MODERN_DEFAULTS, { opNotice: notice }),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  const modernHtml = toHtml(modernPage.tree)
+  check('modern face renders one refusal line', classed(modernPage.tree, 'dbh-notice').length === 1, modernHtml.slice(0, 200))
+  check('modern refusal line carries the Host message', modernHtml.includes('D:/work/gone'))
+  modernPage.dispose()
+
+  const legacy = page(TILED, {
+    snapshot: Object.assign({}, MODERN_DEFAULTS, { dshModern: false, opNotice: notice }),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  const legacyHtml = toHtml(legacy.tree)
+  check('legacy face renders the refusal line too', classed(legacy.tree, 'dbh-notice').length === 1, legacyHtml.slice(0, 200))
+  legacy.dispose()
+
+  // No notice, no line: a successful command must leave the card clean.
+  const clean = page(TILED, {
+    slot: 'main',
+    snapshot: Object.assign({}, MODERN_DEFAULTS, { opNotice: '' }),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  check('no refusal line without a notice', classed(clean.tree, 'dbh-notice').length === 0)
+  clean.dispose()
+  viewport(1440)
+}
+
 if (liveMount) liveMount.dispose()
 
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`)

@@ -40,7 +40,9 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - 模型传 `readOnly:true` 允许、`false` 拒绝（`result.readOnlyUserOnly`，拦截在 `runConfigure`）。
 - `handleConfigOp`：`add` / `set` / `rename` / `remove` / `test` / `options`；`options` 可带 `newEnv`（改名+改选项原子）；行不存在时提升为持久化行（`source:'promoted'`）。实现在 `applyOptionsOp`。
 - 秘密字段「留空 = 保持原值」；`auth==='key'` 且无已存路径时落 `DEFAULT_SSH_KEY_PATH = '~/.ssh/id_ed25519'`；载荷统一走 `connDraftOf` / `withConnDraft`。
-- 描述符 `{dsn, ro, ssh}`：`probeConnection` 验有效连接，`probeSshTunnel` 只验 SSH 层（`SSH_LAYER_RE` → 断；否则 `DB_LAYER_RE` / 指名转发目标 → 通；都没有 → unknown）。
+- 卡片不回显秘密，所以 `add`/`set` 在写之前也要 `mergeSshOptions(op.ssh, 已存行.ssh)`（与 `options` 同款）；规范化失败 → `result.badSsh` 报错，**不许静默清除隧道**。合并+校验必须发生在**改名之前**（已存行按 `findRow(renameFrom || env)` 取），否则隧道非法时行已改名、回执却说「未做任何修改」（半写）。`ssh` 为任何非 null 值都要校验（含 `''`），不能只在真值时校验。
+- `renameWorkspaceEnv` 返回 `{ name, collided, renamed }`：落到已存在的环境必须先确认（`{confirm:true}` / 卡片 `overwrite:true`），未确认则 `renamed:false` 且零写入；`newEnv` 空 = 不改名（不会归一成 `default`）。**冲突判据是 `collided === true`**——用 `!renamed` 会把「改到自己的名字」（`{renamed:false, collided:false}`）误报成「目标环境已存在」；同名 = 无需改名，继续后续写入。`copyFrom` 覆盖已有环境同样先问，且选项取自**源行**（源行没有的只读/隧道即清掉）。
+- 描述符 `{dsn, ro, ssh}`：`probeConnection` 验有效连接，`probeSshTunnel` 只验 SSH 层（`SSH_LAYER_RE` → 断；否则 `DB_LAYER_RE` / 指名转发目标 → 通；都没有 → unknown）。探连的 ssh 三态：`null` = 用户解除隧道（按无隧道探）/ 对象 = 表单在编辑（先与已存行 merge）/ **缺省 = 卡片三项全空**（`connDraftOf` 不发 `ssh` 键，此时用已存行的隧道——否则探的是裸连接，不是会保存的那条）。
 - 预算 `PROBE_TIMEOUT_MS = 25s` / `PROBE_TIMEOUT_SSH_MS = 45s` < 客户端看门狗 30s/60s；宿主兜底 = 预算 + 500ms → [原因](doc/ARCHITECTURE.md#环境选项与执行预算)。
 - UI 落点：现代面行内 `.dbh-rochip`（点击发 `{op:'options', readOnly}`），legacy 面 `.dbh-ro`；SSH 只进 tooltip。见 [doc/CLIENT.md](doc/CLIENT.md)。
 
@@ -54,12 +56,13 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - 一个发布核心 `createHostCore`，两条通道：0.1.x settings 命名空间（仅 `settings.register` 存在时）/ `connection.fetch` 的 `/api/dsh-dbhub-live/{state,enabled,options,op}`。
 - 客户端 `inject` **只能 `["slots"]`**；host face 用 `ctx.get('settingsScope')` 探测 → [为什么](doc/ARCHITECTURE.md#状态通道与inject根因)。
 - 注入回调内服务必须 `ctx.get(...)` 就地取；legacy 回调 `wrap()` 防护。
-- view：`{enabled, phase, toolCount, lastError, mode}` + `{updateIntervalDays, showSidebarEntry, announceAccessPolicy, capabilities, workspaces, testResult}` + `{pluginVersion, dshVersion, dshModern, runtime, update}`；legacy 额外 `configOp`。**DSN 只从浏览器流向 Host。**
+- view：`{enabled, phase, toolCount, lastError, mode}` + `{updateIntervalDays, showSidebarEntry, announceAccessPolicy, capabilities, workspaces, testResult, opNotice}` + `{pluginVersion, dshVersion, dshModern, runtime, update}`；legacy 额外 `configOp`。**DSN 只从浏览器流向 Host。**
 
 ### 部署开关与连接管理
 - `lib/options.mjs` 唯一持有开关；Config 值经 `options.configValuesOf` → `applyPatch(..., {persist:true})`；`entryIdOf(ctx)` 运行时解析行 id；不绕过 `applyPatch`。
 - 页面只见元数据（`collectSources` → `latestSummaries`）；增删改改名走 `configOp`；`renameFrom` 让「改名 + 改连接」原子。
 - 写前先问（`requestWrite` / `envCollision` / `normalizeEnvForCompare` → `dbh-warncard`）→ [原因](doc/ARCHITECTURE.md#覆盖门为什么先问)。
+- 被拒的写命令必须有回执：`handleConfigOp` 把失败原因（找不到工作区 / 空 DSN / 改名冲突 / 非法隧道）写进 `opNotice` 一次性发布，卡片 `.dbh-notice` 显示；部分失败时**已落地的补丁照发**（不再 `return []`）。
 - 即时回推：`handleConfigOp` 返回补丁并 `publishFast`；`reportTest` 只 `publishMirror`；扫描单飞 + 补丁重放；`rename` 补丁幂等 → [原因](doc/ARCHITECTURE.md#即时回推与扫描单飞)。
 - test op 三档快路径 `resolveTestDsn`（store → 卡片缓存 → walk）；失败不写 store/lastError/phase；`kind:'ssh'` 只验 SSH 层。
 - 诊断取尾部 600（`diagnosticTail`），前缀 `【SSH 层】/【数据库层】/【插件层】`；页面只认自己派发的 nonce → [原因](doc/ARCHITECTURE.md#诊断为什么取尾部)。

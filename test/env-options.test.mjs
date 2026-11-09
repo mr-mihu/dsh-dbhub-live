@@ -206,7 +206,7 @@ test('renameWorkspaceEnv carries the options to the new name', async () => {
   const ws = 'D:/ws/rename'
   const dsn = 'mysql://u:CHANGE_ME@127.0.0.1:3306/r'
   c.setWorkspaceEnv(ws, 'old', dsn, 'collected', { readOnly: true, ssh: SSH_KEY })
-  assert.equal(c.renameWorkspaceEnv(ws, 'old', 'new'), 'new')
+  assert.deepEqual(c.renameWorkspaceEnv(ws, 'old', 'new'), { name: 'new', collided: false, renamed: true })
   const envs = readStore()[ws].environments
   assert.equal(Object.hasOwn(envs, 'old'), false)
   assert.equal(envs.new.dsn, dsn)

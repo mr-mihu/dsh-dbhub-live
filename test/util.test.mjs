@@ -60,20 +60,23 @@ test('normalizeEnvName trims, caps and defaults blank names', () => {
 test('renameWorkspaceEnv moves a persisted connection to a new name', () => {
   const wsPath = 'C:\\ws\\rename-test'
   cfg.setWorkspaceEnv(wsPath, 'default', 'mysql://u:p@h/main', 'user')
-  assert.equal(cfg.renameWorkspaceEnv(wsPath, 'default', 'prod'), 'prod')
+  assert.deepEqual(cfg.renameWorkspaceEnv(wsPath, 'default', 'prod'), { name: 'prod', collided: false, renamed: true })
   const rows = cfg.listWorkspaceEnvironments(cfg.store).filter((r) => r.wsPath === wsPath)
   assert.deepEqual(rows.map((r) => r.env), ['prod'])
   assert.equal(rows[0].dsn, 'mysql://u:p@h/main') // the connection itself moved
   // renaming a missing environment is refused, not silently created
   assert.equal(cfg.renameWorkspaceEnv(wsPath, 'nope', 'qa'), undefined)
-  // rename onto an existing name replaces that entry (callers must confirm)
+  // rename onto an existing name is REPORTED, and only performed with confirm
   cfg.setWorkspaceEnv(wsPath, 'qa', 'mysql://u:p@h/qa', 'user')
-  assert.equal(cfg.renameWorkspaceEnv(wsPath, 'prod', 'qa'), 'qa')
+  assert.deepEqual(cfg.renameWorkspaceEnv(wsPath, 'prod', 'qa'), { name: 'qa', collided: true, renamed: false })
+  const unconfirmed = cfg.listWorkspaceEnvironments(cfg.store).filter((r) => r.wsPath === wsPath)
+  assert.deepEqual(unconfirmed.map((r) => r.env).sort(), ['prod', 'qa'], 'an unconfirmed collision writes nothing')
+  assert.deepEqual(cfg.renameWorkspaceEnv(wsPath, 'prod', 'qa', { confirm: true }), { name: 'qa', collided: true, renamed: true })
   const after = cfg.listWorkspaceEnvironments(cfg.store).filter((r) => r.wsPath === wsPath)
   assert.deepEqual(after.map((r) => r.env), ['qa'])
   assert.equal(after[0].dsn, 'mysql://u:p@h/main')
   // same-name rename is a no-op that still reports the name
-  assert.equal(cfg.renameWorkspaceEnv(wsPath, 'qa', 'qa'), 'qa')
+  assert.deepEqual(cfg.renameWorkspaceEnv(wsPath, 'qa', 'qa'), { name: 'qa', collided: false, renamed: false })
   delete cfg.store[wsPath]
 })
 

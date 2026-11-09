@@ -76,6 +76,7 @@
 - 🔒 前缀：**现代面不加**（会被误读成"需要密码"，且与只读 chip 的锁冲突）；legacy 面保留原标记。
 - 「来源」（手填 / 扫描 / 复制 / 自动发现）**不得做成行内徽章**——它几乎每行都一样却最抢眼；改为环境名 chip 的 tooltip（`originTitle`），只有"自动发现且未持久化"这一例外在 tooltip 里显式点名。
 - 改名走 `configOp({op:'rename'})`；改名 + 改连接走**一条** `{op:'add', renameFrom}`（`configOp` 在 legacy 通道是单字段，连续两次写会互相覆盖）。
+- 写命令被拒时必须有可见回执：宿主把失败原因放进 `view.opNotice`（一次性 JSON `{ok:false,message}`，下一条命令即清空），两个面都渲染成 `.dbh-notice`。浏览器半**不读** `/op` 响应体，所以收不到这条就等于"点了没反应"。覆盖类确认（改名落到已有环境、`add` 带 `renameFrom`）在卡片侧由 `dbh-warncard` 确认后，把 `overwrite:true` 一起发给宿主。
 
 ### 顶部与添加
 
