@@ -136,10 +136,28 @@ const react = (() => {
     }
   }
 
+  /**
+   * Hard cap on the "render until no state setter fired" loop. A hook that calls
+   * a setter on EVERY render (a conditional-hook regression, an effect that
+   * re-triggers itself with a fresh object) made this loop spin forever: the gate
+   * HUNG instead of failing, so a real defect looked like a slow machine and CI
+   * had to be killed. Now the run dies with a readable error — a mutation must go
+   * RED, never quiet (R6).
+   */
+  const MAX_RENDER_ROUNDS = 100
+
   /** Render `type` (and re-render until no state setter fired). */
   function render(type, props) {
     let tree
+    let rounds = 0
     do {
+      rounds += 1
+      if (rounds > MAX_RENDER_ROUNDS) {
+        dirty = false
+        pendingEffects = []
+        throw new Error(`effect loop did not settle: still re-rendering after ${MAX_RENDER_ROUNDS} rounds `
+          + '(a hook sets state on every render — check for a conditional hook, or an effect with an unstable dependency)')
+      }
       dirty = false
       cursor = 0
       const out = runComponent(type, props, 0, 1)
@@ -219,6 +237,7 @@ function mount(snapshot, opts = {}) {
   const opCalls = []
   const getCalls = []
   const formSets = []
+  const posts = []
   const effects = []
   const disposeHandlers = []
   const restores = []
@@ -236,10 +255,17 @@ function mount(snapshot, opts = {}) {
     }),
   }
   // dsh 0.1.7+/0.2.x settings forms: `configForms.get(entryId).set(field, value)`.
+  // `opts.formSet` scripts the ANSWER, because "the form took it" is the one thing
+  // the client must not guess: 'ok' (default) → true, 'undefined' → resolves with
+  // nothing (several 0.2.x builds do), 'false' → refused, 'reject' → throws.
   const configForms = {
     get: (entryId) => ({
       set: (field, value) => {
         formSets.push([entryId, field, value])
+        const mode = opts.formSet || 'ok'
+        if (mode === 'reject') return Promise.reject(new Error('settings form refused the field'))
+        if (mode === 'undefined') return Promise.resolve(undefined)
+        if (mode === 'false') return Promise.resolve(false)
         return Promise.resolve(true)
       },
     }),
@@ -316,9 +342,13 @@ function mount(snapshot, opts = {}) {
     // `{ok:true}` makes "a refused write looked saved" structurally invisible):
     //   undefined        → the normal success answer
     //   'reject'         → the fetch itself rejects (dead network / offline)
+    //   'html'           → a 200 whose body is NOT JSON (a reverse proxy's page):
+    //                      `json()` throws, exactly like the browser's
     //   { status, payload } → that HTTP status + JSON body (401, {ok:false,error})
     //   a Promise        → the test resolves it later, to force RESPONSE ORDER
-    // Only ACCEPTED answers are recorded, so `setCalls` means "the Host took it".
+    // `posts` records EVERY dispatched non-GET request (accepted or not), which is
+    // how "one user action sent exactly one write" becomes assertable; `setCalls`
+    // still means "the Host took it".
     const previousFetch = globalThis.fetch
     const liveView = Object.assign({}, snapshot)
     const respond = typeof opts.fetchImpl === 'function' ? opts.fetchImpl : null
@@ -328,9 +358,19 @@ function mount(snapshot, opts = {}) {
       // Reads are recorded even when they fail: "the retry really re-read" is
       // an assertion about attempts, not about successes.
       if (!body) getCalls.push(url)
+      else posts.push({ url, body })
       const planned = respond ? respond({ url, body, liveView }) : undefined
       if (planned && typeof planned.then === 'function') return planned
       if (planned === 'reject') throw new Error('network down')
+      if (planned === 'html') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => {
+            throw new SyntaxError('Unexpected token \'<\', "<!DOCTYPE html>..." is not valid JSON')
+          },
+        }
+      }
       const status = planned && typeof planned.status === 'number' ? planned.status : 200
       const payload = planned && planned.payload ? planned.payload : { ok: true, value: liveView }
       const accepted = status < 400 && payload && payload.ok !== false
@@ -350,7 +390,7 @@ function mount(snapshot, opts = {}) {
   }
   bundle.apply(ctx)
   return {
-    registrations, setCalls, opCalls, getCalls, formSets,
+    registrations, setCalls, opCalls, getCalls, formSets, posts,
     /** What the plugin scope disposal (a hot reload) does. */
     dispose() {
       // Component effect cleanups first: the HTTP face stops polling in its
@@ -1756,6 +1796,351 @@ console.log('\n[37] deleting a connection asks first and cancelling writes nothi
     JSON.stringify(p.opCalls.slice(before)))
   check('the remove op carries no DSN', p.opCalls[before].dsn === undefined)
   check('the card is gone after confirming', count(p.tree, 'dbh-warncard') === 0)
+  p.dispose()
+  viewport(1440)
+}
+
+if (liveMount) liveMount.dispose()
+
+console.log('\n[38] the offscreen harness fails fast instead of hanging on an effect loop (R6)')
+{
+  viewport(1440)
+  // `while (dirty)` had no cap: one hook that sets state on EVERY render turned a
+  // Hook-order regression into a gate that HUNG (>90s, then had to be killed), so
+  // the defect read as "a slow machine" and CI never went red. The cap must be
+  // reachable, and its message must say what happened.
+  const neverSettles = () => {
+    const s = react.useState(0)
+    s[1](s[0] + 1)
+    return null
+  }
+  let caught = null
+  try { react.render(neverSettles, {}) } catch (e) { caught = e }
+  react.reset()
+  check('an effect loop that never settles throws instead of hanging',
+    !!caught && String((caught && caught.message) || '').includes('effect loop did not settle'),
+    caught ? caught.message : 'no error — the loop never ended')
+  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  check('the harness still renders a real page after the guard fired', count(p.tree, 'dbh-tile') === 3,
+    `tiles ${count(p.tree, 'dbh-tile')}`)
+  p.dispose()
+  viewport(1440)
+}
+
+console.log('\n[39] a write answer outranks a read that answered first (R1)')
+{
+  viewport(1440)
+  // The ordering that used to LOSE THE WRITE: write dispatched → read dispatched
+  // (the 1.5s poll) → READ answers first with the PRE-write view → write answers
+  // last. The read had taken the higher stamp, so the write's own answer was
+  // dropped and the card sat on the pre-write value (with 已保存 ✓ beside it)
+  // until the next poll healed it. A write answer is the state AFTER the user's
+  // action: it must never be filtered by a read stamp.
+  const answerOf = (view) => ({ ok: true, status: 200, json: async () => ({ ok: true, value: view }) })
+  // The page kicks a (throttled) update check on mount — one POST /op that is NOT
+  // part of the ordering under test. It is answered with a harmless refusal so it
+  // never enters `hold` and never publishes a view of its own.
+  const holdAnswer = (body) => (body && body.op && body.op.op === 'updateCheck' ? { status: 500 } : null)
+  const hold = []
+  const p = page(TILED, {
+    slot: 'main',
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: ({ body }) => holdAnswer(body) || new Promise((resolve) => { hold.push({ write: !!body, resolve }) }),
+  })
+  // The applied value is read off the FACE (the card's draft would mask it: an
+  // unsaved edit outranks the Host until its write settles).
+  const faceInterval = () => (p.props.getSnapshot().value || {}).updateIntervalDays
+  check('the initial read is in flight', hold.length === 1 && hold[0].write === false,
+    JSON.stringify(hold.map((h) => h.write)))
+  hold[0].resolve(answerOf(snapshotOf(TILED, Object.assign({}, MODERN_DEFAULTS, { updateIntervalDays: 7 }))))
+  await flush()
+  p.tree = p.renderAgain()
+  check('the first read paints the host value', faceInterval() === 7, String(faceInterval()))
+
+  // Driven by the 保存 button, not by the face directly: the user's click is what
+  // sets `saved`, and "已保存 ✓ beside the pre-write value" is the symptom.
+  typeWithin(p.tree, 'dbh-settingsbar', 0, '5')
+  p.tree = p.renderAgain()
+  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  check('the write was dispatched', hold.length === 2 && hold[1].write === true,
+    JSON.stringify(hold.map((h) => h.write)))
+  const read = p.props.refresh()
+  check('a read was dispatched AFTER the write', hold.length === 3 && hold[2].write === false,
+    JSON.stringify(hold.map((h) => h.write)))
+  // The read answers first, carrying the pre-write view — exactly what a poll that
+  // was already in flight returns.
+  hold[2].resolve(answerOf(snapshotOf(TILED, Object.assign({}, MODERN_DEFAULTS, { updateIntervalDays: 7 }))))
+  await read
+  p.tree = p.renderAgain()
+  check('the read itself is applied (nothing newer was pending)', faceInterval() === 7, String(faceInterval()))
+  // Then the write answers. THIS is the answer that must land.
+  hold[1].resolve(answerOf(snapshotOf(TILED, Object.assign({}, MODERN_DEFAULTS, { updateIntervalDays: 5 }))))
+  await flush()
+  await flush()
+  p.tree = p.renderAgain()
+  const html = toHtml(p.tree)
+  check('the write answer is applied although a later read answered first', faceInterval() === 5, String(faceInterval()))
+  check('no "已保存 ✓" sitting next to the pre-write value',
+    !(html.includes('已保存') && faceInterval() === 7), `interval=${faceInterval()} tick=${html.includes('已保存')}`)
+  check('the save really is reported', html.includes('已保存'), html.slice(0, 300))
+  p.dispose()
+
+  // The mirror image (R7-1): the READ was dispatched first and the write second.
+  // The write claims a stamp above everything in flight, so the late read (which
+  // carries the pre-write view) must not paint over the click. Delete that claim
+  // (`appliedSeq = seq` in claimWrite) and the pre-write rows reappear here.
+  const hold2 = []
+  const q = page(TILED, {
+    slot: 'main',
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: ({ body }) => holdAnswer(body) || new Promise((resolve) => { hold2.push({ write: !!body, resolve }) }),
+  })
+  check('the card has no rows while the first read is unanswered', count(q.tree, 'dbh-tile') === 0,
+    `tiles ${count(q.tree, 'dbh-tile')}`)
+  const write2 = q.props.saveConfig({ updateIntervalDays: 5 })
+  check('the write was dispatched before the read answered', hold2.length === 2 && hold2[1].write === true,
+    JSON.stringify(hold2.map((h) => h.write)))
+  hold2[0].resolve(answerOf(snapshotOf(TILED, Object.assign({}, MODERN_DEFAULTS, { updateIntervalDays: 7 }))))
+  await flush()
+  q.tree = q.renderAgain()
+  check('a read that started BEFORE the write cannot paint the pre-write view',
+    count(q.tree, 'dbh-tile') === 0, `tiles ${count(q.tree, 'dbh-tile')}`)
+  hold2[1].resolve(answerOf(snapshotOf(TILED, Object.assign({}, MODERN_DEFAULTS, { updateIntervalDays: 5 }))))
+  await write2
+  await flush()
+  q.tree = q.renderAgain()
+  check('the write answer still lands (rows + value)',
+    count(q.tree, 'dbh-tile') === 3
+    && (classed(q.tree, 'dbh-srow-input')[0] || { props: {} }).props.value === '5',
+    `tiles ${count(q.tree, 'dbh-tile')}`)
+  q.dispose()
+  viewport(1440)
+}
+
+console.log('\n[40] only an explicit TRUE from the settings form is "accepted" (R2)')
+{
+  viewport(1440)
+  // `form.set(...).then((ok) => ok !== false)` treated `undefined` as accepted, so
+  // the save went NOWHERE — zero POST, zero verification — and the page still
+  // printed 已保存 ✓. Anything but `true` must fall back to POST /options.
+  const mk = (formSet) => page(TILED, {
+    slot: 'main',
+    transport: 'http',
+    configForms: true,
+    formSet,
+    snapshot: Object.assign({}, MODERN_DEFAULTS, { entryId: 'dbhub-live' }),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  const p = mk('undefined')
+  await flush()
+  p.tree = p.renderAgain()
+  await p.props.saveConfig({ updateIntervalDays: 9 })
+  check('the settings form was asked first',
+    p.formSets.some(([id, field, value]) => id === 'dbhub-live' && field === 'updateIntervalDays' && value === 9),
+    JSON.stringify(p.formSets))
+  check('a form answer of `undefined` really falls back to POST /options',
+    p.setCalls.some(([k, v]) => k === 'options' && v.updateIntervalDays === 9),
+    JSON.stringify({ sets: p.setCalls, forms: p.formSets }))
+  p.dispose()
+
+  for (const mode of ['false', 'reject']) {
+    const r = mk(mode)
+    await flush()
+    r.tree = r.renderAgain()
+    await r.props.saveConfig({ updateIntervalDays: 8 })
+    check(`a form answer of ${mode} also falls back to POST /options`,
+      r.setCalls.some(([k, v]) => k === 'options' && v.updateIntervalDays === 8),
+      JSON.stringify({ mode, sets: r.setCalls, forms: r.formSets }))
+    r.dispose()
+  }
+
+  // The good path stays on the form: a `true` answer must not add a stray POST.
+  const ok = mk('ok')
+  await flush()
+  ok.tree = ok.renderAgain()
+  await ok.props.saveConfig({ updateIntervalDays: 4 })
+  check('a true answer keeps the write on the form (no stray POST)',
+    ok.formSets.length === 1 && !ok.setCalls.some(([k]) => k === 'options'),
+    JSON.stringify({ sets: ok.setCalls, forms: ok.formSets }))
+  ok.dispose()
+  viewport(1440)
+}
+
+console.log('\n[41] a mangled host value keeps the view and reports an error (R3)')
+{
+  viewport(1440)
+  // `publish({status:'ready', value: body.value || {}})` turned a body without a
+  // view into "the page is empty": 3 tiles → 0, modern layout → legacy (every
+  // `value.*` flag gone), with 已保存 ✓ still on the row. A missing value is a
+  // FAILED read/write, never an empty page.
+  let badRead = false
+  let badWrite = false
+  const p = page(TILED, {
+    slot: 'main',
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: ({ body }) => {
+      if (!body) return badRead ? { status: 200, payload: { ok: true, value: null } } : undefined
+      return badWrite ? { status: 200, payload: { ok: true } } : undefined
+    },
+  })
+  await flush()
+  p.tree = p.renderAgain()
+  check('the good read painted three tiles', count(p.tree, 'dbh-tile') === 3,
+    `tiles ${count(p.tree, 'dbh-tile')}`)
+  check('and chose the modern layout', count(p.tree, 'dbh-modern') === 1)
+  badRead = true
+  await p.props.refresh()
+  p.tree = p.renderAgain()
+  check('a value-less read does NOT empty the page', count(p.tree, 'dbh-tile') === 3,
+    `tiles ${count(p.tree, 'dbh-tile')}`)
+  check('it renders the failed-read line instead', count(p.tree, 'dbh-loadfail') === 1,
+    toHtml(p.tree).slice(0, 240))
+  check('the layout flags survive (still modern)', count(p.tree, 'dbh-modern') === 1)
+  badRead = false
+  badWrite = true
+  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  await flush()
+  p.tree = p.renderAgain()
+  const html = toHtml(p.tree)
+  check('a value-less write is a FAILED write', count(p.tree, 'dbh-writefail') === 1, html.slice(0, 300))
+  check('a value-less write never prints 已保存', !html.includes('已保存'), html.slice(0, 400))
+  check('a value-less write keeps the rows', count(p.tree, 'dbh-tile') === 3,
+    `tiles ${count(p.tree, 'dbh-tile')}`)
+  p.dispose()
+  viewport(1440)
+}
+
+console.log('\n[42] a non-JSON answer is localized, never a parser trace (R4)')
+{
+  viewport(1440)
+  // A reverse proxy answers with its own HTML page; `res.json()` throws
+  // "Unexpected token '<', "<!DOCTYPE html>…" — English, with the body quoted.
+  let mode = 'ok'
+  const p = page(TILED, {
+    slot: 'main',
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: () => (mode === 'html' ? 'html' : undefined),
+  })
+  await flush()
+  p.tree = p.renderAgain()
+  check('the page rendered before the proxy answered with HTML', count(p.tree, 'dbh-tile') === 3)
+  mode = 'html'
+  await p.props.refresh()
+  p.tree = p.renderAgain()
+  let html = toHtml(p.tree)
+  check('an HTML read renders the localized load error', count(p.tree, 'dbh-loadfail') === 1, html.slice(0, 240))
+  check('the read error quotes no parser text',
+    !html.includes('Unexpected token') && !html.includes('SyntaxError') && !html.includes('DOCTYPE'),
+    html.slice(0, 300))
+  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  await flush()
+  p.tree = p.renderAgain()
+  html = toHtml(p.tree)
+  check('an HTML write renders the localized write error',
+    textMatching(p.tree, 'dbh-writefail').includes('写入失败'), textMatching(p.tree, 'dbh-writefail'))
+  check('the write error quotes no parser text',
+    !html.includes('Unexpected token') && !html.includes('not valid JSON'), html.slice(0, 300))
+  check('no tick beside the failed write', !html.includes('已保存'))
+  p.dispose()
+  viewport(1440)
+}
+
+console.log('\n[43] confirming a delete is single-flight (R5)')
+{
+  viewport(1440)
+  // Two clicks in the same tick both saw the closure's `pendingRemove` (the state
+  // reset only lands on the next render), so one user action sent TWO removes.
+  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  const before = p.opCalls.length
+  clickLabel(p.tree, '删除')
+  p.tree = p.renderAgain()
+  const card = classed(p.tree, 'dbh-warncard')[0]
+  const confirm = elements(card, (el) => typeof el.props.onClick === 'function'
+    && (el.children || []).map(toHtml).join('').includes('确认删除'))[0]
+  check('the confirmation button exists', !!confirm)
+  if (confirm) {
+    confirm.props.onClick({ stopPropagation() {}, preventDefault() {} })
+    confirm.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  }
+  await flush()
+  p.tree = p.renderAgain()
+  check('a double click sends exactly ONE remove',
+    p.opCalls.length === before + 1, JSON.stringify(p.opCalls.slice(before)))
+  check('the single remove is still the user\'s command',
+    (p.opCalls[before] || {}).op === 'remove', JSON.stringify(p.opCalls.slice(before)))
+  check('the card is gone after the first confirmation', count(p.tree, 'dbh-warncard') === 0)
+  p.dispose()
+  viewport(1440)
+}
+
+console.log('\n[44] a failed write rolls the draft back to the host value (R7-2)')
+{
+  viewport(1440)
+  // Deleting `setDraft(draftFromValue(...))` + `draftEdited.current = false` from
+  // `onWriteFail` (keeping only `setSaved(false)`) used to leave every gate green,
+  // while the field kept showing a value the store never took.
+  const p = page(TILED, {
+    slot: 'main',
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: ({ body }) => (body && body.updateIntervalDays !== undefined ? { status: 401 } : undefined),
+  })
+  await flush()
+  p.tree = p.renderAgain()
+  const interval = () => (classed(p.tree, 'dbh-srow-input')[0] || { props: {} }).props.value
+  check('the card starts on the host value', interval() === '7', interval())
+  typeWithin(p.tree, 'dbh-settingsbar', 0, '30')
+  p.tree = p.renderAgain()
+  check('the edit is visible before the write', interval() === '30', interval())
+  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  await flush()
+  p.tree = p.renderAgain()
+  check('the failure is visible', count(p.tree, 'dbh-writefail') === 1, toHtml(p.tree).slice(0, 240))
+  check('the draft returns to the host value (no lie left in the field)', interval() === '7', interval())
+  check('and no tick', !toHtml(p.tree).includes('已保存'))
+  p.dispose()
+  viewport(1440)
+}
+
+console.log('\n[45] a later failure suppresses the older 已保存 tick (R7-3)')
+{
+  viewport(1440)
+  // `savedHint()` is `saved && !writeError`. Drop `!writeError` and every gate
+  // stayed green: the enable/disable write only sets `writeError` (it has no draft
+  // to roll back), so a success from a moment ago left 已保存 ✓ standing next to a
+  // brand-new failure line.
+  const p = page(TILED, {
+    slot: 'main',
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: ({ body }) => {
+      if (!body) return undefined
+      if (typeof body.enabled === 'boolean') return { status: 401 }
+      return undefined
+    },
+  })
+  await flush()
+  p.tree = p.renderAgain()
+  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  await flush()
+  p.tree = p.renderAgain()
+  check('the successful save shows the tick', toHtml(p.tree).includes('已保存'), toHtml(p.tree).slice(0, 300))
+  clickSwitchWithin(p.tree, 'dbh-settingsbar', 0)
+  await flush()
+  p.tree = p.renderAgain()
+  const html = toHtml(p.tree)
+  check('the failed enable write is reported', count(p.tree, 'dbh-writefail') === 1, html.slice(0, 300))
+  check('the older 已保存 tick does not survive beside the failure', !html.includes('已保存'), html.slice(0, 400))
   p.dispose()
   viewport(1440)
 }

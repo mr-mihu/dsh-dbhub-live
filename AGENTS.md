@@ -99,7 +99,8 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 
 ### 客户端半（细节见 [doc/CLIENT.md](doc/CLIENT.md)）
 - 手写 lazy-CJS bundle，无构建；`id` = Loader entry 名；三入口都要在：`settings.section`（始终）/ 侧边栏（`enabled && showSidebarEntry`）/ `plugins.row.config`（始终）。
-- **写失败必须可见**：face 的写 promise 在失败时 reject（失败分支不得写 `noop`），组件渲染 `.dbh-error .dbh-writefail[role=alert]` 且**不置 `saved`**；`/state` 失败时读 `snapshot.status === 'error'` 渲染 `.dbh-loadfail` + 「重试」（`face.refresh()`）；`sidebarWanted()` 只在 `enabled === true` 时注册（未知/失败不注册）；`summary` 与 `page` 两种 view 的 Hook 序列必须一致（summary 早退只能放在所有 Hook 之后）。门禁 `check:ui` 的 `[32]`–`[37]` 用失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读）钉住，假 react 按组件身份校验 Hook 数。
+- **写失败必须可见**：face 的写 promise 在失败时 reject（失败分支不得写 `noop`），组件渲染 `.dbh-error .dbh-writefail[role=alert]` 且**不置 `saved`**；`/state` 失败时读 `snapshot.status === 'error'` 渲染 `.dbh-loadfail` + 「重试」（`face.refresh()`）；`sidebarWanted()` 只在 `enabled === true` 时注册（未知/失败不注册）；`summary` 与 `page` 两种 view 的 Hook 序列必须一致（summary 早退只能放在所有 Hook 之后）。门禁 `check:ui` 的 `[32]`–`[45]` 用失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读 / 非 JSON / 缺 value）钉住，假 react 按组件身份校验 Hook 数。
+- **写/读两条水位线，`form.set` 只认 `true`，缺 value 不是空页**：读按 `appliedSeq` 丢旧（写发起时占一个更高的读序号），写响应另走 `appliedWriteStamp`（**不**与读序号比，否则「写先发 → 读后发 → 读先回 → 写后回」把写自己的答案丢了）；`form.set` 只有 `ok === true` 算受理（`undefined` 曾导致零 POST 还印「已保存」），其余回落 `POST /options`；`value` 不是非空对象时读进 `status:'error'`（保留旧行）、写 reject，绝不 `publish({status:'ready', value:{}})`；`res.json()` 失败统一本地化；每次写最多等 `WRITE_TIMEOUT_MS = 90s`（> SSH 看门狗，超时只按失败渲染）。门禁 `[39]`–`[42]`。
 - `apply()` 可重入：locale 注册失败降级 `localTranslator`。
 - 样式只允许 `--dsw-alias-*` token + 中性半透明兜底；组件不接触 ctx。
 - 行内只显示 `w.conn`；操作只用图标；`source` 可复制 chip；库名不截断 → [原因](doc/ARCHITECTURE.md#布局取舍)。

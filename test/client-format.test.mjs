@@ -61,6 +61,43 @@ test('client bundle writes options through the settings form when it can', () =>
   assert.match(source, /saveConfig: function \(patch\) \{ return saveOptions\(patch \|\| \{\}\); \},/)
 })
 
+test('client bundle accepts a settings-form write only on an explicit true', () => {
+  // `ok !== false` read a `set()` that resolves `undefined` (several 0.2.x
+  // builds) as accepted, so the save went NOWHERE — zero POST, zero verification —
+  // while the page printed 已保存 ✓. Anything but `true` falls back to the bridge.
+  assert.match(source, /return form\.set\(key, raw\)\.then\(function \(ok\) \{ return ok === true; \}/)
+  assert.match(source, /if \(accepted !== true\) return post\("\/options", patch\);/)
+})
+
+test('client bundle keeps write answers out of the read watermark', () => {
+  // Two watermarks: reads are ordered by `appliedSeq`, write answers by
+  // `appliedWriteStamp`. One shared stamp let a read that answered first throw the
+  // write's own answer away (写先发 → 读后发 → 读先回 → 写后回).
+  assert.match(source, /var publishWrite = function \(stamp, next\) \{/)
+  assert.match(source, /publishWrite\(mine, \{ status: "ready", value: body\.value \}\);/)
+  // And a Host answer without a view is a FAILURE, never `value: {}` (R3).
+  assert.match(source, /var isView = function \(v\) \{/)
+  assert.match(source, /if \(!isView\(body\.value\)\) throw bridgeFail\(\);/)
+  // A non-JSON answer is a transport failure, not a raw parser trace (R4).
+  assert.match(source, /return Promise\.resolve\(\)\.then\(function \(\) \{ return res\.json\(\); \}\)\.then\(/)
+})
+
+test('client bundle bounds every write so a hung bridge cannot leave it pending', () => {
+  // Without a ceiling a hung bridge (a proxy that accepts and never answers) left
+  // every write pending FOREVER: no tick, no error, no retry — the click vanished.
+  // The ceiling must be LONGER than the probe watchdogs: a `{op:'test'}` POST may
+  // legitimately spend a whole SSH budget before it answers, and a write timeout
+  // must never turn a healthy slow probe into a "failed save".
+  assert.match(source, /var withWriteTimeout = function \(p\) \{/)
+  assert.match(source, /return withWriteTimeout\(request\(path, \{/)
+  const ms = (re) => Number((source.match(re) || [])[1])
+  const write = ms(/var WRITE_TIMEOUT_MS = (\d+);/)
+  const sshWatchdog = ms(/var PRETEST_WATCHDOG_SSH_MS = (\d+);/)
+  assert.ok(Number.isFinite(write) && write > 0, `WRITE_TIMEOUT_MS not found (${write})`)
+  assert.ok(write > sshWatchdog,
+    `the write ceiling (${write}ms) must stay above the SSH probe watchdog (${sshWatchdog}ms)`)
+})
+
 test('client bundle registers the plugins.row.config page keyed to package#row', () => {
   // dsh 0.1.6 dropped settings.plugin.item; the plugin's own configuration now
   // lives on the Plugins page through the keyed plugins.row.config slot.
