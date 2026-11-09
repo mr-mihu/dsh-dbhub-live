@@ -20,6 +20,9 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 ### 零知识
 - 工具参数**不得有 `dsn`**；`dbhub_configure` 收到 `args.dsn` 直接拒绝（`result.noDsnViaModel`）。
 - 模型可见文本（结果/列表/标签/错误/stderr/诊断）一律过 `connLabel` 或 `scrubSecrets`；清洗要折叠任意 URL 连接串的整个 userinfo → [原因](doc/ARCHITECTURE.md#零知识边界)。
+- `connLabel` 是**结构性闸门**：只有 `new URL()` 真正解析成功的串才被信任（`Server=…;pass=…`、Go 风格 `u:secret@tcp(…)`、JDBC 属性后缀、裸路径一律 → 本地化占位 `result.unknownConn`，绝不回显原串）；解析成功的值再过两条 path 闸门——含 `@`（userinfo），或含 key 命中 `/pass|pwd|secret|token|auth|cred/i` 的 `k=v` 对 —— 命中即占位。**不要用密码关键词表代替它**，也不要加"字段里 includes 密码"的判据（会杀掉 `postgres:postgres@…/postgres` 这类正常标签）。`decodeURIComponent` 必须兜底（失败用原串）、`connLabel` 整体 try/catch：单条坏行不得让整份列表抛错 → [原因](doc/ARCHITECTURE.md#零知识边界)。
+- `runAdhoc` 的结果**首行 prefix 与正文一起过 `scrubSecrets`**（含调用方传入的 `label`）。
+- 卡片写命令的补丁**只带元数据**（`op/path/title/env/from/ro/source`）：`/op` 响应里没有 `dsn`、没有 `ssh`；镜像要的 DSN 由 `mirrorPatchOf` 从 store 回读（`publishFast` 只喂宿主内存）。
 - 密码与完整 DSN 只经界面：`askUser`（configure）/ `configOp`（配置页）。门禁 `test/zero-knowledge.test.mjs`。
 
 ### 一次性进程
@@ -82,6 +85,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - `policy.mjs` 唯一 system prompt 段（order 8900）：已配置连接走 `dbhub_*`、禁 CLI/脚本/驱动/其它 MCP/其它数据库插件绕过、只读被拒不换途径；不支持的库让给用户其它插件、判不准先问。`announceAccessPolicy=false` 时 `text` 为空。门禁 `test/policy.test.mjs`。
 - 启用/禁用：`state.setEnabled` → `credentials.json`；禁用时工具首行返回「插件已禁用」。
 - 存储：`$DSH_HOME/storages/dsh-dbhub-live/`（credentials / prefs / runtime / dbhub-runtime / tmp）；`writeJsonFile` tmp+rename，失败只 `warnOnce`；load 时清洗 + 一次性回写迁移，**未知字段保留**；进程环境变量不参与连接解析。
+- `writeJsonFile` 的临时文件 `mode: 0o600`、`DATA_DIR` / 子目录 `0o700`（Windows 忽略 mode，靠 profile ACL）。**升级来的旧目录/旧文件必须补 chmod**：`mkdirSync(recursive)` 不改已存在目录的 mode，所以 boot 时与每次写入后 best-effort `tightenStorageModes()`（Windows 跳过；失败只 `warnOnce` 一次、文案只带文件名与错误码）。`setFsHooks` 是给测试观察 mode 参数的注入缝，生产恒用 node:fs。旧版明文 `dbhub.toml`（4.0 之前就是连接库）：boot 时 `sweepLegacyConfigFile()` 直接删除并 `warnOnce` 一条不带内容的警告（D1）。
 
 ### 客户端半（细节见 [doc/CLIENT.md](doc/CLIENT.md)）
 - 手写 lazy-CJS bundle，无构建；`id` = Loader entry 名；三入口都要在：`settings.section`（始终）/ 侧边栏（`enabled && showSidebarEntry`）/ `plugins.row.config`（始终）。

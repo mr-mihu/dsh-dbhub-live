@@ -42,7 +42,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -1009,4 +1009,139 @@ test('the opNotice text never carries a DSN, a host or a password', async () => 
   assert.equal(missText.includes(CANARY), false, 'a pasted DSN must not leak its password: ' + missText)
   assert.ok(missText.includes('127.0.0.1'), 'the non-secret part of the label still shows: ' + missText)
   delete cfg.store[WS]
+})
+
+// ── 10. the /op RESPONSE body is metadata-only ───────────────────────────
+//
+// The patches a write command returns travel back to the BROWSER in the `/op`
+// response. They used to carry `{dsn, ssh}` — i.e. the full connection string and
+// the tunnel password — even though the browser half never reads `patches` (it
+// re-renders from the published view). The mirror DOES need the real row, so the
+// two audiences are separated: the response stays metadata-only, and
+// `mirrorPatchOf` re-reads the secret from the store for the host-side mirror.
+
+test('the /op response carries metadata-only patches (no dsn, no tunnel secret)', async () => {
+  const WS = 'D:/work/patch-zk'
+  REGISTRY.push({ path: WS, title: 'patch-zk' })
+  const route = await opRouteOf()
+
+  const added = await postOp(route, {
+    op: 'add',
+    workspace: WS,
+    env: 'prod',
+    dsn: CANARY_DSN,
+    ssh: { host: SSH_HOST, port: 22, user: 'deploy', auth: 'password', password: CANARY },
+  })
+  assert.equal(added.ok, true, 'the write still succeeds')
+  const patch = added.patches.find((p) => p.op === 'add')
+  assert.ok(patch, 'the mirror is still told which row changed')
+  assert.equal(patch.env, 'prod')
+  assert.equal(Object.hasOwn(patch, 'dsn'), false, 'the patch must not carry the DSN')
+  assert.equal(Object.hasOwn(patch, 'ssh'), false, 'the patch must not carry the tunnel block')
+  // No secret of any kind anywhere in the response body.
+  for (const forbidden of [CANARY, 'password', 'passphrase', 'keyPath']) {
+    assert.equal(JSON.stringify(added.patches).includes(forbidden), false, 'the response leaked ' + forbidden)
+  }
+
+  // The row itself did land, tunnel and all — the metadata-only patch is not a
+  // weakened write.
+  const row = rowOf(WS, 'prod')
+  assert.equal(row.dsn, CANARY_DSN)
+  assert.equal(row.ssh.password, CANARY)
+
+  // …and the MIRROR still gets what it needs: the same patch, hydrated from the
+  // store, carries the DSN and the resolved options.
+  const forMirror = index.mirrorPatchOf(patch)
+  assert.equal(forMirror.dsn, CANARY_DSN)
+  assert.equal(forMirror.ro, false)
+  assert.equal(forMirror.ssh.password, CANARY)
+
+  // The options command has the same contract (its patch used to carry `ssh`).
+  const toggled = await postOp(route, { op: 'options', workspace: WS, env: 'prod', readOnly: true })
+  const optPatch = toggled.patches.find((p) => p.op === 'options')
+  assert.ok(optPatch)
+  assert.equal(optPatch.ro, true, 'the read-only state is metadata and IS mirrored')
+  assert.equal(Object.hasOwn(optPatch, 'ssh'), false, 'the options patch must not carry the tunnel block')
+  assert.equal(index.mirrorPatchOf(optPatch).ssh.password, CANARY, 'the mirror re-reads the tunnel from the store')
+  delete cfg.store[WS]
+})
+
+// ── 10b. the MIRROR gets the connection, the `/op` response does not (M8) ──
+//
+// Test 10 checks the two audiences through `mirrorPatchOf` called by hand. That
+// is a blind spot: reverting `publishFast(patches.map(mirrorPatchOf))` to
+// `publishFast(patches)` left EVERY test green, because nothing observed what the
+// host-side mirror channel actually received. This test captures the `publishFast`
+// argument itself (the channel's `published` array) and asserts the two payloads
+// differ in exactly the right direction.
+
+test('the mirror receives the connection data the returned patches never carry (M8)', async () => {
+  const WS = 'D:/work/mirror-payload'
+  REGISTRY.push({ path: WS, title: 'mirror-payload' })
+  const ch = channel()
+
+  const returned = await ch.run({
+    op: 'add',
+    workspace: WS,
+    env: 'prod',
+    dsn: CANARY_DSN,
+    ssh: { host: SSH_HOST, port: 22, user: 'deploy', auth: 'password', password: CANARY },
+  })
+
+  // (a) the mirror was fed a patch that can actually describe the row
+  const mirroredAdd = ch.published.filter((p) => p.op === 'add' && p.env === 'prod')
+  assert.equal(mirroredAdd.length, 1, 'one add patch reached publishFast')
+  assert.equal(mirroredAdd[0].dsn, CANARY_DSN, 'the mirror needs the DSN to summarize the row')
+  assert.ok(mirroredAdd[0].ssh, 'the mirror needs the resolved tunnel block')
+  assert.equal(mirroredAdd[0].ssh.password, CANARY)
+  assert.equal(mirroredAdd[0].ro, false)
+
+  // (b) the SAME command's returned patches stay metadata-only
+  const returnedAdd = returned.find((p) => p.op === 'add')
+  assert.ok(returnedAdd, 'the caller is still told which row changed')
+  assert.equal(Object.hasOwn(returnedAdd, 'dsn'), false, 'the returned patch must not carry the DSN')
+  assert.equal(Object.hasOwn(returnedAdd, 'ssh'), false, 'the returned patch must not carry the tunnel')
+
+  // (c) the options command has the same two-audience contract
+  const returnedOpts = await ch.run({ op: 'options', workspace: WS, env: 'prod', readOnly: true })
+  const mirroredOpts = ch.published.filter((p) => p.op === 'options' && p.env === 'prod').slice(-1)
+  assert.equal(mirroredOpts.length, 1)
+  assert.equal(mirroredOpts[0].ro, true)
+  assert.equal(mirroredOpts[0].ssh.password, CANARY, 'the mirror re-reads the tunnel from the store')
+  const returnedOpt = returnedOpts.find((p) => p.op === 'options')
+  assert.ok(returnedOpt)
+  assert.equal(Object.hasOwn(returnedOpt, 'ssh'), false, 'the returned options patch must not carry the tunnel')
+
+  // Neither payload of the mirror channel is exempt from the zero-knowledge rule:
+  // the DSN and tunnel only ever travel host-side (publishFast feeds host memory).
+  delete cfg.store[WS]
+})
+
+// ── 11. the legacy plaintext store is swept at BOOT (wiring, not the helper) ──
+
+test('apply() deletes the pre-4.0 plaintext dbhub.toml and never quotes it', async () => {
+  // `sweepLegacyConfigFile` has its own unit test; this one pins the WIRING, so a
+  // refactor cannot leave the helper uncalled (the file would then sit in the
+  // profile forever: nothing reads it, so nothing else would ever notice it).
+  mkdirSync(cfg.DATA_DIR, { recursive: true })
+  writeFileSync(
+    cfg.LEGACY_CONFIG_PATH,
+    '[[sources]]\r\ndsn = "mysql://root:' + CANARY + '@127.0.0.1:3306/app"\r\n',
+  )
+  assert.ok(existsSync(cfg.LEGACY_CONFIG_PATH), 'fixture in place')
+
+  const warnings = []
+  const originalWarn = console.warn
+  console.warn = (...args) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    const { ctx: hctx } = hostCtx({ subprocess, workspaces: REGISTRY })
+    await index.apply(hctx, undefined)
+  } finally {
+    console.warn = originalWarn
+  }
+
+  assert.equal(existsSync(cfg.LEGACY_CONFIG_PATH), false, 'boot removed the plaintext connection file')
+  const logged = warnings.join('\n')
+  assert.equal(logged.includes(CANARY), false, 'the warning must not quote the DSN: ' + logged)
+  assert.ok(logged.includes('dbhub.toml'), 'the warning names the file: ' + logged)
 })

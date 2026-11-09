@@ -374,7 +374,7 @@ test('applyOptionsOp on an existing row patches options and never adds a row', a
     ws,
     async () => { throw new Error('lookupAuto must not run for a persisted row') },
   )
-  assert.deepEqual(res.patches, [{ op: 'options', path: ws.path, env: 'prod', ro: true, ssh: null }])
+  assert.deepEqual(res.patches, [{ op: 'options', path: ws.path, env: 'prod', ro: true }])
   assert.equal(res.patches.some((p) => p.op === 'add'), false)
   const entry = readStore()[ws.path].environments.prod
   assert.equal(entry.readOnly, true)
@@ -396,9 +396,12 @@ test('applyOptionsOp promotes an auto-discovered environment through lookupAuto'
     return { env: envName, dsn }
   })
   assert.deepEqual(seen, ['default'])
+  // Metadata-only patches: the promoted row's DSN and the resolved tunnel block
+  // never ride the patch (it is serialized to the browser); the mirror re-reads
+  // them from the store through index.mirrorPatchOf.
   assert.deepEqual(res.patches, [
-    { op: 'add', path: ws.path, title: ws.title, env: 'default', dsn, source: 'promoted', ro: true, ssh: null },
-    { op: 'options', path: ws.path, env: 'default', ro: true, ssh: null },
+    { op: 'add', path: ws.path, title: ws.title, env: 'default', source: 'promoted', ro: true },
+    { op: 'options', path: ws.path, env: 'default', ro: true },
   ])
   const entry = readStore()[ws.path].environments.default
   assert.equal(entry.dsn, dsn)
@@ -442,15 +445,16 @@ test('applyOptionsOp renames and applies options in one call', async () => {
   )
   assert.deepEqual(res.patches, [
     { op: 'rename', path: ws.path, env: 'new', from: 'old' },
-    {
-      op: 'options', path: ws.path, env: 'new', ro: true,
-      ssh: { host: 'bastion.example.com', port: 2222, user: 'deploy', auth: 'key', keyPath: '/home/deploy/.ssh/id_ed25519' },
-    },
+    { op: 'options', path: ws.path, env: 'new', ro: true },
   ])
   assert.equal(res.patches.some((p) => p.op === 'rename'), true)
+  // The stored tunnel still moves with the name; it is simply not in the patch.
   const envs = readStore()[ws.path].environments
   assert.equal(Object.hasOwn(envs, 'old'), false)
   assert.equal(envs.new.dsn, dsn, 'the connection travels with the name')
   assert.equal(envs.new.readOnly, true)
   assert.equal(envs.new.ssh.host, 'bastion.example.com', 'the tunnel travels with the name')
+  const forMirror = index.mirrorPatchOf(res.patches[1])
+  assert.equal(forMirror.ssh.host, 'bastion.example.com', 'the mirror gets the tunnel back from the store')
+  assert.equal(forMirror.ro, true)
 })

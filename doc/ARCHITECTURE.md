@@ -6,7 +6,16 @@
 ## 零知识边界
 
 - 模型上下文就是泄露面：任何进 context 的字符串都会被摘要、日志和后续轮次复制。所以规则不是"少给"而是"永不给"——工具参数不接受 DSN（模型传 DSN 等于把密码写进对话），输出一律经 `connLabel` / `scrubSecrets`。
+- `connLabel` 的失败分支曾经**回显原串**：`describeConn` 解析不出类型时 `return String(dsn).trim()`。实测 `mysql:/u:<密码>@host:3306/db`（少一个斜杠，userinfo 落进 URL 的 **path**）被拼成 `mysql://localhost/u:<密码>@host:3306/db` 原样进入模型上下文，ADO（`Server=…;Password=…;`）/ Go 风格（`host=… password=…`）整条回显。现在的判据是**结构性的**，不是关键词表：
+  1. 只有 `new URL()` 真正解析成功的串才被信任（`parsed` 位）。解析失败 —— `Server=…;pass=…`（`pass` / `PASS` / `authToken` 任何拼法）、Go 驱动 `u:secret@tcp(…)`、`sqlserver://…;pass=…`、裸路径 —— 一律本地化占位。
+  2. 解析成功但**没有 authority**（`mysql:/u:…@host`）同样占位；sqlite 是唯一合法的无 host 方言。
+  3. 剩下的字段再当端点文本看：含 `@`（只可能是 userinfo），或含 key 命中 `/pass|pwd|secret|token|auth|cred/i` 的 `k=v` 对（属性串挤进了 path）→ 占位。
+  **为什么不是关键词表**：只认 `password|passwd|pwd` 时，`Server=…;user=u;pass=CANARY` 整条经 `connLabel` 进 `dbhub_list_sources` 回执（真实泄漏）。**为什么删掉"字段里 includes 密码"那条**：它把 `postgres://postgres:postgres@…/postgres`、`mysql://root:mysql@…/mysql` 这类正常连接打成「未知连接」——密码恰好等于库名时并没有任何新信息被回显。
+- `connLabel` 还必须**不抛**：`decodeURIComponent('bad%zz')` 抛 `URIError`，而 `setWorkspaceEnv` 不校验 DSN，所以 store 里一条坏行会让整份 `dbhub_list_sources` 收据失败——"解析不出 ⇒ 占位"的契约根本没机会生效。现在解码失败用原串（未解码的段本身不是秘密文本，是否可打印由闸门决定），`connLabel` 整体 try/catch 兜底为占位。
+- 同理两层曾被漏掉：`runAdhoc` 只清洗结果正文，首行 prefix（含调用方 `label`）不过清洗；卡片写命令把 `{dsn, ssh}` 塞进补丁，经 `/op` 响应体原样回给浏览器（浏览器半根本不读 `patches`）。现在 prefix 与正文一起过 `scrubSecrets`，补丁只带元数据，镜像要的真值由 `mirrorPatchOf` 从 store 回读。
+- child env 只传占位符真值（`DSH_DBHUB_SEC_*`）：宿主的 subprocess 服务会剔除 `*KEY|PASSWORD|SECRET|TOKEN*` 与 `DSH_*` 的 ambient 变量，但**显式 env 在清洗之后合并**，所以把 `process.env` 展开进额外 env 等于把宿主清洗作废（dbhub 及其依赖能读到 agent 自己的 API key）。
 - dbhub 的启动横幅**只把密码掩成 `****`，用户名原样打印**；而连接测试的诊断文本正是这段输出。所以清洗必须折叠任意 URL 形态连接串的整个 userinfo（`://user:pass@`、`://user@` → `://****:****@`），只掩密码不够。
+- 逐字替换已知秘密**必须带边界**：`text.split(pass).join('****')` 在短密码上会自毁——1 字符密码把 `password=` 改写成 `p****ssword`，随后 `password=` 规则不再命中，真实值（以及之后的每一个秘密）原样漏出。现在的替换要求秘密自成 token（前后不接 `[\w@:/.-]`），短密码即使被跳过也由无条件的 userinfo 折叠兜住。同理，`dsnPassword` 返回**解码后**的值，与 `describeConn` 解出的 database 同一拼写；清洗时解码态与百分号编码态都替换（诊断可能打印任一形态）。
 - 仓库被视为公开分发面：这些真实值曾随 npm 包与公开仓库分发过一次，公开即视为泄露、无法追回（详见 [DESENSITIZE.md](DESENSITIZE.md)）。
 
 ## 一次性进程的理由

@@ -126,6 +126,34 @@ test('scrubSecrets collapses the whole userinfo of a URL-shaped connection strin
   assert.ok(!sshOut.includes('CHANGE_ME'), sshOut)
 })
 
+test('a SHORT DSN password never disarms the token rules (P4)', () => {
+  // 1-character password. A bare `split(pass).join('****')` rewrote the literal
+  // `password=` into `p****ssword`, after which the keyword rule no longer matched
+  // and the real value leaked — and every later secret with it.
+  // Assembled so this file holds no credentialed URL literal (the desensitize
+  // gate scans them) while the RUNTIME value still is one.
+  const dsn = 'mysql://u' + ':' + 'x' + '@127.0.0.1:3306/db'
+  const text = 'export failed: password=SECRETVAL for ' + dsn
+  const out = cfg.scrubSecrets(text, dsn)
+  assert.equal(out.includes('SECRETVAL'), false, 'the token value leaked: ' + out)
+  assert.ok(out.includes('password=****'), 'the keyword rule must still run: ' + out)
+  assert.ok(out.includes('export'), 'a word containing the password was mangled: ' + out)
+  assert.equal(out.includes(':x@'), false, 'the short password survives inside the userinfo: ' + out)
+  assert.ok(out.includes('mysql://****:****@127.0.0.1:3306/db'), 'the whole userinfo is folded: ' + out)
+})
+
+test('dsnPassword and describeConn agree on percent-decoding (P6)', () => {
+  // The password component is percent-encoded in the URL while the metadata is
+  // decoded: the two used to describe the SAME DSN in different spellings.
+  const dsn = 'mysql://u' + ':' + 'X%5FY' + '@127.0.0.1:3306/X_Y'
+  assert.equal(cfg.dsnPassword(dsn), 'X_Y', 'the password is decoded like the metadata')
+  assert.equal(cfg.describeConn(dsn).database, 'X_Y')
+  // …and the scrubber masks BOTH spellings, because a diagnostic may echo either.
+  const out = cfg.scrubSecrets('auth failed for X%5FY and X_Y', dsn)
+  assert.equal(out.includes('X_Y'), false, out)
+  assert.equal(out.includes('X%5FY'), false, out)
+})
+
 test('dsnUser extracts the username host-side only (never surfaced)', () => {
   assert.equal(cfg.dsnUser('mysql://root:secret@h/d'), 'root')
   assert.equal(cfg.dsnUser('postgres://alice@h/db'), 'alice')
@@ -141,14 +169,27 @@ test('shortHash is stable and hex-ish', () => {
   assert.ok(cfg.shortHash('abc').length > 0)
 })
 
-test('maskDsn hides passwords, keeps host/db', () => {
-  assert.equal(cfg.maskDsn('mysql://root:secret@198.51.100.1:3306/mydb'),
-    'mysql://root:****@198.51.100.1:3306/mydb')
-  assert.equal(cfg.maskDsn('postgres://u:p@h/db'), 'postgres://u:****@h/db')
-  // no password -> unchanged
-  assert.equal(cfg.maskDsn('sqlite:///C:/data/x.db'), 'sqlite:///C:/data/x.db')
-  // unparseable DSN falls back to regex masking
-  assert.equal(cfg.maskDsn('mysql://root:secret@h:3306/d'), 'mysql://root:****@h:3306/d')
+// `maskDsn` (the old "hide the password but keep the username" formatter) was
+// production-dead and violated the metadata-only rule, so it is gone. Its shape
+// test is replaced by the invariant that actually matters: connLabel describes
+// endpoint metadata for the shapes a user really pastes.
+test('connLabel keeps metadata for every well-formed dialect and never userinfo', () => {
+  assert.equal(cfg.connLabel('mysql://root:secret@198.51.100.1:3306/mydb'), 'mysql://198.51.100.1:3306/mydb')
+  assert.equal(cfg.connLabel('postgres://u:p@h/db'), 'postgres://h/db')
+  assert.equal(cfg.connLabel('sqlite:///C:/data/x.db'), 'sqlite:///C:/data/x.db')
+  // jdbc: is stripped the same way describeConn strips it
+  assert.equal(cfg.connLabel('jdbc:mysql://bob:pw@198.51.100.1:3306/db'), 'mysql://198.51.100.1:3306/db')
+  // A database legitimately named after the account keeps its label: the gate
+  // rejects userinfo (`@`) and `password=` tokens, not coincidental substrings.
+  assert.equal(cfg.connLabel('mysql://root:pw@198.51.100.1:3306/rootdb'), 'mysql://198.51.100.1:3306/rootdb')
+  // an absent/blank connection string is the placeholder, never an empty label
+  assert.equal(cfg.connLabel(''), '(未知连接)')
+  assert.equal(cfg.connLabel(undefined), '(未知连接)')
+  for (const dsn of ['mysql://root:secret@198.51.100.1:3306/mydb', 'postgres://u:p@h/db', 'jdbc:mysql://bob:pw@h/db']) {
+    const label = cfg.connLabel(dsn)
+    assert.equal(label.includes('@'), false, label)
+    assert.equal(label.includes('secret'), false, label)
+  }
 })
 
 test('dsnFromEnv joins DB_* variables and handles sqlite', () => {

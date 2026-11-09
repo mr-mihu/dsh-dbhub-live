@@ -203,7 +203,15 @@ test('a read-only connection generates a --config file that exists during the sp
   assert.equal(res.ok, false, 'the fake dbhub never answers MCP')
 })
 
-test('a tunnelled connection carries its secrets in the child env, merged over process.env', async () => {
+test('a tunnelled connection carries ONLY the generated secrets in the child env', async () => {
+  // Two ambient variables shaped like credentials. The host subprocess service
+  // strips `SENSITIVE_ENV_PATTERN` (= KEY|PASSWORD|SECRET|TOKEN) and `DSH_*`
+  // names from the inherited environment — but it merges an EXPLICIT `env` AFTER
+  // that scrub, so spreading `process.env` into the child env would undo the
+  // host's own hardening and hand dbhub (and every dependency inside it) the
+  // agent's keys. They must not reach the child.
+  process.env.DBHUB_AMBIENT_API_KEY = 'CHANGE_ME'
+  process.env.DBHUB_AMBIENT_TOKEN = 'CHANGE_ME'
   let textDuringSpawn = ''
   const { subprocess, specs, errors } = recorder({
     onSpawn: (spec) => {
@@ -211,34 +219,42 @@ test('a tunnelled connection carries its secrets in the child env, merged over p
       textDuringSpawn = readFileSync(path, 'utf8')
     },
   })
-  const res = await adhoc.runAdhoc(subprocess, { dsn: DSN, ro: false, ssh: SSH_PASSWORD }, 'execute_sql', { sql: 'SELECT 1' }, {})
-  assert.deepEqual(errors, [])
-  const spec = specs[0]
-  const env = spec.env
-  assert.ok(env, 'the tunnel shape must carry a child environment')
+  try {
+    const res = await adhoc.runAdhoc(subprocess, { dsn: DSN, ro: false, ssh: SSH_PASSWORD }, 'execute_sql', { sql: 'SELECT 1' }, {})
+    assert.deepEqual(errors, [])
+    const spec = specs[0]
+    const env = spec.env
+    assert.ok(env, 'the tunnel shape must carry a child environment')
 
-  // The two secrets, with the REAL values, in the child's environment.
-  assert.equal(env.DSH_DBHUB_SEC_DSN, DSN)
-  assert.equal(env.DSH_DBHUB_SEC_SSH_PASSWORD, 'CHANGE_ME')
-  assert.equal('DSH_DBHUB_SEC_SSH_PASSPHRASE' in env, false, 'password auth needs no passphrase')
+    // The two secrets, with the REAL values, in the child's environment.
+    assert.equal(env.DSH_DBHUB_SEC_DSN, DSN)
+    assert.equal(env.DSH_DBHUB_SEC_SSH_PASSWORD, 'CHANGE_ME')
+    assert.equal('DSH_DBHUB_SEC_SSH_PASSPHRASE' in env, false, 'password auth needs no passphrase')
 
-  // Merged, not replaced: every ambient entry survives, and only the two secret
-  // names are added.
-  for (const key of Object.keys(process.env)) {
-    assert.equal(key in env, true, `the ambient ${key} must survive the merge`)
+    // NOTHING else: the child environment is exactly the generated key set, so
+    // no ambient entry (credential-shaped or not) rides along.
+    const GENERATED = ['DSH_DBHUB_SEC_DSN', 'DSH_DBHUB_SEC_SSH_PASSWORD']
+    assert.deepEqual(Object.keys(env).sort(), [...GENERATED].sort())
+    const SENSITIVE = /(KEY|PASSWORD|SECRET|TOKEN|DSH_)/i
+    for (const key of Object.keys(env)) {
+      if (!SENSITIVE.test(key)) continue
+      assert.ok(GENERATED.includes(key), `an ambient credential-shaped name leaked into the child env: ${key}`)
+    }
+    assert.equal('DSH_HOME' in env, false, 'the host profile location is not forwarded')
+    assert.equal('PATH' in env, false, 'process.env is not spread into the child env at all')
+    assert.equal('DBHUB_AMBIENT_API_KEY' in env, false)
+    assert.equal('DBHUB_AMBIENT_TOKEN' in env, false)
+
+    // The tunnel fields themselves stay in the file; only the secret is a placeholder.
+    assert.ok(textDuringSpawn.includes('ssh_host = "192.0.2.10"'))
+    assert.ok(textDuringSpawn.includes('ssh_user = "ops"'))
+    assert.ok(textDuringSpawn.includes('${DSH_DBHUB_SEC_SSH_PASSWORD}'))
+    assert.equal(textDuringSpawn.includes('CHANGE_ME'), false, 'the tunnel password never lands in the file')
+    assert.equal(res.ok, false)
+  } finally {
+    delete process.env.DBHUB_AMBIENT_API_KEY
+    delete process.env.DBHUB_AMBIENT_TOKEN
   }
-  assert.deepEqual(
-    Object.keys(env).filter((k) => !(k in process.env)).sort(),
-    ['DSH_DBHUB_SEC_DSN', 'DSH_DBHUB_SEC_SSH_PASSWORD'].sort(),
-  )
-  assert.equal(env.DSH_HOME, home)
-
-  // The tunnel fields themselves stay in the file; only the secret is a placeholder.
-  assert.ok(textDuringSpawn.includes('ssh_host = "192.0.2.10"'))
-  assert.ok(textDuringSpawn.includes('ssh_user = "ops"'))
-  assert.ok(textDuringSpawn.includes('${DSH_DBHUB_SEC_SSH_PASSWORD}'))
-  assert.equal(textDuringSpawn.includes('CHANGE_ME'), false, 'the tunnel password never lands in the file')
-  assert.equal(res.ok, false)
 })
 
 test('key auth carries the passphrase (never a password variable)', async () => {
@@ -259,8 +275,83 @@ test('key auth carries the passphrase (never a password variable)', async () => 
   assert.ok(textDuringSpawn.includes('${DSH_DBHUB_SEC_SSH_PASSPHRASE}'))
 })
 
-// ── descriptor helpers ─────────────────────────────────────────────────────
+// ── the result HEADER is part of the model-facing surface ──────────────────
 
+/**
+ * A fake dbhub that ANSWERS the two JSON-RPC calls `runAdhoc` makes, so the
+ * result path (header + body scrubbing) can be asserted — the recorder above
+ * never replies, which means every call settles as a failure and no header is
+ * ever produced.
+ */
+function answeringRecorder(reply) {
+  const listeners = []
+  const emit = (obj) => {
+    const line = JSON.stringify(obj) + '\n'
+    for (const fn of [...listeners]) fn(line)
+  }
+  return {
+    subprocess: {
+      resolveExecutable: async (name) => '/fake/bin/' + name,
+      spawn() {
+        return {
+          stdin: {
+            write(text) {
+              const msg = JSON.parse(String(text).trim())
+              if (msg.method === 'initialize') {
+                emit({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-03-26', capabilities: {} } })
+              } else if (msg.method === 'tools/call') {
+                emit({ jsonrpc: '2.0', id: msg.id, result: reply })
+              }
+            },
+          },
+          stdout: {
+            on(event, fn) {
+              if (event === 'data') listeners.push(fn)
+            },
+          },
+          stderr: { on() {} },
+          // Never settles: the reply above is what the caller waits for, and a
+          // rejected `done` would settle the request with "dbhub exited".
+          done: new Promise(() => {}),
+          terminate() {},
+          waitForExit: async () => ({ exitCode: 0 }),
+        }
+      },
+    },
+  }
+}
+
+const OK_REPLY = { content: [{ type: 'text', text: 'SELECT 1 -> 1' }] }
+
+test('the default result header names metadata only (never user, never password)', async () => {
+  const { subprocess } = answeringRecorder(OK_REPLY)
+  const res = await adhoc.runAdhoc(subprocess, { dsn: DSN }, 'execute_sql', { sql: 'SELECT 1' }, {})
+  assert.equal(res.ok, true)
+  const header = res.text.split('\n')[0]
+  assert.ok(header.includes('mysql://127.0.0.1:3306/app'), header)
+  assert.equal(header.includes('CHANGE_ME'), false, 'no password in the header')
+  assert.equal(header.includes('user'), false, 'no username in the header')
+  assert.equal(res.text.includes('SELECT 1 -> 1'), true, 'the body still lands')
+})
+
+test('a caller-supplied header is scrubbed like the body (P0-4)', async () => {
+  // The worst case for this seam: a call site (or a future one) pastes the real
+  // DSN into the label. The body has always been scrubbed; the header used to
+  // bypass the gate entirely.
+  const { subprocess } = answeringRecorder(OK_REPLY)
+  const res = await adhoc.runAdhoc(
+    subprocess, { dsn: DSN, ssh: SSH_PASSWORD }, 'execute_sql', { sql: 'SELECT 1' }, {},
+    'conn ' + DSN + ' via CHANGE_ME',
+  )
+  assert.equal(res.ok, true)
+  const header = res.text.split('\n')[0]
+  assert.equal(header.includes('CHANGE_ME'), false, 'the header must not carry the DSN password')
+  assert.equal(header.includes('user:'), false, 'the header must not carry the userinfo')
+  assert.ok(header.includes('mysql://****:****@127.0.0.1:3306/app'), header)
+  assert.equal(res.text.includes('SELECT 1 -> 1'), true, 'the body still lands')
+})
+
+// ── descriptor helpers ─────────────────────────────────────────────────────
 test('normalizeConn/needsToml coerce a bare DSN and keep the descriptor shape', () => {
   assert.deepEqual(adhoc.normalizeConn('  ' + DSN + '  '), { dsn: DSN, ro: false, ssh: null })
   assert.deepEqual(adhoc.normalizeConn(undefined), { dsn: '', ro: false, ssh: null })
