@@ -73,7 +73,13 @@ test('client bundle registers the plugins.row.config page keyed to package#row',
 
 test('client bundle renders both owner views (summary one-liner + page)', () => {
   assert.match(source, /var isPage = props\.view !== "summary";/)
-  assert.match(source, /if \(!isPage\)/)
+  // The view is chosen at the RETURN, after every hook has run: an early return
+  // for `summary` made the two views consume a different number of hooks, and
+  // switching a mounted instance between them threw
+  // "Rendered more hooks than during the previous render".
+  assert.doesNotMatch(source, /if \(!isPage\)/)
+  assert.match(source, /return isPage \? h\("div", \{ className: innerClass/)
+  assert.match(source, /: summaryNode;/)
   assert.match(source, /h\("span", \{ className: "dbh-summary" \}/)
 })
 
@@ -93,8 +99,10 @@ test('client bundle owns a sidebar entry gated by enabled AND the user switch', 
   assert.match(source, /slots\.inject\("main"/)
   assert.match(source, /name: "main",\s*\n\s*key: "dbhub"/)
   // Two independent conditions: the user's "hide the shortcut" switch and the
-  // plugin's enabled state. Hiding the entry is NOT disabling the plugin.
-  assert.match(source, /return v\.enabled !== false && v\.showSidebarEntry !== false;/)
+  // plugin's enabled state. Hiding the entry is NOT disabling the plugin. An
+  // UNKNOWN state (a read that has not answered, or one that failed) registers
+  // nothing: `enabled` must be literally true, not "not false".
+  assert.match(source, /return v\.enabled === true && v\.showSidebarEntry !== false;/)
   assert.match(source, /var syncSidebar = function/)
   assert.match(source, /face\.subscribe\(syncSidebar\)/)
   // The switch itself is back on the settings strip and applies immediately.
@@ -248,7 +256,7 @@ test('client bundle asks before overwriting an existing environment', () => {
   assert.match(source, /t\("ovr\.title"\)/)
   assert.match(source, /t\("ovr\.bodyAmbiguous", \{/)
   assert.match(source, /t\("ovr\.confirm"\)/)
-  assert.match(source, /overwriteView \|\| pretestView,/)
+  assert.match(source, /overwriteView \|\| removeView \|\| pretestView,/)
 })
 
 test('client bundle keeps the source handle copyable instead of echoing it inline', () => {
@@ -465,7 +473,7 @@ test('client bundle shows the plugin version and the quiet update prompt', () =>
   assert.match(source, /dsh-dbhub-live@" \+ update\.latest/)
   assert.match(source, /dsh plugin --profile web up dsh-dbhub-live@/)
   // opening the page asks the Host for a throttled check; the button forces one
-  assert.match(source, /op: "updateCheck", force: false/)
+  assert.match(source, /kickUpdateCheck\(false\)/)
   assert.match(source, /op: "updateCheck", force: force === true/)
   // Updating is neutral news, not an error: no red card/pill classes remain.
   assert.doesNotMatch(source, /dbh-latest/)

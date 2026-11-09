@@ -64,6 +64,38 @@ const react = (() => {
     if (changed) pendingEffects.push(s.hooks[i])
   }
 
+  /**
+   * Run one function component and enforce React's hook-order contract: the
+   * SAME component must consume the SAME number of hooks on every render.
+   * Without this the harness happily re-fills a different number of slots, so a
+   * conditional hook (an early return before the hooks, the classic crash
+   * "Rendered more hooks than during the previous render") stays invisible.
+   * A DIFFERENT component type at the same position is a remount in React, so
+   * it starts with an empty hook store.
+   */
+  function runComponent(type, props, index, firstHookIndex) {
+    let s = instances[index]
+    if (!s || s.comp !== type) s = instances[index] = { hooks: [], comp: type, count: undefined }
+    const savedCurrent = current
+    const savedCursor = cursor
+    current = s
+    cursor = firstHookIndex
+    let out
+    try {
+      out = type(props)
+      const used = cursor - firstHookIndex
+      if (s.count !== undefined && s.count !== used) {
+        throw new Error(`hook order changed: ${s.count} hooks on the previous render, ${used} now `
+          + '(Rendered more/fewer hooks than during the previous render)')
+      }
+      s.count = used
+    } finally {
+      current = savedCurrent
+      cursor = savedCursor
+    }
+    return out
+  }
+
   function walk(el, path) {
     if (el === null || el === undefined || el === false || el === true) return null
     if (typeof el === 'string' || typeof el === 'number') return { kind: 'text', text: String(el) }
@@ -72,14 +104,7 @@ const react = (() => {
     }
     if (typeof el.type === 'function') {
       const idx = cursor++
-      const s = instances[idx] || (instances[idx] = { hooks: [] })
-      const savedCurrent = current
-      const savedCursor = cursor
-      current = s
-      cursor = 0
-      const out = el.type(el.props)
-      current = savedCurrent
-      cursor = savedCursor
+      const out = runComponent(el.type, el.props, idx, 0)
       return walk(out, path)
     }
     const kids = el.props && el.props.children
@@ -117,12 +142,7 @@ const react = (() => {
     do {
       dirty = false
       cursor = 0
-      const s = instances[0] || (instances[0] = { hooks: [] })
-      const savedCurrent = current
-      current = s
-      cursor = 1
-      const out = type(props)
-      current = savedCurrent
+      const out = runComponent(type, props, 0, 1)
       tree = walk(out, '')
       const runnable = pendingEffects.filter((e) => e.run)
       pendingEffects = []
@@ -290,17 +310,41 @@ function mount(snapshot, opts = {}) {
     // route with the same view the legacy snapshot carries — but the view is
     // MUTABLE, because an `enabled` write must be observable on the next read
     // (that is exactly what re-syncs the sidebar entry).
+    //
+    // `opts.fetchImpl({ url, body, liveView })` scripts the answer, which is how
+    // the failure paths below become reachable at all (a stub that always says
+    // `{ok:true}` makes "a refused write looked saved" structurally invisible):
+    //   undefined        → the normal success answer
+    //   'reject'         → the fetch itself rejects (dead network / offline)
+    //   { status, payload } → that HTTP status + JSON body (401, {ok:false,error})
+    //   a Promise        → the test resolves it later, to force RESPONSE ORDER
+    // Only ACCEPTED answers are recorded, so `setCalls` means "the Host took it".
     const previousFetch = globalThis.fetch
     const liveView = Object.assign({}, snapshot)
+    const respond = typeof opts.fetchImpl === 'function' ? opts.fetchImpl : null
     globalThis.fetch = async (input, init) => {
+      const url = String(input)
       const body = init && typeof init.body === 'string' ? JSON.parse(init.body) : undefined
-      if (body && body.op !== undefined) opCalls.push(body.op)
-      else if (body && typeof body.enabled === 'boolean') {
-        setCalls.push(['enabled', body.enabled])
-        liveView.enabled = body.enabled
-      } else if (body) setCalls.push(['options', body])
-      else getCalls.push(String(input))
-      return { ok: true, status: 200, json: async () => ({ ok: true, value: liveView }) }
+      // Reads are recorded even when they fail: "the retry really re-read" is
+      // an assertion about attempts, not about successes.
+      if (!body) getCalls.push(url)
+      const planned = respond ? respond({ url, body, liveView }) : undefined
+      if (planned && typeof planned.then === 'function') return planned
+      if (planned === 'reject') throw new Error('network down')
+      const status = planned && typeof planned.status === 'number' ? planned.status : 200
+      const payload = planned && planned.payload ? planned.payload : { ok: true, value: liveView }
+      const accepted = status < 400 && payload && payload.ok !== false
+      if (accepted && body) {
+        if (body.op !== undefined) opCalls.push(body.op)
+        else if (typeof body.enabled === 'boolean') {
+          setCalls.push(['enabled', body.enabled])
+          liveView.enabled = body.enabled
+        } else {
+          setCalls.push(['options', body])
+          Object.assign(liveView, body)
+        }
+      }
+      return { ok: status < 400, status, json: async () => payload }
     }
     restores.push(() => { globalThis.fetch = previousFetch })
   }
@@ -488,6 +532,22 @@ function page(rows, opts = {}) {
  *  ResizeObserver is unavailable — which is this offscreen harness). */
 function viewport(px) {
   windowShim.innerWidth = px
+}
+
+/** Let every bridge promise settle (fetch → publish → subscriber → effect). */
+const flush = () => new Promise((r) => setTimeout(r, 0))
+
+/** Concatenated text of every element carrying `cls` (scoped text assertions). */
+const textMatching = (node, cls) => classed(node, cls).map(toHtml).join(' | ')
+
+/**
+ * The entry that actually OCCUPIES a slot, or null. `slots.inject` stores its
+ * own disposer under the same key, so plain truthiness cannot tell "an entry is
+ * registered" from "the slot was merely injected"; an entry is `{ def, comp }`.
+ */
+const slotEntry = (m, name) => {
+  const r = m.registrations[name]
+  return r && typeof r.comp === 'function' ? r : null
 }
 
 /** A modern (dsh >= 0.2.1) host view: version fields + an empty update snapshot. */
@@ -1392,6 +1452,311 @@ console.log('\n[31] a refused card command is visible on both faces (opNotice)')
   })
   check('no refusal line without a notice', classed(clean.tree, 'dbh-notice').length === 0)
   clean.dispose()
+  viewport(1440)
+}
+
+console.log('\n[32] a refused write is VISIBLE and never claims "已保存" (P1-1)')
+{
+  viewport(1440)
+  // The old face resolved every POST (`noop` as the rejection handler), so a 401,
+  // a Host refusal and a dead network all printed 已保存. Each failure mode is
+  // scripted here; the gate fails if the card lies about any of them.
+  let refuseWrites = true
+  const p = page(TILED, {
+    slot: 'main',
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: ({ body }) => (body && body.updateIntervalDays !== undefined
+      ? (refuseWrites ? { status: 401, payload: { ok: false, error: 'nope' } } : undefined)
+      : undefined),
+  })
+  await flush()
+  p.tree = p.renderAgain()
+  const beforeFail = p.setCalls.length
+  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  await flush()
+  p.tree = p.renderAgain()
+  let html = toHtml(p.tree)
+  check('a 401 save renders exactly one alert line', count(p.tree, 'dbh-writefail') === 1, html.slice(0, 300))
+  check('the alert line is an accessible alert',
+    String((classed(p.tree, 'dbh-writefail')[0] || { props: {} }).props.role || '') === 'alert')
+  check('a refused save does NOT print 已保存', !html.includes('已保存'), html.slice(0, 400))
+  check('the transport failure is a localized line, not a raw status',
+    textMatching(p.tree, 'dbh-writefail').includes('写入失败') && !textMatching(p.tree, 'dbh-writefail').includes('401'),
+    textMatching(p.tree, 'dbh-writefail'))
+  check('the refused write was not recorded as applied',
+    p.setCalls.length === beforeFail, JSON.stringify(p.setCalls.slice(beforeFail)))
+  // Retry is just another click: no lock, no "already failed" state.
+  refuseWrites = false
+  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  await flush()
+  p.tree = p.renderAgain()
+  html = toHtml(p.tree)
+  check('retrying the same click saves for real',
+    p.setCalls.slice(beforeFail).some(([k, v]) => k === 'options' && v.updateIntervalDays === 7),
+    JSON.stringify(p.setCalls.slice(beforeFail)))
+  check('a successful retry clears the alert and shows the tick',
+    count(p.tree, 'dbh-writefail') === 0 && html.includes('已保存'))
+  p.dispose()
+
+  // A Host REFUSAL is different: the Host already scrubbed its own message, and
+  // that text is the only thing that tells the user what to fix.
+  viewport(1440)
+  const q = page(TILED, {
+    slot: 'main',
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: ({ body }) => (body && body.op !== undefined
+      ? { status: 200, payload: { ok: false, error: '宿主拒绝：找不到工作区' } }
+      : undefined),
+  })
+  await flush()
+  q.tree = q.renderAgain()
+  clickClass(q.tree, 'dbh-rochip')
+  await flush()
+  q.tree = q.renderAgain()
+  check('a Host refusal shows the Host message',
+    textMatching(q.tree, 'dbh-writefail').includes('宿主拒绝：找不到工作区'),
+    textMatching(q.tree, 'dbh-writefail'))
+  check('a refused option chip write does not print 已保存', !toHtml(q.tree).includes('已保存'))
+  q.dispose()
+  viewport(1440)
+}
+
+console.log('\n[33] a probe the bridge never delivered is "not sent", not "timed out" (P2-1)')
+{
+  viewport(1440)
+  // Fire-and-forget dispatch: a 401 on /op used to be invisible, so the page
+  // spun for 30/60s and then blamed the DATABASE ("测试超时未返回").
+  const dsnTyped = 'mysql://user:CHANGE_ME@127.0.0.1:3306/app'
+  const p = page(TILED, {
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: ({ body }) => (body && body.op !== undefined && body.op.op === 'test' ? { status: 401 } : undefined),
+  })
+  await flush()
+  p.tree = p.renderAgain()
+  // The per-row probe first: the row must settle immediately.
+  clickLabel(p.tree, '测试')
+  await flush()
+  p.tree = p.renderAgain()
+  let html = toHtml(p.tree)
+  check('a refused row probe settles at once instead of spinning',
+    html.includes('测试命令未能送达宿主') && !html.includes('测试中…'), html.slice(0, 400))
+  check('the refused probe is not reported as a timeout',
+    !html.includes('测试超时未返回'))
+  check('the refused probe does not blame the connection',
+    !String(classed(p.tree, 'dbh-test-fail').map(toHtml).join('')).includes('连接失败'))
+  // The same rule for the pre-save probe of the add form.
+  click(p.tree, '＋ 添加连接')
+  p.tree = p.renderAgain()
+  typeWithin(p.tree, 'dbh-addpanel', 0, 'D:/work/app')
+  p.tree = p.renderAgain()
+  typeWithin(p.tree, 'dbh-addpanel', 1, 'staging')
+  p.tree = p.renderAgain()
+  typeWithin(p.tree, 'dbh-addpanel', 2, dsnTyped)
+  p.tree = p.renderAgain()
+  clickWithin(p.tree, 'dbh-addpanel', '添加连接')
+  await flush()
+  p.tree = p.renderAgain()
+  html = toHtml(p.tree)
+  check('a refused pre-test says the command was not delivered',
+    textMatching(p.tree, 'dbh-test-fail').includes('测试命令未能送达宿主'),
+    textMatching(p.tree, 'dbh-test-fail'))
+  check('the pre-test does not hang on "查找中" / 测试中', !html.includes('正在测试连接…'), html.slice(0, 300))
+  check('the failure card offers the two real choices',
+    String(textMatching(p.tree, 'dbh-pretest')).includes('测试未通过'))
+  // The form keeps what the user typed, so "click again" is a real retry.
+  check('the add form survives the refused dispatch', count(p.tree, 'dbh-addpanel') === 1)
+  // Zero knowledge: the failure line carries a localized string, never the DSN
+  // the user just typed (the POST body had it; the rendered text must not).
+  check('the DSN never reaches the failure line',
+    !textMatching(p.tree, 'dbh-test-fail').includes('CHANGE_ME')
+    && !textMatching(p.tree, 'dbh-writefail').includes('CHANGE_ME'),
+    textMatching(p.tree, 'dbh-test-fail'))
+  p.dispose()
+  viewport(1440)
+}
+
+console.log('\n[34] a failed /state is visible + retryable, unknown ≠ "show the entry" (P1-2, P2-9)')
+{
+  viewport(1440)
+  let failRead = true
+  const p = page(TILED, {
+    slot: 'main',
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: ({ body }) => (body ? undefined : (failRead ? 'reject' : undefined)),
+  })
+  await flush()
+  p.tree = p.renderAgain()
+  check('a failed read renders an error line', count(p.tree, 'dbh-loadfail') === 1, toHtml(p.tree).slice(0, 300))
+  check('the error line offers a retry control', count(p.tree, 'dbh-retry') === 1)
+  check('a failed read never prints 已保存', !toHtml(p.tree).includes('已保存'))
+  check('an unknown state registers NO sidebar entry', slotEntry(p, 'sidebar.panellist') === null)
+  const readsBefore = p.getCalls.length
+  failRead = false
+  clickClass(p.tree, 'dbh-retry')
+  await flush()
+  p.tree = p.renderAgain()
+  check('retry really re-reads the bridge', p.getCalls.length > readsBefore,
+    JSON.stringify(p.getCalls))
+  check('the rows arrive on the retried read', count(p.tree, 'dbh-tile') === 3,
+    `got ${count(p.tree, 'dbh-tile')}`)
+  check('the error line disappears after a good read', count(p.tree, 'dbh-loadfail') === 0)
+  check('the sidebar entry appears once enabled is known', slotEntry(p, 'sidebar.panellist') !== null)
+  p.dispose()
+
+  // A successful read whose view does not answer the question is still UNKNOWN:
+  // "enabled !== false" used to show the entry before the first good answer.
+  const unknown = page(TILED, {
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS, { enabled: undefined, showSidebarEntry: undefined }),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  await flush()
+  check('a view without `enabled` registers no sidebar entry', slotEntry(unknown, 'sidebar.panellist') === null)
+  unknown.dispose()
+  const known = page(TILED, {
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  await flush()
+  check('a positive enabled:true answer does register it', slotEntry(known, 'sidebar.panellist') !== null)
+  known.dispose()
+
+  // Response ORDER: a poll that answers after a newer write must not roll the
+  // card back to the pre-write view. The queued read is resolved on demand.
+  const queued = []
+  const q = page(TILED, {
+    slot: 'main',
+    transport: 'http',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: ({ body }) => (body ? undefined : new Promise((resolve) => {
+      queued.push((view) => resolve({ ok: true, status: 200, json: async () => ({ ok: true, value: view }) }))
+    })),
+  })
+  check('the initial read is in flight', queued.length === 1, `queued ${queued.length}`)
+  await q.props.saveConfig({ updateIntervalDays: 5 })
+  q.tree = q.renderAgain()
+  check('the write response is applied', (classed(q.tree, 'dbh-srow-input')[0] || { props: {} }).props.value === '5',
+    (classed(q.tree, 'dbh-srow-input')[0] || { props: {} }).props.value)
+  queued[0](snapshotOf(TILED, { updateIntervalDays: 7 }))
+  await flush()
+  q.tree = q.renderAgain()
+  check('a stale poll cannot overwrite the newer write',
+    (classed(q.tree, 'dbh-srow-input')[0] || { props: {} }).props.value === '5',
+    (classed(q.tree, 'dbh-srow-input')[0] || { props: {} }).props.value)
+  q.dispose()
+  viewport(1440)
+}
+
+console.log('\n[35] one mounted card switches view without changing its hook order (P1-3)')
+{
+  viewport(1440)
+  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  // The Plugins page mounts this card twice (summary line + full page) and can
+  // flip `view` on the SAME instance. The early return for `summary` made the
+  // second render throw "Rendered more hooks than during the previous render".
+  const reg = p.registrations['plugins.row.config']
+  const propsOf = (view) => Object.assign({}, reg.def.inject(), { view })
+  let error = null
+  try {
+    const summary = react.render(reg.comp, propsOf('summary'))
+    check('summary is a single line', count(summary, 'dbh-summary') === 1 && count(summary, 'dbh-tile') === 0)
+    const full = react.render(reg.comp, propsOf('page'))
+    check('the page view still renders the full form', count(full, 'dbh-tile') === 3, toHtml(full).slice(0, 200))
+    // and back again, on the same hook store
+    const summaryAgain = react.render(reg.comp, propsOf('summary'))
+    check('switching back is fine too', count(summaryAgain, 'dbh-summary') === 1)
+  } catch (e) {
+    error = e
+  }
+  check('the hook order is identical in both views', error === null, error && error.message)
+  p.dispose()
+  viewport(1440)
+}
+
+console.log('\n[36] an invalid update interval sends nothing (P2-5)')
+{
+  viewport(1440)
+  const p = page(TILED, {
+    slot: 'main',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  const typeInterval = (value) => {
+    typeWithin(p.tree, 'dbh-settingsbar', 0, value)
+    p.tree = p.renderAgain()
+  }
+  // `Number("") === 0`: an emptied box used to save "never update" and print 已保存.
+  const emptyBefore = p.setCalls.length
+  typeInterval('')
+  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  await flush()
+  p.tree = p.renderAgain()
+  check('an empty interval sends no request at all', p.setCalls.length === emptyBefore,
+    JSON.stringify(p.setCalls.slice(emptyBefore)))
+  check('an empty interval shows the validation line', count(p.tree, 'dbh-invalid') === 1,
+    toHtml(p.tree).slice(0, 300))
+  check('an invalid interval does not print 已保存', !toHtml(p.tree).includes('已保存'))
+  // 1.5 and 400 must be refused client-side too (the Host checks are the backstop).
+  for (const bad of ['1.5', '400', '-1']) {
+    const before = p.setCalls.length
+    typeInterval(bad)
+    clickWithin(p.tree, 'dbh-settingsbar', '保存')
+    await flush()
+    p.tree = p.renderAgain()
+    check(`interval ${bad} is refused before the request`,
+      p.setCalls.length === before && count(p.tree, 'dbh-invalid') === 1,
+      JSON.stringify(p.setCalls.slice(before)))
+  }
+  // A legal value goes through, and clears the form error.
+  typeInterval('30')
+  check('editing clears the validation line', count(p.tree, 'dbh-invalid') === 0)
+  const good = p.setCalls.length
+  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  await flush()
+  p.tree = p.renderAgain()
+  check('a legal interval is written',
+    p.setCalls.slice(good).some(([k, v]) => k === 'updateIntervalDays' && v === 30),
+    JSON.stringify(p.setCalls.slice(good)))
+  check('and it reports saved', toHtml(p.tree).includes('已保存'))
+  p.dispose()
+  viewport(1440)
+}
+
+console.log('\n[37] deleting a connection asks first and cancelling writes nothing (P2-4)')
+{
+  viewport(1440)
+  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  const before = p.opCalls.length
+  clickLabel(p.tree, '删除')
+  p.tree = p.renderAgain()
+  check('the delete button opens a confirmation card', count(p.tree, 'dbh-warncard') === 1,
+    toHtml(p.tree).slice(0, 300))
+  check('the card names the environment it will remove', toHtml(classed(p.tree, 'dbh-warncard')[0]).includes('default'))
+  check('nothing is sent before the confirmation', p.opCalls.length === before, JSON.stringify(p.opCalls.slice(before)))
+  clickWithin(p.tree, 'dbh-warncard', '取消')
+  p.tree = p.renderAgain()
+  check('cancel closes the card', count(p.tree, 'dbh-warncard') === 0)
+  check('cancel writes nothing at all', p.opCalls.length === before, JSON.stringify(p.opCalls.slice(before)))
+  clickLabel(p.tree, '删除')
+  p.tree = p.renderAgain()
+  clickWithin(p.tree, 'dbh-warncard', '确认删除')
+  p.tree = p.renderAgain()
+  check('confirming sends exactly one remove op',
+    p.opCalls.length === before + 1 && p.opCalls[before].op === 'remove',
+    JSON.stringify(p.opCalls.slice(before)))
+  check('the remove op carries no DSN', p.opCalls[before].dsn === undefined)
+  check('the card is gone after confirming', count(p.tree, 'dbh-warncard') === 0)
+  p.dispose()
   viewport(1440)
 }
 

@@ -94,6 +94,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 
 ### 客户端半（细节见 [doc/CLIENT.md](doc/CLIENT.md)）
 - 手写 lazy-CJS bundle，无构建；`id` = Loader entry 名；三入口都要在：`settings.section`（始终）/ 侧边栏（`enabled && showSidebarEntry`）/ `plugins.row.config`（始终）。
+- **写失败必须可见**：face 的写 promise 在失败时 reject（失败分支不得写 `noop`），组件渲染 `.dbh-error .dbh-writefail[role=alert]` 且**不置 `saved`**；`/state` 失败时读 `snapshot.status === 'error'` 渲染 `.dbh-loadfail` + 「重试」（`face.refresh()`）；`sidebarWanted()` 只在 `enabled === true` 时注册（未知/失败不注册）；`summary` 与 `page` 两种 view 的 Hook 序列必须一致（summary 早退只能放在所有 Hook 之后）。门禁 `check:ui` 的 `[32]`–`[37]` 用失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读）钉住，假 react 按组件身份校验 Hook 数。
 - `apply()` 可重入：locale 注册失败降级 `localTranslator`。
 - 样式只允许 `--dsw-alias-*` token + 中性半透明兜底；组件不接触 ctx。
 - 行内只显示 `w.conn`；操作只用图标；`source` 可复制 chip；库名不截断 → [原因](doc/ARCHITECTURE.md#布局取舍)。

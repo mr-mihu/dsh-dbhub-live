@@ -23,17 +23,36 @@
 
 - **「隐藏入口」≠「禁用插件」**：关开关只是不显示侧边栏入口，工具照常可用；禁用则一律不贡献入口。
 - 两种状态下 `settings.section` 与 `plugins.row.config` 都**始终注册**，否则用户再也回不来。
-- 侧边栏由 `syncSidebar()` 挂 `face.subscribe` 按 view 即时 register/dispose；判定 `sidebarWanted()` = `view.enabled !== false && view.showSidebarEntry !== false`。
+- 侧边栏由 `syncSidebar()` 挂 `face.subscribe` 按 view 即时 register/dispose；判定 `sidebarWanted()` = `view.enabled === true && view.showSidebarEntry !== false`。**「未知」不注册**：`enabled` 必须是字面 `true`（读不到状态、或读失败时没有入口），因为 `syncSidebar` 只在 publish 时触发，用 `enabled !== false` 会在首帧就把入口挂上去、并且带着一个指向"打不开的页面"的快捷方式。
 - 注册不存在的 slot 会被静默忽略（「配置页消失」就是这么来的），别改回已删除的 slot。
 
 ## host face：探测与写回（别退回 inject）
 
-`export const inject` **只能有 `["slots"]`**。`legacyFace(scope)` 与 `httpFace()` 实现同一接口（`getSnapshot` / `subscribe` / `setEnabled` / `saveConfig` / `configOp`，快照 `{ status, value }`），`ctx.get('settingsScope')` 有则优先 legacy。
+`export const inject` **只能有 `["slots"]`**。`legacyFace(scope)` 与 `httpFace()` 实现同一接口（`getSnapshot` / `subscribe` / `setEnabled` / `saveConfig` / `configOp` / `refresh`，快照 `{ status, value }`），`ctx.get('settingsScope')` 有则优先 legacy。
 
 - HTTP face 四个入口：`GET /state`、`POST /enabled`、`POST /options`、`POST /op`；写完用响应里的 view 直接刷新快照（不等轮询）；`configOp` 的 `{op: …}` 直接 POST。
+- **写失败必须冒泡**：`request` 的 rejection 一路传到调用方（失败分支**不得**写成 `noop`），见下节。`refresh()` 永不 reject（失败时把 `status:'error'` 发布出去，由页面渲染 + 提供重试）。
 - **选项写入优先走官方 settings 表单**：Host 发布 `entryId`，客户端有 `ctx.configForms` 且 entryId 非空时 `configForms.get(entryId).set(field, value)`，失败/解析不到才回退 `POST /options`（0.1.x 与无 settings 客户端走这条）。
 - **HTTP 通道轮询是「按订阅」的**：只有渲染中页面用 `props.subscribe(fn, { live: true })` 起 1.5s 轮询（`document.hidden` 跳过）；插件作用域订阅（`face.subscribe(syncSidebar)`）只做一次性拉取。**空闲 GUI 不得持续轮询**，残留 interval 会让 `check:ui` 挂住不退出。
 - 组件不得接触 `ctx`：数据/回调一律通过注册时的 `inject: () => face` 传入 props。
+
+## 写失败与错误态（四条硬约定）
+
+浏览器半曾经把**所有写失败都当成功**：`httpFace().post` 的 rejection 分支是 `noop`，于是 `saveConfig().then(setSaved(true))` 对 401、`{ok:false,error}`、网络拒绝一律显示「已保存 ✓」，`configOp`（含带 DSN 的保存）、`setEnabled`、`remove` 全部静默丢掉。四条约定按此收口：
+
+1. **写失败必须可见**：face 的写返回 promise，失败时 **reject**（带 message）；组件捕获后写入 `writeError`，在**两个面**都渲染一行 `.dbh-error .dbh-writefail[role=alert]`，并且**不得**把 `saved` 置 true。失败后不锁按钮，再次点击就是重试。
+2. **错误态可重试**：`StatusCard` 必须读 `snapshot.status`（不是只读 `value`）。`'error'` 时渲染 `.dbh-loadfail` 错误行 + 「重试」按钮（调 `face.refresh()` 做一次真实读取，不是伪造一个空 view）。失败时保留上一次成功读到的行，不显示成"一个连接都没有"。
+3. **未知态不注册入口**：`sidebarWanted()` 只在 `enabled === true` 时返回 true（见「三个入口」）。
+4. **Hook 序列一致**：`{'props.view'}` 的 `summary` / `page` 两种 view 必须**跑完全相同的 Hook 序列**——summary 的早退只能发生在**所有 Hook 之后**，页面树在返回处用 `isPage ? … : summaryNode` 选择。否则同一实例从 `summary` 切到 `page` 会抛 `Rendered more hooks than during the previous render`（`plugins.row.config` 的卡片就是这样同时服务两种 view 的）。
+
+配套细节（都各有一段门禁）：
+
+- **探测命令发送失败**（401 / 离线）要**立刻**把该次探测收尾成「命令未能送达宿主」，并 `clearTimeout` 掉已起的看门狗；否则页面先转 30s/60s，最后报「测试超时未返回」——把"没送到"报成"连不上"。
+- **写后的响应乱序**：`publish` 带单调序号，比已应用版本旧的响应直接丢弃；写命令在发起时就取一个高于所有在途请求的序号（写响应优先于先前的读），避免轮询把刚写入的视图覆盖回旧值。
+- **间隔校验在客户端先做**：`Number("") === 0` 会把"留空"存成"永不更新"，`1.5` 也能混过去。提交前 `trim` 判空 + `Number.isInteger` + 范围 `0..365`，非法只显示 `.dbh-invalid`（中英双份文案）且**不发任何请求**；编辑时清除该提示。
+- **draft 与宿主快照同步**：初始化器只跑一次，所以还要一个 effect——本地没有未提交编辑时跟随 `value`；写入失败按当前 `value` 回滚（开关不能停在"已隐藏"而 store 还是"显示"）。
+- **删除先确认**：`.dbh-warncard`（`del.*` 文案）确认前零写入，取消即零写入；这条是唯一不可撤销的写，不能一键直达。
+- **零知识**：错误行只显示宿主返回的 `message`（宿主已清洗）或本地化文案；传输失败**不得**回显 HTTP 状态里的原始响应体，更不能拼接输入框里的 DSN。
 
 ## apply() 必须能被重复执行
 
@@ -118,8 +137,11 @@
 - **测试中显示已耗时**：`startTest` 记 `startedAt`，`testing` 态渲染 `test.elapsed`（`测试中… Xs`）；1s 计时器**只在有行处于 testing 时存在**（effect 依赖 `anyTesting`，cleanup 清掉）。看门狗按是否隧道分档（30s / 60s），必须高于宿主探测预算（25s / 45s）。
 - **等待态不给二次提交**：`pendingPretest` 期间保存/添加按钮 `disabled`，避免重复派发同一测试。
 - 探测要几秒（spawn dbhub），但**写入结果必须立刻可见**——靠宿主 `publishFast` 即时回推，不要改回「等整轮扫描」。
+- **删除必须走确认卡**（`.dbh-warncard` + `del.*`）：它是唯一不可撤销的写，取消即零写入；确认后只发一条 `{op:'remove'}`（无 DSN）。
+- **保存/开关的结果必须挂在同一个提示上**：`settingsBar` / `settingsRows`（弹窗、手机）/ legacy strip 共用 `savedHint()`——失败时它返回 `null`（失败由全局 `.dbh-writefail` 行承担），绝不能出现「已保存 ✓」与错误行同框。
 
 ## 验收
 
-- 布局/交互改动的验收 = `npm run check:ui`（离屏渲染 + 点击交互；分段 `[1]`…`[30]`，涵盖模式判定、默认展开、全部展开/折叠、添加面板、复制、i18n 覆盖率、热重载幂等、覆盖门、HTTP 桥、只读/SSH 载荷、现代三面、版本门）全绿 + `node test/client-format.test.mjs`。
-- 已知易错门：`[14]` 重复 locale 注册、`[17]` 复制字符串、`[18]` 无 settingsScope 走桥接 + `configForms` 优先与回退 + 轮询可回收、`[19]` 启用∧开关 / 禁用一律隐藏 / 设置页始终在、`[20]`/`[21]`/`[23]` 只读与 SSH 载荷、`[22]` 残留 interval、`[28]` 手机布局、`[29]` 0.1.x 渲染旧页、`[30]` 窄桌面窗口保持横向设置条。
+- 布局/交互改动的验收 = `npm run check:ui`（离屏渲染 + 点击交互；分段 `[1]`…`[37]`，涵盖模式判定、默认展开、全部展开/折叠、添加面板、复制、i18n 覆盖率、热重载幂等、覆盖门、HTTP 桥、只读/SSH 载荷、现代三面、版本门、**写失败/错误态/未知态/Hook 序列/间隔校验/删除确认**）全绿 + `node test/client-format.test.mjs`。
+- 已知易错门：`[14]` 重复 locale 注册、`[17]` 复制字符串、`[18]` 无 settingsScope 走桥接 + `configForms` 优先与回退 + 轮询可回收、`[19]` 启用∧开关 / 禁用一律隐藏 / 设置页始终在、`[20]`/`[21]`/`[23]` 只读与 SSH 载荷、`[22]` 残留 interval、`[28]` 手机布局、`[29]` 0.1.x 渲染旧页、`[30]` 窄桌面窗口保持横向设置条、`[32]`–`[37]` 失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读响应）。
+- **失败路径必须有桩**：`mount()` 的 `fetchImpl` 是脚本化应答（`undefined` = 正常、`'reject'` = 网络断、`{status,payload}` = 指定应答、Promise = 由测试决定何时以及按什么顺序回），只有被接受的应答才记进 `setCalls`/`opCalls`——所以「写没被接受」是可断言的。假 react 还会**按组件身份校验 Hook 数**（同类型组件 Hook 数变化即抛，正是 React 的行为），否则条件 Hook 结构性不可见。
