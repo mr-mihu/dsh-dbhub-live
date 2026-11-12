@@ -150,7 +150,7 @@ release-test/
 
 ## 加一个版本 / 改声明
 
-1. 改 `matrix.json` 的 `targets`：`version`、`tier`（declared/advisory）、`era`（legacy/config-form/modern）、`ui`（必须与 `lib/meta.mjs` 的 dshModern 门一致：>=0.2.1 为 modern）、`why`（依据：README / package.json / dist-tag）、`expect`（bridge/settingsNamespace/configForm 的 required/optional/absent）。
+1. 改 `matrix.json` 的 `targets`：`version`、`tier`（declared/advisory）、`era`（config-form/modern）、`ui`（必须与 `lib/meta.mjs` 的最低支持版本门一致：>=0.2.1 为 modern；低于 0.2.1 的 target 会被校验拒绝）、`why`（依据：README / package.json / dist-tag）、`expect`（bridge/settingsNamespace/configForm 的 required/optional/absent；0.1.x 的 settings 命名空间通道已删除，settingsNamespace 应为 absent）。
 2. `node release-test/run.mjs selftest` —— 结构校验 + semver 规则自检。
 3. `node release-test/run.mjs --only <新版本>` 先单跑，确认期望通道没写错。
 4. `npm run test:release` 全量 + AI 判定。

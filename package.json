@@ -1,6 +1,6 @@
 {
   "name": "dsh-dbhub-live",
-  "version": "5.2.0",
+  "version": "6.0.0-rc.1",
   "description": "DSH 数据库 MCP 插件：把 DBHub 接入 DeepSeek Harness，让 AI 在对话里直接查询 MySQL / PostgreSQL / MariaDB / SQLite / SQL Server。",
   "type": "module",
   "main": "lib/index.mjs",
@@ -75,19 +75,12 @@
     },
     "compatibility": {
       "dshReleases": {
-        "0.1.5-rc.3": "compatible",
-        "0.1.6-alpha.2": "compatible",
-        "0.1.7-rc.2": "compatible",
-        "0.2.0-rc.2": "compatible",
-        "0.2.1-alpha.1": "compatible",
         "0.2.1-rc.2": "compatible"
       }
     }
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-client-connection": ">=0.1.5-0 <0.1.6-0 || >=0.1.6-0 <0.1.7-0 || >=0.1.7-0 <0.2.0-0 || >=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.3.0-0",
-    "@deepseek-ai/dsh-settings": ">=0.1.5-0 <0.1.6-0 || >=0.1.6-0 <0.1.7-0 || >=0.1.7-0 <0.2.0-0 || >=0.2.0-0 <0.2.1-0 || >=0.2.1-0 <0.3.0-0",
     "@deepseek-ai/schemastery": "^3.18.1"
   },
   "repository": {

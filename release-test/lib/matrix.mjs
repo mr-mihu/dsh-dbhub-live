@@ -16,7 +16,8 @@ const ERAS = new Set(['legacy', 'config-form', 'modern'])
 const UIS = new Set(['legacy', 'modern'])
 const EXPECTATIONS = new Set(['required', 'optional', 'absent'])
 
-// dshModern gate in lib/meta.mjs: >= 0.2.1, prereleases included.
+// The supported-minimum gate in lib/meta.mjs: DSH >= 0.2.1, prereleases included.
+// 0.1.x and 0.2.0 are not supported at all, so they must not be matrix targets.
 export const isModernUi = (version) => compareVersions(version, '0.2.1-0') >= 0
 
 export function loadMatrix(file = MATRIX_FILE) {
@@ -46,10 +47,14 @@ export function validateMatrix(matrix, pkg = readJson(PACKAGE_FILE)) {
     for (const [key, value] of Object.entries(target.expect ?? {})) {
       if (!EXPECTATIONS.has(value)) problems.push(`${at}.expect.${key}: must be one of ${[...EXPECTATIONS].join(', ')}`)
     }
-    // ui must agree with the plugin's own dshModern gate
+    // The product only supports dsh >= 0.2.1.
+    if (target.version && parseVersion(target.version) && !isModernUi(target.version)) {
+      problems.push(`${at}: ${target.version} is below the supported minimum 0.2.1 (0.1.x and 0.2.0 are not supported)`)
+    }
+    // ui must agree with the supported-minimum gate
     if (target.version && target.ui && UIS.has(target.ui)) {
       const expected = isModernUi(target.version) ? 'modern' : 'legacy'
-      if (target.ui !== expected) problems.push(`${at}: ui must be "${expected}" for ${target.version} (lib/meta.mjs dshModern gate)`)
+      if (target.ui !== expected) problems.push(`${at}: ui must be "${expected}" for ${target.version} (lib/meta.mjs supported-minimum gate)`)
     }
     // a declared target must state what it expects from each host channel
     if (target.tier === 'declared') {

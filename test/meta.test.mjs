@@ -1,6 +1,6 @@
 // Unit tests for the Host's version metadata (lib/meta.mjs): semver parsing and
 // precedence, the "is an update newer?" question the update checker asks, the
-// dsh >= 0.2.1 compatibility gate, and the runtime probes (plugin version from
+// supported-minimum (0.2.1) gate, and the runtime probes (plugin version from
 // package.json, dsh version from an installed package layout).
 //
 // The discovery walk is driven against a temp layout with a fake argv entry, so
@@ -14,13 +14,13 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import {
-  DSH_MODERN_BASE,
+  DSH_MIN_SUPPORTED,
   DSH_PACKAGE_NAMES,
   PLUGIN_NAME,
   atLeastBase,
   compareSemver,
   detectDshRuntime,
-  dshIsModern,
+  dshTooOld,
   isNewer,
   parseSemver,
   readPluginVersion,
@@ -101,27 +101,36 @@ test('isNewer is prerelease-aware for this repo dev builds', () => {
   assert.equal(isNewer('5.2.0-dev.1', '5.2.0-dev.1'), false)
 })
 
-// ── the dsh >= 0.2.1 gate ─────────────────────────────────────────────────
+// ── the supported-minimum (DSH >= 0.2.1) gate ─────────────────────────────
 
 test('atLeastBase compares the numeric triplet and ignores prerelease', () => {
-  assert.equal(atLeastBase('0.2.1-rc.2', DSH_MODERN_BASE), true, 'a 0.2.1 prerelease counts as 0.2.1')
-  assert.equal(atLeastBase('0.2.1', DSH_MODERN_BASE), true)
-  assert.equal(atLeastBase('0.2.2', DSH_MODERN_BASE), true)
-  assert.equal(atLeastBase('1.0.0', DSH_MODERN_BASE), true)
-  assert.equal(atLeastBase('0.2.0-rc.2', DSH_MODERN_BASE), false)
-  assert.equal(atLeastBase('0.1.9', DSH_MODERN_BASE), false)
-  assert.equal(atLeastBase('', DSH_MODERN_BASE), false)
-  assert.equal(atLeastBase('unknown', DSH_MODERN_BASE), false)
+  assert.equal(DSH_MIN_SUPPORTED, '0.2.1')
+  assert.equal(atLeastBase('0.2.1-rc.2', DSH_MIN_SUPPORTED), true, 'a 0.2.1 prerelease counts as 0.2.1')
+  assert.equal(atLeastBase('0.2.1', DSH_MIN_SUPPORTED), true)
+  assert.equal(atLeastBase('0.2.2', DSH_MIN_SUPPORTED), true)
+  assert.equal(atLeastBase('1.0.0', DSH_MIN_SUPPORTED), true)
+  assert.equal(atLeastBase('0.2.0-rc.2', DSH_MIN_SUPPORTED), false)
+  assert.equal(atLeastBase('0.1.9', DSH_MIN_SUPPORTED), false)
+  assert.equal(atLeastBase('', DSH_MIN_SUPPORTED), false)
+  assert.equal(atLeastBase('unknown', DSH_MIN_SUPPORTED), false)
 })
 
-test('dshIsModern: resolved version wins; unresolvable is modern only on desktop', () => {
-  assert.equal(dshIsModern({ version: '0.2.1-rc.2', desktop: false }), true)
-  assert.equal(dshIsModern({ version: '0.2.1-rc.2', desktop: true }), true)
-  assert.equal(dshIsModern({ version: '0.1.6-alpha.2', desktop: true }), false, 'an old resolved version is old even on desktop')
-  assert.equal(dshIsModern({ version: '', desktop: true }), true, 'desktop with an unresolvable version stays modern')
-  assert.equal(dshIsModern({ version: '', desktop: false }), false, 'unknown web version => legacy UI')
-  assert.equal(dshIsModern({}), false)
-  assert.equal(dshIsModern(undefined), false)
+test('dshTooOld: resolved < 0.2.1 is too old on every runtime; unknown is not a verdict', () => {
+  // 0.1.x no longer exists in the support matrix — every one of these is too old.
+  assert.equal(dshTooOld({ version: '0.1.6-alpha.2', desktop: true }), true, 'an old resolved version is old even on desktop')
+  assert.equal(dshTooOld({ version: '0.1.9', desktop: false }), true)
+  assert.equal(dshTooOld({ version: '0.2.0-rc.2', desktop: false }), true, '0.2.0 is below the 0.2.1 minimum')
+  // Prereleases of the supported line count as that line.
+  assert.equal(dshTooOld({ version: '0.2.1-rc.1', desktop: false }), false)
+  assert.equal(dshTooOld({ version: '0.2.1-alpha.1', desktop: true }), false)
+  assert.equal(dshTooOld({ version: '0.2.1', desktop: false }), false)
+  assert.equal(dshTooOld({ version: '0.2.2', desktop: false }), false)
+  // An unresolvable version is NOT reported as too old: the warning line must not
+  // accuse a runtime we could not identify (the channel is probed, not gated).
+  assert.equal(dshTooOld({ version: '', desktop: true }), false)
+  assert.equal(dshTooOld({ version: '', desktop: false }), false)
+  assert.equal(dshTooOld({}), false)
+  assert.equal(dshTooOld(undefined), false)
 })
 
 // ── runtime discovery ─────────────────────────────────────────────────────
@@ -239,11 +248,13 @@ test('detectDshRuntime reports a coherent runtime (never throws)', () => {
   if (runtime.version) assert.ok(parseSemver(runtime.version), 'a resolved version is always semver')
 })
 
-test('versionMeta publishes the four view fields', () => {
+test('versionMeta publishes the five view fields', () => {
   const meta = versionMeta()
-  assert.deepEqual(Object.keys(meta).sort(), ['dshModern', 'dshVersion', 'pluginVersion', 'runtime'])
+  assert.deepEqual(Object.keys(meta).sort(),
+    ['dshMinVersion', 'dshTooOld', 'dshVersion', 'pluginVersion', 'runtime'])
   assert.equal(meta.pluginVersion, readPluginVersion())
+  assert.equal(meta.dshMinVersion, DSH_MIN_SUPPORTED)
   assert.ok(meta.runtime === 'web' || meta.runtime === 'desktop')
-  assert.equal(meta.dshModern, dshIsModern({ version: meta.dshVersion, desktop: meta.runtime === 'desktop' }))
-  assert.equal(typeof meta.dshModern, 'boolean')
+  assert.equal(meta.dshTooOld, dshTooOld({ version: meta.dshVersion, desktop: meta.runtime === 'desktop' }))
+  assert.equal(typeof meta.dshTooOld, 'boolean')
 })

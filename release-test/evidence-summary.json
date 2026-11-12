@@ -1,13 +1,9 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-09T16:49:02.873Z",
-  "pluginVersion": "5.2.0",
-  "matrixHash": "40a3fcef6607167ba09883d12602fa7668ce423f35c127245c526031d9f80c47",
-  "fullRun": {
-    "runId": "20261024-175015-40a3fc",
-    "generatedAt": "2026-10-24T09:52:42.537Z",
-    "status": "yellow"
-  },
+  "generatedAt": "2026-11-12T05:07:09.393Z",
+  "pluginVersion": "6.0.0-rc.1",
+  "matrixHash": "34be607694e6f525fb529409a749224aaaef8a1c95afbe41ad3babd5617ea947",
+  "fullRun": null,
   "verdict": {
     "state": "complete",
     "overall": "pass-with-notes",
@@ -15,91 +11,6 @@
     "reviewedAt": "2026-10-24T09:53:33Z"
   },
   "targets": {
-    "0.1.5-rc.3": {
-      "runId": "20261024-175015-40a3fc",
-      "generatedAt": "2026-10-24T09:52:42.537Z",
-      "status": "warn",
-      "provisionMode": "manual",
-      "cliSource": "npm",
-      "readyMs": 39830,
-      "pluginVersion": "5.2.0",
-      "commit": "91642fa2",
-      "counts": {
-        "pass": 19,
-        "fail": 0,
-        "warn": 1,
-        "skip": 0,
-        "info": 3
-      }
-    },
-    "0.1.6-alpha.2": {
-      "runId": "20261024-175015-40a3fc",
-      "generatedAt": "2026-10-24T09:52:42.537Z",
-      "status": "warn",
-      "provisionMode": "manual",
-      "cliSource": "mise",
-      "readyMs": 13138,
-      "pluginVersion": "5.2.0",
-      "commit": "91642fa2",
-      "counts": {
-        "pass": 19,
-        "fail": 0,
-        "warn": 1,
-        "skip": 0,
-        "info": 3
-      }
-    },
-    "0.1.7-rc.2": {
-      "runId": "20261024-175015-40a3fc",
-      "generatedAt": "2026-10-24T09:52:42.537Z",
-      "status": "warn",
-      "provisionMode": "manual",
-      "cliSource": "mise",
-      "readyMs": 14786,
-      "pluginVersion": "5.2.0",
-      "commit": "91642fa2",
-      "counts": {
-        "pass": 20,
-        "fail": 0,
-        "warn": 1,
-        "skip": 0,
-        "info": 2
-      }
-    },
-    "0.2.0-rc.2": {
-      "runId": "20261024-175015-40a3fc",
-      "generatedAt": "2026-10-24T09:52:42.537Z",
-      "status": "warn",
-      "provisionMode": "manual",
-      "cliSource": "mise",
-      "readyMs": 14801,
-      "pluginVersion": "5.2.0",
-      "commit": "91642fa2",
-      "counts": {
-        "pass": 20,
-        "fail": 0,
-        "warn": 1,
-        "skip": 0,
-        "info": 2
-      }
-    },
-    "0.2.1-alpha.1": {
-      "runId": "20261024-175015-40a3fc",
-      "generatedAt": "2026-10-24T09:52:42.537Z",
-      "status": "warn",
-      "provisionMode": "manual",
-      "cliSource": "mise",
-      "readyMs": 15172,
-      "pluginVersion": "5.2.0",
-      "commit": "91642fa2",
-      "counts": {
-        "pass": 20,
-        "fail": 0,
-        "warn": 1,
-        "skip": 0,
-        "info": 2
-      }
-    },
     "0.2.1-rc.2": {
       "runId": "20261024-175015-40a3fc",
       "generatedAt": "2026-10-24T09:52:42.537Z",

@@ -16,6 +16,25 @@ import { fileURLToPath } from 'node:url'
 
 const CLIENT = fileURLToPath(new URL('../lib/client.js', import.meta.url))
 
+// Every poll interval the client opens is tracked, so "no interval outlives the
+// page" becomes an explicit check instead of the process silently hanging. (The
+// client's write watchdogs are setTimeout-based and are simply cut off by the
+// process.exit at the end — they are not a leak signal.)
+const liveIntervals = new Map()
+{
+  const realInterval = globalThis.setInterval
+  const realClearInterval = globalThis.clearInterval
+  globalThis.setInterval = function (fn, ms, ...rest) {
+    const id = realInterval(fn, ms, ...rest)
+    liveIntervals.set(id, ms)
+    return id
+  }
+  globalThis.clearInterval = function (id) {
+    liveIntervals.delete(id)
+    return realClearInterval(id)
+  }
+}
+
 // ── minimal react ──────────────────────────────────────────────────────────
 
 const react = (() => {
@@ -29,6 +48,10 @@ const react = (() => {
   let current = null
   let dirty = false
   let pendingEffects = []
+  // Every effect cleanup is also registered here. A remount replaces the hook
+  // store, so a cleanup stored only on the discarded instance would be lost —
+  // and a lost cleanup means a live poll interval that outlives its page.
+  const cleanups = new Set()
 
   function createElement(type, props, ...children) {
     const next = Object.assign({}, props || {})
@@ -142,14 +165,21 @@ const react = (() => {
     mountedNodes.clear()
     pendingEffects = []
     dirty = false
+    lastRootType = null
   }
 
   /** Run every stored effect cleanup — what a real unmount does. */
   function unmount() {
+    for (const fn of [...cleanups]) {
+      cleanups.delete(fn)
+      try { fn() } catch (e) { /* cleanup must not break the gate */ }
+    }
     for (const s of instances) {
       for (const hook of s.hooks) {
         if (hook && typeof hook.cleanup === 'function') {
-          try { hook.cleanup() } catch (e) { /* cleanup must not break the gate */ }
+          if (!cleanups.has(hook.cleanup)) {
+            try { hook.cleanup() } catch (e) { /* cleanup must not break the gate */ }
+          }
           hook.cleanup = undefined
         }
       }
@@ -167,7 +197,19 @@ const react = (() => {
   const MAX_RENDER_ROUNDS = 100
 
   /** Render `type` (and re-render until no state setter fired). */
+  let lastRootType = null
   function render(type, props) {
+    // A DIFFERENT root component is a remount: React unmounts the old tree (its
+    // effect cleanups run) before mounting the new one. Without this, the old
+    // instances were silently dropped with their cleanups unrun — which leaked
+    // the page's poll interval when a section rendered another root next.
+    if (lastRootType !== null && lastRootType !== type) {
+      unmount()
+      instances.length = 0
+      mountedNodes.clear()
+      pendingEffects = []
+    }
+    lastRootType = type
     let tree
     let rounds = 0
     do {
@@ -186,7 +228,10 @@ const react = (() => {
       pendingEffects = []
       for (const e of runnable) {
         const cleanup = e.run()
-        if (typeof cleanup === 'function') e.cleanup = cleanup
+        if (typeof cleanup === 'function') {
+          e.cleanup = cleanup
+          cleanups.add(cleanup)
+        }
       }
     } while (dirty)
     return tree
@@ -261,20 +306,7 @@ function mount(snapshot, opts = {}) {
   const effects = []
   const disposeHandlers = []
   const restores = []
-  // The legacy transport is a service the bundle PROBES (`ctx.get`), never one it
-  // injects, so the harness offers it the same way a dsh <= 0.1.6 client does.
-  const settingsScope = {
-    bind: () => ({
-      getSnapshot: () => ({ value: snapshot }),
-      subscribe: () => () => {},
-      set: (key, value) => {
-        if (key === 'configOp') opCalls.push(JSON.parse(String(value)))
-        else setCalls.push([key, value])
-        return Promise.resolve()
-      },
-    }),
-  }
-  // dsh 0.1.7+/0.2.x settings forms: `configForms.get(entryId).set(field, value)`.
+  // dsh 0.2.1+ settings forms: `configForms.get(entryId).set(field, value)`.
   // `opts.formSet` scripts the ANSWER, because "the form took it" is the one thing
   // the client must not guess: 'ok' (default) → true, 'undefined' → resolves with
   // nothing (several 0.2.x builds do), 'false' → refused, 'reject' → throws.
@@ -292,7 +324,6 @@ function mount(snapshot, opts = {}) {
   }
   const ctx = {
     get(name) {
-      if (name === 'settingsScope') return opts.transport === 'http' ? undefined : settingsScope
       if (name === 'configForms') return opts.configForms ? configForms : undefined
       if (name !== 'locale') return undefined
       return {
@@ -351,11 +382,11 @@ function mount(snapshot, opts = {}) {
       },
     },
   }
-  if (opts.transport === 'http') {
-    // The bundle reads the page-global `fetch`; the fake answers every bridge
-    // route with the same view the legacy snapshot carries — but the view is
-    // MUTABLE, because an `enabled` write must be observable on the next read
-    // (that is exactly what re-syncs the sidebar entry).
+  {
+    // The bundle reads the page-global `fetch`; the fake answers the four
+    // bridge routes with a MUTABLE view, because an `enabled` write must be
+    // observable on the next read (that is exactly what re-syncs the sidebar
+    // entry).
     //
     // `opts.fetchImpl({ url, body, liveView })` scripts the answer, which is how
     // the failure paths below become reachable at all (a stub that always says
@@ -571,21 +602,36 @@ function check(label, condition, detail) {
 }
 
 /** Mount the settings-section page component with the REAL injected face. */
-function page(rows, opts = {}) {
+async function page(rows, opts = {}) {
   // A hot reload disposes the previous instance before applying the new bundle;
-  // `keepStale` models the pathological case where it could not.
-  if (liveMount && !opts.keepStale) liveMount.dispose()
-  const snapshot = snapshotOf(rows, opts.snapshot)
+  // `keepStale` models the pathological case where its LOCALE DICTIONARIES could
+  // not be released (the plugin half falls back to local copy). The old tree's
+  // effects still have to be torn down here — the next render replaces the hook
+  // store, and a poll interval leaked that way would keep this gate alive.
+  if (liveMount) {
+    if (opts.keepStale) react.unmount()
+    else liveMount.dispose()
+  }
+  const snapshot = snapshotOf(rows, Object.assign({}, MODERN_DEFAULTS, opts.snapshot))
   const m = mount(snapshot, opts)
   liveMount = m
   const slot = opts.slot || 'settings.section'
   const entry = m.registrations[slot]
   if (!entry) throw new Error(`${slot} was not registered`)
-  const props = Object.assign({}, entry.def.inject(), opts.props, { view: 'page' })
+  const props = Object.assign({}, entry.def.inject(), opts.props, { view: opts.view || 'page' })
   const comp = entry.comp
   const renderAgain = () => react.render(comp, props)
   react.reset()
-  return Object.assign(m, { props, comp, renderAgain, tree: react.render(comp, props) })
+  let tree = react.render(comp, props)
+  // The only face is the asynchronous bridge: let the first `/state` read land
+  // before the assertions look at the page (0.1.x's synchronous push is gone).
+  // Two rounds: opening the page also dispatches a (throttled) update check,
+  // whose write answer outranks the read that started before it.
+  for (let round = 0; round < 2; round += 1) {
+    await flush()
+    tree = react.render(comp, props)
+  }
+  return Object.assign(m, { props, comp, renderAgain, tree })
 }
 
 /** The browser viewport width the page sees (the bundle falls back to it when
@@ -610,9 +656,11 @@ const slotEntry = (m, name) => {
   return r && typeof r.comp === 'function' ? r : null
 }
 
-/** A modern (dsh >= 0.2.1) host view: version fields + an empty update snapshot. */
+/** The host view fields every mount carries: version metadata + an empty update
+ *  snapshot. `dshTooOld` is false unless a section overrides it. */
 const MODERN_DEFAULTS = {
-  dshModern: true,
+  dshMinVersion: '0.2.1',
+  dshTooOld: false,
   pluginVersion: '5.2.0-dev.1',
   dshVersion: '0.2.1-rc.2',
   runtime: 'web',
@@ -650,7 +698,7 @@ function switches(node) {
 
 console.log('\n[1] tiled layout (every workspace has exactly one environment)')
 {
-  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  const p = await page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
   const html = toHtml(p.tree)
   check('tile grid rendered', count(p.tree, 'dbh-tiles') === 1)
   check('one tile per workspace', count(p.tree, 'dbh-tile') === 3, `got ${count(p.tree, 'dbh-tile')}`)
@@ -671,7 +719,7 @@ console.log('\n[1] tiled layout (every workspace has exactly one environment)')
 
 console.log('\n[2] grouped layout (one workspace owns several environments)')
 {
-  const p = page(GROUPED, { props: { useWorkspaces: wsSnap('D:/work/app', '2026-01-02T00:00:00Z') } })
+  const p = await page(GROUPED, { props: { useWorkspaces: wsSnap('D:/work/app', '2026-01-02T00:00:00Z') } })
   if (process.env.DBHUB_DEBUG) console.log(toHtml(p.tree).slice(0, 3000))
   const heads = classed(p.tree, 'dbh-grouphead')
   const html = toHtml(p.tree)
@@ -682,12 +730,12 @@ console.log('\n[2] grouped layout (one workspace owns several environments)')
   check('expand-all control present', html.includes('全部展开'))
   check('per-group add button present', html.includes('＋ 环境'))
   check('group head shows env/saved counts', html.includes('3 环境 · 2 已保存'))
-  check('emoji/status line present', html.includes('🟢 运行中'))
+  check('status line present', html.includes('运行中') && html.includes('4 个连接'))
 }
 
 console.log('\n[3] a lone workspace opens by itself (no workspace snapshot available)')
 {
-  const p = page(SINGLE_MULTI, {})
+  const p = await page(SINGLE_MULTI, {})
   const heads = classed(p.tree, 'dbh-grouphead')
   check('single group', count(p.tree, 'dbh-group') === 1)
   check('open by default', heads[0].props['aria-expanded'] === true)
@@ -696,7 +744,7 @@ console.log('\n[3] a lone workspace opens by itself (no workspace snapshot avail
 
 console.log('\n[4] empty state')
 {
-  const p = page([], {})
+  const p = await page([], {})
   const html = toHtml(p.tree)
   check('empty hint rendered', count(p.tree, 'dbh-empty') === 1)
   check('add entry still offered', html.includes('＋ 添加连接'))
@@ -705,20 +753,20 @@ console.log('\n[4] empty state')
 
 console.log('\n[5] duplicate workspace titles are disambiguated by path')
 {
-  const p = page(DUP_TITLES, {})
+  const p = await page(DUP_TITLES, {})
   const html = toHtml(p.tree)
   check('both paths shown', html.includes('D:/work/one/app') && html.includes('D:/work/two/app'))
 }
 
 console.log('\n[6] malformed workspace snapshot cannot break the page')
 {
-  const p = page(GROUPED, { props: { useWorkspaces: () => null } })
+  const p = await page(GROUPED, { props: { useWorkspaces: () => null } })
   check('falls back to all-folded', classed(p.tree, 'dbh-grouphead').every((el) => el.props['aria-expanded'] === false))
 }
 
 console.log('\n[7] interaction: expand/collapse all + group toggle')
 {
-  const p = page(GROUPED, {})
+  const p = await page(GROUPED, {})
   check('starts folded without a snapshot', count(p.tree, 'dbh-envrow') === 0)
   click(p.tree, '全部展开')
   p.tree = p.renderAgain()
@@ -736,12 +784,11 @@ console.log('\n[7] interaction: expand/collapse all + group toggle')
   check('clicking it again folds it', count(p.tree, 'dbh-envrow') === 0)
 }
 
-console.log('\n[8] interaction: add panel (global + per group), settings strip, copy')
+console.log('\n[8] interaction: add panel (global + per group), settings rows, copy')
 {
-  const p = page(GROUPED, {})
+  const p = await page(GROUPED, {})
   check('add panel hidden by default', count(p.tree, 'dbh-addpanel') === 0)
-  check('settings strip hidden by default', count(p.tree, 'dbh-strip') === 0)
-  check('collapsed summary line shown', toHtml(p.tree).includes('自动更新 7 天'))
+  check('the dialog folds its settings behind the 设置 toggle', count(p.tree, 'dbh-settings') === 0)
   click(p.tree, '＋ 添加连接')
   p.tree = p.renderAgain()
   check('global add panel opens with 3 fields', count(p.tree, 'dbh-addpanel') === 1 && classed(p.tree, 'dbh-field').length === 3)
@@ -768,47 +815,45 @@ console.log('\n[8] interaction: add panel (global + per group), settings strip, 
   p.tree = p.renderAgain()
   check('copy chip works without navigator.clipboard', classed(p.tree, 'dbh-src').length === 3)
   check('copy feedback shown', toHtml(p.tree).includes('已复制'))
+  // The settings block carries the four controls: enable / sidebar / policy / interval.
   click(p.tree, '设置')
   p.tree = p.renderAgain()
-  check('settings strip opens', count(p.tree, 'dbh-strip') === 1)
-  // The sidebar switch is a USER preference again (dev.3 correction): hiding the
-  // shortcut is not the same as disabling the plugin, so the strip offers it
-  // next to the interval.
-  check('strip carries the sidebar switch again', toHtml(p.tree).includes('在侧边栏显示入口'))
-  check('strip keeps the interval field', classed(p.tree, 'dbh-num').length === 1)
-  check('strip explains that hiding the entry is not disabling the plugin',
-    count(p.tree, 'dbh-hint') >= 1 && toHtml(classed(p.tree, 'dbh-strip')[0]).includes('侧边栏'))
-  // Toggling it applies immediately (no Save round-trip) and the summary follows.
+  check('the 设置 toggle opens the settings rows', count(p.tree, 'dbh-settings') === 1)
+  const bar = toHtml(classed(p.tree, 'dbh-settings')[0])
+  check('rows carry the sidebar switch', bar.includes('侧边栏入口'))
+  check('rows keep the interval field', classed(p.tree, 'dbh-srow-input').length === 1)
+  // Toggling it applies immediately (no Save round-trip). Index 1 = sidebar
+  // (0 = enable, 1 = sidebar, 2 = policy).
   const beforeWrites = p.setCalls.length
-  checkBoxWithin(p.tree, 'dbh-strip', 0, false)
+  clickSwitchWithin(p.tree, 'dbh-settings', 1)
   p.tree = p.renderAgain()
   // saveConfig queues its writes, so let the microtasks drain before asserting.
   await new Promise((r) => setTimeout(r, 0))
   const writes = p.setCalls.slice(beforeWrites)
   check('sidebar switch writes showSidebarEntry immediately',
-    writes.some(([k, v]) => k === 'showSidebarEntry' && v === false), JSON.stringify(writes))
-  check('the settings summary reflects the switch', toHtml(p.tree).includes('侧边栏入口：隐藏'))
+    writes.some(([k, v]) => k === 'options' && v.showSidebarEntry === false), JSON.stringify(writes))
+  check('the row state word follows the switch', toHtml(p.tree).includes('隐藏'))
 
   // The policy announcement is a SECOND, independent switch: it changes what
   // the model sees (one system-prompt section), never what the tools can do.
-  check('strip carries the policy announcement switch', toHtml(p.tree).includes('向模型注入数据库访问策略'))
+  check('rows carry the policy announcement switch', toHtml(p.tree).includes('向模型注入访问策略'))
   const beforePolicy = p.setCalls.length
-  checkBoxWithin(p.tree, 'dbh-strip', 1, false)
+  clickSwitchWithin(p.tree, 'dbh-settings', 2)
   p.tree = p.renderAgain()
   await new Promise((r) => setTimeout(r, 0))
   const policyWrites = p.setCalls.slice(beforePolicy)
   check('policy switch writes announceAccessPolicy immediately',
-    policyWrites.some(([k, v]) => k === 'announceAccessPolicy' && v === false), JSON.stringify(policyWrites))
+    policyWrites.some(([k, v]) => k === 'options' && v.announceAccessPolicy === false), JSON.stringify(policyWrites))
   check('disabling the announcement does not touch the enabled state',
     !policyWrites.some(([k]) => k === 'enabled'), JSON.stringify(policyWrites))
 }
 
 console.log('\n[9] summary view (Plugins page one-liner)')
 {
-  const p = page(TILED, {})
-  const summaryReg = p.registrations['plugins.row.config']
-  const summaryProps = Object.assign({}, summaryReg.def.inject(), { view: 'summary' })
-  const tree = react.render(summaryReg.comp, summaryProps)
+  // The same card serves both views; mount the summary through the normal helper
+  // so the mount (and its poll interval) is disposed like every other page.
+  const p = await page(TILED, { slot: 'plugins.row.config', view: 'summary' })
+  const tree = p.tree
   const html = toHtml(tree)
   check('single line', count(tree, 'dbh-summary') === 1 && count(tree, 'dbh-tile') === 0)
   check('carries phase, tool count and env count', html.includes('运行中') && html.includes('4 个工具') && html.includes('3 个环境'))
@@ -819,7 +864,7 @@ console.log('\n[10] i18n coverage (no raw key or unfilled placeholder may reach 
   const problems = []
   for (const lang of ['zh', 'en']) {
     for (const rows of [GROUPED, TILED, []]) {
-      const p = page(rows, { lang, props: { useWorkspaces: wsSnap('D:/work/app') } })
+      const p = await page(rows, { lang, props: { useWorkspaces: wsSnap('D:/work/app') } })
       const html = toHtml(p.tree)
       const leftovers = html.match(/!![a-zA-Z][a-zA-Z.]*!!/g) || []
       const placeholders = html.match(/\{[a-zA-Z]\}/g) || []
@@ -830,34 +875,25 @@ console.log('\n[10] i18n coverage (no raw key or unfilled placeholder may reach 
   check('every key exists in both dictionaries and every placeholder is filled', problems.length === 0, problems.join(' | '))
 }
 
-console.log('\n[11] disable/enable + option writes still go through the namespace')
+console.log('\n[11] view state survives a remount inside the same page session')
 {
-  const p = page(TILED, {})
-  click(p.tree, '禁用')
-  check('setEnabled(false) dispatched', p.setCalls.some(([k, v]) => k === 'enabled' && v === false), JSON.stringify(p.setCalls))
-  if (count(p.tree, 'dbh-strip') === 0) {
-    click(p.tree, '设置')
-    p.tree = p.renderAgain()
-  }
-  check('settings strip open', count(p.tree, 'dbh-strip') === 1)
-  click(p.tree, '保存配置')
-  // saveConfig queues one path-op write per field, so let the microtasks drain.
-  await new Promise((r) => setTimeout(r, 0))
-  check('saveConfig writes updateIntervalDays', p.setCalls.some(([k, v]) => k === 'updateIntervalDays' && v === 7), JSON.stringify(p.setCalls))
-}
-
-console.log('\n[12] view state survives a remount inside the same page session')
-{
-  const first = page(SINGLE_MULTI, {})
+  const first = await page(SINGLE_MULTI, {})
   click(first.tree, '全部折叠')
   first.tree = first.renderAgain()
+  // `uiMemory` is shared across mounts inside one page session, so an earlier
+  // section may already have left the settings rows open.
+  if (count(first.tree, 'dbh-settings') === 0) {
+    click(first.tree, '设置')
+    first.tree = first.renderAgain()
+  }
   check('folded in the first mount', count(first.tree, 'dbh-envrow') === 0)
-  const second = page(SINGLE_MULTI, {})
+  check('settings opened in the first mount', count(first.tree, 'dbh-settings') === 1)
+  const second = await page(SINGLE_MULTI, {})
   check('a new mount keeps the folded choice', count(second.tree, 'dbh-envrow') === 0)
-  check('and keeps the settings strip open', count(second.tree, 'dbh-strip') === 1)
+  check('and keeps the settings rows open', count(second.tree, 'dbh-settings') === 1)
 }
 
-console.log('\n[13] connection origin is a tooltip, not an inline badge')
+console.log('\n[12] connection origin is a tooltip, not an inline badge')
 {
   // A dedicated fixture: another workspace path cannot inherit an expansion
   // choice remembered from an earlier mount (view state is shared per session).
@@ -865,34 +901,34 @@ console.log('\n[13] connection origin is a tooltip, not an inline badge')
     row('origin-app', 'D:/work/origin', 'default', 'mysql://127.0.0.1:3306/a'),
     row('origin-app', 'D:/work/origin', 'staging', 'mysql://127.0.0.1:3307/a', { persisted: false, source: '工作区 mise env' }),
   ]
-  const p = page(rows, {})
+  const p = await page(rows, {})
   const titles = classed(p.tree, 'dbh-envname').map((c) => String(c.props.title || ''))
   check('both environment chips rendered', titles.length === 2, JSON.stringify(titles))
   check('no pill / badge element anywhere', classed(p.tree, 'dbh-pill').length === 0)
   check('hand-entered row names its origin only in the tooltip', titles.some((x) => x.includes('来源：已保存·用户')))
   check('auto-discovered row says it is not saved', titles.some((x) => x.includes('来源：自动·mise env') && x.includes('未保存')))
-  const tiled = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/origin') } })
+  const tiled = await page(TILED, { props: { useWorkspaces: wsSnap('D:/work/origin') } })
   check('tiled mode uses the same tooltip', classed(tiled.tree, 'dbh-envname').some((c) => String(c.props.title || '').includes('来源：')))
   check('tiled mode has no badge either', classed(tiled.tree, 'dbh-pill').length === 0)
 }
 
-console.log('\n[14] a hot reload must not break on duplicate locale registration')
+console.log('\n[13] a hot reload must not break on duplicate locale registration')
 {
   // The live failure this guards: "locale namespace dsh-dbhub-live already has
   // locale zh" after a client bundle swap, which aborts the whole plugin half.
   const ns = 'dsh-dbhub-live'
-  const first = page(TILED, {})
+  const first = await page(TILED, {})
   check('apply owns the namespace dictionaries', (LOCALE_STORE.get(ns) || new Map()).size === 2)
   first.dispose()
   check('dispose releases them for the next instance', (LOCALE_STORE.get(ns) || new Map()).size === 0)
-  const second = page(TILED, {})
+  const second = await page(TILED, {})
   check('a clean reload re-registers', (LOCALE_STORE.get(ns) || new Map()).size === 2)
   check('reloaded page renders localized copy', toHtml(second.tree).includes('运行中'))
   // pathological: the previous instance never released its dictionaries
   let failure = null
   let stale = null
   try {
-    stale = page(TILED, { keepStale: true })
+    stale = await page(TILED, { keepStale: true })
   } catch (e) {
     failure = e
   }
@@ -900,9 +936,14 @@ console.log('\n[14] a hot reload must not break on duplicate locale registration
   const html = stale ? toHtml(stale.tree) : ''
   check('the page still renders its own copy (no raw keys)', html.includes('运行中') && !html.includes('ws.source'))
   check('including the newly added keys', stale !== null && classed(stale.tree, 'dbh-envname').some((c) => String(c.props.title || '').includes('来源')))
+  // `keepStale` deliberately skips the previous mount's disposal (that is the
+  // pathological case under test). Clean BOTH up now: a live mount owns a poll
+  // interval, and a leaked one would keep this gate's process alive forever.
+  if (stale) stale.dispose()
+  second.dispose()
 }
 
-console.log('\n[15] writing into an existing environment asks first')
+console.log('\n[14] writing into an existing environment asks first')
 {
   // The reported flaw: an add whose environment name already exists silently
   // replaced that connection (the Host's setWorkspaceEnv always overwrites).
@@ -912,7 +953,7 @@ console.log('\n[15] writing into an existing environment asks first')
     row('ovr-app', 'D:/work/ovr', 'default', 'mysql://127.0.0.1:3306/app'),
     row('ovr-app', 'D:/work/ovr', 'prod', 'mysql://127.0.0.1:3307/app'),
   ]
-  const p = page(OVERWRITE_ROWS, {})
+  const p = await page(OVERWRITE_ROWS, {})
   check('the lone workspace is open', count(p.tree, 'dbh-envrow') === 2)
   click(p.tree, '＋ 环境')
   p.tree = p.renderAgain()
@@ -926,12 +967,14 @@ console.log('\n[15] writing into an existing environment asks first')
   p.tree = p.renderAgain()
   check('collision shows the overwrite prompt', count(p.tree, 'dbh-warncard') === 1)
   check('the prompt names the existing connection', toHtml(p.tree).includes('127.0.0.1:3307'))
-  check('nothing was dispatched before the answer', p.opCalls.length === 0, JSON.stringify(p.opCalls))
+  // The page-open update check is a command too: only row commands count here.
+  const rowOps = () => p.opCalls.filter((o) => o.op !== 'updateCheck')
+  check('nothing was dispatched before the answer', rowOps().length === 0, JSON.stringify(p.opCalls))
   check('the pre-test card is not shown at the same time', count(p.tree, 'dbh-pretest') === 0)
   clickWithin(p.tree, 'dbh-warncard', '取消')
   p.tree = p.renderAgain()
   check('cancel dismisses the prompt', count(p.tree, 'dbh-warncard') === 0)
-  check('cancel writes nothing at all', p.opCalls.length === 0, JSON.stringify(p.opCalls))
+  check('cancel writes nothing at all', rowOps().length === 0, JSON.stringify(p.opCalls))
   check('the form survives so the name can be fixed', classed(p.tree, 'dbh-addpanel').length === 1)
   // same click, but confirmed
   clickWithin(p.tree, 'dbh-addpanel', '添加连接')
@@ -939,11 +982,11 @@ console.log('\n[15] writing into an existing environment asks first')
   clickWithin(p.tree, 'dbh-warncard', '覆盖并保存')
   await new Promise((r) => setTimeout(r, 0))
   check('confirm enters the normal pre-test flow exactly once',
-    p.opCalls.length === 1 && p.opCalls[0].op === 'test' && p.opCalls[0].env === 'prod' && p.opCalls[0].workspace === 'D:/work/ovr',
+    rowOps().length === 1 && rowOps()[0].op === 'test' && rowOps()[0].env === 'prod' && rowOps()[0].workspace === 'D:/work/ovr',
     JSON.stringify(p.opCalls))
 
   // a free environment name must NOT be questioned
-  const free = page(OVERWRITE_ROWS, {})
+  const free = await page(OVERWRITE_ROWS, {})
   click(free.tree, '＋ 添加连接')
   free.tree = free.renderAgain()
   typeWithin(free.tree, 'dbh-addpanel', 1, 'staging')
@@ -957,13 +1000,13 @@ console.log('\n[15] writing into an existing environment asks first')
   check('and goes straight to the pre-test', free.opCalls.some((o) => o.op === 'test' && o.env === 'staging'), JSON.stringify(free.opCalls))
 }
 
-console.log('\n[16] renaming onto an existing environment asks first too')
+console.log('\n[15] renaming onto an existing environment asks first too')
 {
   const RENAME_ROWS = [
     row('rn-app', 'D:/work/rn', 'default', 'mysql://127.0.0.1:3306/app'),
     row('rn-app', 'D:/work/rn', 'prod', 'mysql://127.0.0.1:3307/app'),
   ]
-  const p = page(RENAME_ROWS, {})
+  const p = await page(RENAME_ROWS, {})
   clickLabel(p.tree, '修改') // first row = rn-app/default
   p.tree = p.renderAgain()
   typeWithin(p.tree, 'dbh-editrow', 0, 'prod') // rename default → prod (exists, no DSN change)
@@ -971,15 +1014,16 @@ console.log('\n[16] renaming onto an existing environment asks first too')
   clickWithin(p.tree, 'dbh-editrow', '保存')
   p.tree = p.renderAgain()
   check('rename onto an existing environment asks first', count(p.tree, 'dbh-warncard') === 1)
-  check('no rename dispatched yet', p.opCalls.length === 0, JSON.stringify(p.opCalls))
+  const rowOps = () => p.opCalls.filter((o) => o.op !== 'updateCheck')
+  check('no rename dispatched yet', rowOps().length === 0, JSON.stringify(p.opCalls))
   clickWithin(p.tree, 'dbh-warncard', '覆盖并保存')
   await new Promise((r) => setTimeout(r, 0))
   check('confirmed rename is dispatched once with the right names',
-    p.opCalls.length === 1 && p.opCalls[0].op === 'rename' && p.opCalls[0].env === 'default' && p.opCalls[0].newEnv === 'prod',
+    rowOps().length === 1 && rowOps()[0].op === 'rename' && rowOps()[0].env === 'default' && rowOps()[0].newEnv === 'prod',
     JSON.stringify(p.opCalls))
 
   // editing the connection of the SAME environment is not an overwrite question
-  const q = page(RENAME_ROWS, {})
+  const q = await page(RENAME_ROWS, {})
   clickLabel(q.tree, '修改')
   q.tree = q.renderAgain()
   typeWithin(q.tree, 'dbh-editrow', 1, 'mysql://127.0.0.1:3400/app')
@@ -991,12 +1035,12 @@ console.log('\n[16] renaming onto an existing environment asks first too')
   check('and goes straight to the pre-test', q.opCalls.some((o) => o.op === 'test' && o.env === 'default'), JSON.stringify(q.opCalls))
 }
 
-console.log('\n[17] copying a connection label yields the exact string (no separator)')
+console.log('\n[16] copying a connection label yields the exact string (no separator)')
 {
   // The reported flaw: the label renders as two flex items, and the browser's
   // own copy serialization inserts a space between block-level boxes, so pasting
   // "…3306/app" into the DSN field produced "…3306/ app".
-  const p = page(TILED, {})
+  const p = await page(TILED, {})
   const label = classed(p.tree, 'dbh-conn')[0]
   check('the label owns its copy behaviour', !!label && typeof label.props.onCopy === 'function')
   let written = null
@@ -1011,7 +1055,7 @@ console.log('\n[17] copying a connection label yields the exact string (no separ
   check('no separator sneaks in', !!written && !/\s/.test(written.value), JSON.stringify(written))
   // grouped rows use the same label component (a fresh path: a lone workspace
   // group opens by itself, so no expansion state from earlier mounts leaks in)
-  const grouped = page([
+  const grouped = await page([
     row('cp-app', 'D:/work/cp', 'default', 'mysql://127.0.0.1:3306/app'),
     row('cp-app', 'D:/work/cp', 'prod', 'mysql://127.0.0.1:3307/app'),
   ], {})
@@ -1028,11 +1072,11 @@ console.log('\n[17] copying a connection label yields the exact string (no separ
   check('a copy event without clipboardData is tolerated', threw === null, threw && threw.message)
 }
 
-console.log('\n[18] HTTP bridge transport (the dsh 0.2.x path)')
+console.log('\n[17] HTTP bridge transport (the only host face)')
 {
-  // No settingsScope on this line: the face must fall back to the plugin's own
-  // authenticated /api/dsh-dbhub-live bridge and render the same page.
-  const p = page(TILED, { transport: 'http', props: { useWorkspaces: wsSnap('D:/work/app') } })
+  // The bridge is the only host face: the page is rendered from /state and every
+  // write POSTs to the same authenticated surface.
+  const p = await page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
   await new Promise((r) => setTimeout(r, 0))
   p.tree = p.renderAgain()
   const html = toHtml(p.tree)
@@ -1053,8 +1097,7 @@ console.log('\n[18] HTTP bridge transport (the dsh 0.2.x path)')
   // With the settings client present, the same page writes its options through
   // the plugin's own settings form (`ctx.configForms.get(entryId).set(...)`) —
   // the sanctioned dsh 0.1.7+/0.2.x path — and keeps the bridge route unused.
-  const q = page(TILED, {
-    transport: 'http',
+  const q = await page(TILED, {
     configForms: true,
     snapshot: { entryId: 'dbhub-live' },
     props: { useWorkspaces: wsSnap('D:/work/app') },
@@ -1068,7 +1111,7 @@ console.log('\n[18] HTTP bridge transport (the dsh 0.2.x path)')
     JSON.stringify(q.formSets))
   check('the bridge route stays unused for that write', !q.setCalls.some(([k]) => k === 'options'), JSON.stringify(q.setCalls))
   // An unresolved entry id must not lose the write: it falls back to the bridge.
-  const r = page(TILED, { transport: 'http', configForms: true, props: { useWorkspaces: wsSnap('D:/work/app') } })
+  const r = await page(TILED, { configForms: true, props: { useWorkspaces: wsSnap('D:/work/app') } })
   await new Promise((res) => setTimeout(res, 0))
   r.tree = r.renderAgain()
   await r.props.saveConfig({ updateIntervalDays: 6 })
@@ -1079,12 +1122,12 @@ console.log('\n[18] HTTP bridge transport (the dsh 0.2.x path)')
   r.dispose()
 }
 
-console.log('\n[19] disabling the plugin hides the sidebar entry (the settings page stays)')
+console.log('\n[18] disabling the plugin hides the sidebar entry (the settings page stays)')
 {
   // F0: entry visible ⇔ plugin enabled. The settings section and the Plugins row
   // are NOT part of that equation — otherwise disabling would lock the user out
   // of the very switch that re-enables it.
-  const p = page(TILED, { transport: 'http', props: { useWorkspaces: wsSnap('D:/work/app') } })
+  const p = await page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
   await new Promise((r) => setTimeout(r, 0))
   p.tree = p.renderAgain()
   check('sidebar entry registered while enabled', !!p.registrations['sidebar.panellist'])
@@ -1101,29 +1144,37 @@ console.log('\n[19] disabling the plugin hides the sidebar entry (the settings p
   // The disabled hint is what tells the user where the entry went. The strip's
   // open state is page-session state shared with earlier groups, so only open it
   // when it is actually closed.
+  // The settings rows are the one surface that must stay reachable while the
+  // plugin is disabled (the entry is hidden, the page is not).
   await p.props.setEnabled(false)
   p.tree = p.renderAgain()
-  if (count(p.tree, 'dbh-strip') === 0) {
+  if (count(p.tree, 'dbh-settings') === 0) {
     click(p.tree, '设置')
     p.tree = p.renderAgain()
   }
-  check('the settings strip explains the hidden entry', toHtml(p.tree).includes('侧边栏入口已隐藏'), toHtml(p.tree).slice(0, 400))
+  check('the settings rows stay reachable while disabled',
+    count(p.tree, 'dbh-settings') === 1 && toHtml(p.tree).includes('已禁用'), toHtml(p.tree).slice(0, 400))
   p.dispose()
 }
 
-console.log('\n[20] read-only switch → op payload → inline row marker')
+console.log('\n[19] read-only switch → op payload → inline row chip')
 {
   const rows = [
     row('ro-app', 'D:/work/ro', 'default', 'mysql://127.0.0.1:3306/app'),
     row('ro-app', 'D:/work/ro', 'prod', 'mysql://127.0.0.1:3307/app', { ro: true }),
   ]
-  const p = page(rows, {})
+  const p = await page(rows, {})
   check('the lone workspace is open', count(p.tree, 'dbh-envrow') === 2)
-  check('only the read-only row carries the marker', count(p.tree, 'dbh-ro') === 1, `got ${count(p.tree, 'dbh-ro')}`)
-  const chips = classed(p.tree, 'dbh-envname')
-  check('the marker sits inside the environment chip', toHtml(chips[1]).includes('只读'))
-  check('the chip tooltip explains read-only', String(chips[1].props.title || '').includes('只读模式'))
-  check('the writable row has no marker', !toHtml(chips[0]).includes('只读'))
+  // Every row carries the chip; exactly the read-only one is in the "on" state.
+  const chips = classed(p.tree, 'dbh-rochip')
+  check('every row carries a read-only chip', chips.length === 2, `got ${chips.length}`)
+  check('only the read-only row is locked',
+    String(chips[1].props.className).includes('dbh-rochip-on') && !String(chips[0].props.className).includes('dbh-rochip-on'))
+  check('the locked chip says 只读', toHtml(chips[1]).includes('只读') && toHtml(chips[1]).includes('🔒'))
+  check('the writable chip says 可写', toHtml(chips[0]).includes('可写') && toHtml(chips[0]).includes('🔓'))
+  const envs = classed(p.tree, 'dbh-envname')
+  check('the chip tooltip explains read-only', String(envs[1].props.title || '').includes('只读模式'))
+  check('the writable row is not marked read-only', !String(envs[0].props.title || '').includes('只读模式'))
   // the add form carries the switch, and it rides the pre-test payload
   click(p.tree, '＋ 添加连接')
   p.tree = p.renderAgain()
@@ -1144,7 +1195,7 @@ console.log('\n[20] read-only switch → op payload → inline row marker')
     JSON.stringify(p.opCalls))
   // Turning it back OFF on the read-only row goes through the options op (no DSN
   // needed). The prod row is the second one in the group.
-  const q = page(rows, {})
+  const q = await page(rows, {})
   clickLabelAt(q.tree, '修改', 1)
   q.tree = q.renderAgain()
   check('the editor pre-loads the row read-only state',
@@ -1158,9 +1209,9 @@ console.log('\n[20] read-only switch → op payload → inline row marker')
     JSON.stringify(q.opCalls))
 }
 
-console.log('\n[21] advanced SSH tunnel: expand → fill → payload, secrets never rendered')
+console.log('\n[20] advanced SSH tunnel: expand → fill → payload, secrets never rendered')
 {
-  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  const p = await page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
   click(p.tree, '＋ 添加连接')
   p.tree = p.renderAgain()
   check('advanced section is folded', count(p.tree, 'dbh-advbody') === 0)
@@ -1207,15 +1258,15 @@ console.log('\n[21] advanced SSH tunnel: expand → fill → payload, secrets ne
       ssh: { host: 'bastion.example.com', port: 22, user: 'ops', authKind: 'key', hasPassword: false, hasPassphrase: false, keyReady: true, proxyJump: '' },
     }),
   ]
-  const q = page(rowsWithSsh, {})
+  const q = await page(rowsWithSsh, {})
   const chip = classed(q.tree, 'dbh-envname')[0]
   check('a tunnelled row says so in its chip tooltip', String(chip.props.title || '').includes('SSH 隧道 bastion.example.com:22'))
   check('no secret is rendered for that row', !toHtml(q.tree).includes('id_ed25519'))
 }
 
-console.log('\n[23] the SSH-layer-only test is a separate button with its own payload')
+console.log('\n[21] the SSH-layer-only test is a separate button with its own payload')
 {
-  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  const p = await page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
   click(p.tree, '＋ 添加连接')
   p.tree = p.renderAgain()
   // `uiMemory.advOpen` is module-level (it survives remounts on purpose), so an
@@ -1267,7 +1318,7 @@ console.log('\n[23] the SSH-layer-only test is a separate button with its own pa
 
 console.log('\n[22] a running probe shows its elapsed time and cleans the ticker up')
 {
-  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  const p = await page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
   clickLabel(p.tree, '测试')
   p.tree = p.renderAgain()
   check('the testing state is shown', toHtml(p.tree).includes('测试中… 0s'), toHtml(p.tree).slice(0, 200))
@@ -1281,10 +1332,10 @@ console.log('\n[22] a running probe shows its elapsed time and cleans the ticker
   p.dispose()
 }
 
-console.log('\n[24] modern wide page: quiet header, DSH-style settings rows, inline read-only chip')
+console.log('\n[23] modern wide page: quiet header, DSH-style settings rows, inline read-only chip')
 {
   viewport(1440)
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
@@ -1328,7 +1379,9 @@ console.log('\n[24] modern wide page: quiet header, DSH-style settings rows, inl
   // lands on the next microtask (the immediate-apply contract, not a sync call).
   await Promise.resolve()
   await Promise.resolve()
-  check('sidebar switch saves 显示/隐藏 preference', p.setCalls.slice(beforeSidebar).some(([k, v]) => k === 'showSidebarEntry' && v === false), JSON.stringify(p.setCalls.slice(beforeSidebar)))
+  check('sidebar switch saves 显示/隐藏 preference',
+    p.setCalls.slice(beforeSidebar).some(([k, v]) => k === 'options' && v.showSidebarEntry === false),
+    JSON.stringify(p.setCalls.slice(beforeSidebar)))
   // The row chip is an options-only op: never a DSN.
   const beforeOps = p.opCalls.length
   clickClass(p.tree, 'dbh-rochip')
@@ -1338,14 +1391,14 @@ console.log('\n[24] modern wide page: quiet header, DSH-style settings rows, inl
   p.dispose()
 }
 
-console.log('\n[25] modern update link: quiet by default, neutral detail panel on click')
+console.log('\n[24] modern update link: quiet by default, neutral detail panel on click')
 {
   const update = JSON.stringify({
     latest: '5.2.0', latestSpec: 'dsh-dbhub-live@5.2.0', hasUpdate: true,
     checkedAt: Date.now(), source: 'npm', error: '',
   })
   viewport(1440)
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
     snapshot: Object.assign({}, MODERN_DEFAULTS, { update }),
     props: { useWorkspaces: wsSnap('D:/work/app') },
@@ -1385,14 +1438,14 @@ console.log('\n[25] modern update link: quiet by default, neutral detail panel o
   p.dispose()
 }
 
-console.log('\n[26] modern update panel on desktop: uninstall/reinstall guidance, no web command')
+console.log('\n[25] modern update panel on desktop: uninstall/reinstall guidance, no web command')
 {
   viewport(1440)
   const update = JSON.stringify({
     latest: '5.2.0', latestSpec: 'dsh-dbhub-live@5.2.0', hasUpdate: true,
     checkedAt: Date.now(), source: 'npm', error: '',
   })
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
     snapshot: Object.assign({}, MODERN_DEFAULTS, { runtime: 'desktop', update }),
     props: { useWorkspaces: wsSnap('D:/work/app') },
@@ -1408,10 +1461,10 @@ console.log('\n[26] modern update panel on desktop: uninstall/reinstall guidance
   p.dispose()
 }
 
-console.log('\n[27] modern settings dialog: compact header, 设置 disclosure, read-only chips visible')
+console.log('\n[26] modern settings dialog: compact header, 设置 disclosure, read-only chips visible')
 {
   viewport(1440)
-  const p = page(TILED, {
+  const p = await page(TILED, {
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
   })
@@ -1439,10 +1492,10 @@ console.log('\n[27] modern settings dialog: compact header, 设置 disclosure, r
   p.dispose()
 }
 
-console.log('\n[28] modern phone browser: stacked layout, chips and settings still reachable')
+console.log('\n[27] modern phone browser: stacked layout, chips and settings still reachable')
 {
   viewport(390)
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
@@ -1462,33 +1515,51 @@ console.log('\n[28] modern phone browser: stacked layout, chips and settings sti
   p.dispose()
 }
 
-console.log('\n[29] dsh version gate: modern host fields on a 0.1.x runtime render the OLD page')
+console.log('\n[28] unsupported dsh version: one visible warning, the page keeps working')
 {
   viewport(1440)
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
-    snapshot: Object.assign({}, MODERN_DEFAULTS, { dshModern: false }),
+    snapshot: Object.assign({}, MODERN_DEFAULTS, { dshTooOld: true, dshVersion: '0.1.6-alpha.2' }),
     props: { useWorkspaces: wsSnap('D:/work/app') },
   })
   const html = toHtml(p.tree)
-  check('no modern class on a legacy runtime', classed(p.tree, 'dbh-modern').length === 0)
-  check('no title bar on a legacy runtime', count(p.tree, 'dbh-titlebar') === 0)
-  check('no settings rows on a legacy runtime', count(p.tree, 'dbh-settings') === 0)
-  check('no inline read-only chip on a legacy runtime', classed(p.tree, 'dbh-rochip').length === 0)
-  check('no harness Switch on a legacy runtime', switches(p.tree).length === 0)
-  check('no update check dispatched on a legacy runtime', p.opCalls.filter((o) => o.op === 'updateCheck').length === 0, JSON.stringify(p.opCalls))
-  check('legacy header still carries the gear + enable controls', html.includes('⚙') && html.includes('禁用'))
-  check('legacy status text is unchanged (tool count stays)', html.includes('4 个工具'))
+  // The warning is a normal block in the flow (not a modal, not an empty page):
+  // it must name both versions and leave every control in place.
+  check('the warning is rendered exactly once', count(p.tree, 'dbh-tooold') === 1, html.slice(0, 300))
+  check('the warning is an accessible alert',
+    String((classed(p.tree, 'dbh-tooold')[0] || { props: {} }).props.role || '') === 'alert')
+  const warn = toHtml(classed(p.tree, 'dbh-tooold')[0] || { children: [], props: {} })
+  check('the warning names the minimum and the running version',
+    warn.includes('0.2.1') && warn.includes('0.1.6-alpha.2'), warn)
+  // Nothing is version-gated any more: a full page, rows, chips and switches.
+  check('the page is not blank (rows still render)', count(p.tree, 'dbh-tile') === 3, `got ${count(p.tree, 'dbh-tile')}`)
+  check('the title bar and settings still render',
+    count(p.tree, 'dbh-titlebar') === 1 && count(p.tree, 'dbh-settingsbar') === 1)
+  check('read-only chips still render', classed(p.tree, 'dbh-rochip').length === 3)
+  check('the harness Switch still renders', switches(p.tree).length === 3)
   p.dispose()
+  viewport(1440)
+  const en = await page(TILED, {
+    lang: 'en',
+    slot: 'main',
+    snapshot: Object.assign({}, MODERN_DEFAULTS, { dshTooOld: true, dshVersion: '0.1.6-alpha.2' }),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  const enWarn = toHtml(classed(en.tree, 'dbh-tooold')[0] || { children: [], props: {} })
+  check('the warning is localized into English too',
+    enWarn.includes('DSH 0.2.1') && enWarn.includes('0.1.6-alpha.2') && enWarn.includes('Upgrade DSH'), enWarn)
+  en.dispose()
+  viewport(1440)
 }
 
-console.log('\n[30] narrow desktop window: non-modal pages keep the horizontal settings bar')
+console.log('\n[29] narrow desktop window: non-modal pages keep the horizontal settings bar')
 {
   // 710px viewport: not a phone (>= 700) and not "wide" (< 720), which used to
   // fall back to four stacked rows — the desktop complaint. The bar must stay
   // horizontal, with its compact variant applied.
   viewport(710)
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
@@ -1502,33 +1573,25 @@ console.log('\n[30] narrow desktop window: non-modal pages keep the horizontal s
   p.dispose()
 }
 
-console.log('\n[31] a refused card command is visible on both faces (opNotice)')
+console.log('\n[30] a refused card command is visible on the card (opNotice)')
 {
   // The browser half never reads /op response bodies, so the Host's transient
   // `opNotice` line is the ONLY feedback for "your click was refused". Both faces
   // must render it; a silent refusal looks exactly like a saved one.
   const notice = JSON.stringify({ ok: false, message: '找不到工作区 "D:/work/gone"' })
   viewport(1440)
-  const modernPage = page(TILED, {
+  const modernPage = await page(TILED, {
     slot: 'main',
     snapshot: Object.assign({}, MODERN_DEFAULTS, { opNotice: notice }),
     props: { useWorkspaces: wsSnap('D:/work/app') },
   })
   const modernHtml = toHtml(modernPage.tree)
-  check('modern face renders one refusal line', classed(modernPage.tree, 'dbh-notice').length === 1, modernHtml.slice(0, 200))
-  check('modern refusal line carries the Host message', modernHtml.includes('D:/work/gone'))
+  check('the card renders one refusal line', classed(modernPage.tree, 'dbh-notice').length === 1, modernHtml.slice(0, 200))
+  check('the refusal line carries the Host message', modernHtml.includes('D:/work/gone'))
   modernPage.dispose()
 
-  const legacy = page(TILED, {
-    snapshot: Object.assign({}, MODERN_DEFAULTS, { dshModern: false, opNotice: notice }),
-    props: { useWorkspaces: wsSnap('D:/work/app') },
-  })
-  const legacyHtml = toHtml(legacy.tree)
-  check('legacy face renders the refusal line too', classed(legacy.tree, 'dbh-notice').length === 1, legacyHtml.slice(0, 200))
-  legacy.dispose()
-
   // No notice, no line: a successful command must leave the card clean.
-  const clean = page(TILED, {
+  const clean = await page(TILED, {
     slot: 'main',
     snapshot: Object.assign({}, MODERN_DEFAULTS, { opNotice: '' }),
     props: { useWorkspaces: wsSnap('D:/work/app') },
@@ -1538,16 +1601,15 @@ console.log('\n[31] a refused card command is visible on both faces (opNotice)')
   viewport(1440)
 }
 
-console.log('\n[32] a refused write is VISIBLE and never claims "已保存" (P1-1)')
+console.log('\n[31] a refused write is VISIBLE and never claims "已保存" (P1-1)')
 {
   viewport(1440)
   // The old face resolved every POST (`noop` as the rejection handler), so a 401,
   // a Host refusal and a dead network all printed 已保存. Each failure mode is
   // scripted here; the gate fails if the card lies about any of them.
   let refuseWrites = true
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
-    transport: 'http',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
     fetchImpl: ({ body }) => (body && body.updateIntervalDays !== undefined
@@ -1586,12 +1648,11 @@ console.log('\n[32] a refused write is VISIBLE and never claims "已保存" (P1-
   // A Host REFUSAL is different: the Host already scrubbed its own message, and
   // that text is the only thing that tells the user what to fix.
   viewport(1440)
-  const q = page(TILED, {
+  const q = await page(TILED, {
     slot: 'main',
-    transport: 'http',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
-    fetchImpl: ({ body }) => (body && body.op !== undefined
+    fetchImpl: ({ body }) => (body && body.op && body.op.op === 'options'
       ? { status: 200, payload: { ok: false, error: '宿主拒绝：找不到工作区' } }
       : undefined),
   })
@@ -1608,14 +1669,13 @@ console.log('\n[32] a refused write is VISIBLE and never claims "已保存" (P1-
   viewport(1440)
 }
 
-console.log('\n[33] a probe the bridge never delivered is "not sent", not "timed out" (P2-1)')
+console.log('\n[32] a probe the bridge never delivered is "not sent", not "timed out" (P2-1)')
 {
   viewport(1440)
   // Fire-and-forget dispatch: a 401 on /op used to be invisible, so the page
   // spun for 30/60s and then blamed the DATABASE ("测试超时未返回").
   const dsnTyped = 'mysql://user:CHANGE_ME@127.0.0.1:3306/app'
-  const p = page(TILED, {
-    transport: 'http',
+  const p = await page(TILED, {
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
     fetchImpl: ({ body }) => (body && body.op !== undefined && body.op.op === 'test' ? { status: 401 } : undefined),
@@ -1664,18 +1724,21 @@ console.log('\n[33] a probe the bridge never delivered is "not sent", not "timed
   viewport(1440)
 }
 
-console.log('\n[34] a failed /state is visible + retryable, unknown ≠ "show the entry" (P1-2, P2-9)')
+console.log('\n[33] a failed /state is visible + retryable, unknown ≠ "show the entry" (P1-2, P2-9)')
 {
   viewport(1440)
   let failRead = true
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
-    transport: 'http',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
-    fetchImpl: ({ body }) => (body ? undefined : (failRead ? 'reject' : undefined)),
+    // Every bridge call fails: the page-open update check cannot slip a ready
+    // view past the failed read (the real bridge is down in this scenario).
+    fetchImpl: () => (failRead ? 'reject' : undefined),
   })
-  await flush()
+  // One failed read of our own, after the page-open command settled: the card
+  // must report it instead of pretending to be an empty page.
+  await p.props.refresh()
   p.tree = p.renderAgain()
   check('a failed read renders an error line', count(p.tree, 'dbh-loadfail') === 1, toHtml(p.tree).slice(0, 300))
   check('the error line offers a retry control', count(p.tree, 'dbh-retry') === 1)
@@ -1696,16 +1759,14 @@ console.log('\n[34] a failed /state is visible + retryable, unknown ≠ "show th
 
   // A successful read whose view does not answer the question is still UNKNOWN:
   // "enabled !== false" used to show the entry before the first good answer.
-  const unknown = page(TILED, {
-    transport: 'http',
+  const unknown = await page(TILED, {
     snapshot: Object.assign({}, MODERN_DEFAULTS, { enabled: undefined, showSidebarEntry: undefined }),
     props: { useWorkspaces: wsSnap('D:/work/app') },
   })
   await flush()
   check('a view without `enabled` registers no sidebar entry', slotEntry(unknown, 'sidebar.panellist') === null)
   unknown.dispose()
-  const known = page(TILED, {
-    transport: 'http',
+  const known = await page(TILED, {
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
   })
@@ -1716,9 +1777,8 @@ console.log('\n[34] a failed /state is visible + retryable, unknown ≠ "show th
   // Response ORDER: a poll that answers after a newer write must not roll the
   // card back to the pre-write view. The queued read is resolved on demand.
   const queued = []
-  const q = page(TILED, {
+  const q = await page(TILED, {
     slot: 'main',
-    transport: 'http',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
     fetchImpl: ({ body }) => (body ? undefined : new Promise((resolve) => {
@@ -1740,13 +1800,15 @@ console.log('\n[34] a failed /state is visible + retryable, unknown ≠ "show th
   viewport(1440)
 }
 
-console.log('\n[35] one mounted card switches view without changing its hook order (P1-3)')
+console.log('\n[34] one mounted card switches view without changing its hook order (P1-3)')
 {
   viewport(1440)
-  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  const p = await page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
   // The Plugins page mounts this card twice (summary line + full page) and can
   // flip `view` on the SAME instance. The early return for `summary` made the
   // second render throw "Rendered more hooks than during the previous render".
+  // The card is another slot of the same mount (a different root component), so
+  // rendering it unmounts the settings page first — its cleanups run either way.
   const reg = p.registrations['plugins.row.config']
   const propsOf = (view) => Object.assign({}, reg.def.inject(), { view })
   let error = null
@@ -1766,10 +1828,10 @@ console.log('\n[35] one mounted card switches view without changing its hook ord
   viewport(1440)
 }
 
-console.log('\n[36] an invalid update interval sends nothing (P2-5)')
+console.log('\n[35] an invalid update interval sends nothing (P2-5)')
 {
   viewport(1440)
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
@@ -1808,17 +1870,17 @@ console.log('\n[36] an invalid update interval sends nothing (P2-5)')
   await flush()
   p.tree = p.renderAgain()
   check('a legal interval is written',
-    p.setCalls.slice(good).some(([k, v]) => k === 'updateIntervalDays' && v === 30),
+    p.setCalls.slice(good).some(([k, v]) => k === 'options' && v.updateIntervalDays === 30),
     JSON.stringify(p.setCalls.slice(good)))
   check('and it reports saved', toHtml(p.tree).includes('已保存'))
   p.dispose()
   viewport(1440)
 }
 
-console.log('\n[37] deleting a connection asks first and cancelling writes nothing (P2-4)')
+console.log('\n[36] deleting a connection asks first and cancelling writes nothing (P2-4)')
 {
   viewport(1440)
-  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  const p = await page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
   const before = p.opCalls.length
   clickLabel(p.tree, '删除')
   p.tree = p.renderAgain()
@@ -1845,7 +1907,7 @@ console.log('\n[37] deleting a connection asks first and cancelling writes nothi
 
 if (liveMount) liveMount.dispose()
 
-console.log('\n[38] the offscreen harness fails fast instead of hanging on an effect loop (R6)')
+console.log('\n[37] the offscreen harness fails fast instead of hanging on an effect loop (R6)')
 {
   viewport(1440)
   // `while (dirty)` had no cap: one hook that sets state on EVERY render turned a
@@ -1863,14 +1925,14 @@ console.log('\n[38] the offscreen harness fails fast instead of hanging on an ef
   check('an effect loop that never settles throws instead of hanging',
     !!caught && String((caught && caught.message) || '').includes('effect loop did not settle'),
     caught ? caught.message : 'no error — the loop never ended')
-  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  const p = await page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
   check('the harness still renders a real page after the guard fired', count(p.tree, 'dbh-tile') === 3,
     `tiles ${count(p.tree, 'dbh-tile')}`)
   p.dispose()
   viewport(1440)
 }
 
-console.log('\n[39] a write answer outranks a read that answered first (R1)')
+console.log('\n[38] a write answer outranks a read that answered first (R1)')
 {
   viewport(1440)
   // The ordering that used to LOSE THE WRITE: write dispatched → read dispatched
@@ -1884,20 +1946,29 @@ console.log('\n[39] a write answer outranks a read that answered first (R1)')
   // part of the ordering under test. It is answered with a harmless refusal so it
   // never enters `hold` and never publishes a view of its own.
   const holdAnswer = (body) => (body && body.op && body.op.op === 'updateCheck' ? { status: 500 } : null)
+  let holdMode = false
   const hold = []
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
-    transport: 'http',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
-    fetchImpl: ({ body }) => holdAnswer(body) || new Promise((resolve) => { hold.push({ write: !!body, resolve }) }),
+    fetchImpl: ({ body }) => {
+      if (holdAnswer(body)) return holdAnswer(body)
+      if (!holdMode) return undefined
+      return new Promise((resolve) => { hold.push({ write: !!body, resolve }) })
+    },
   })
   // The applied value is read off the FACE (the card's draft would mask it: an
   // unsaved edit outranks the Host until its write settles).
   const faceInterval = () => (p.props.getSnapshot().value || {}).updateIntervalDays
-  check('the initial read is in flight', hold.length === 1 && hold[0].write === false,
+  // From here every bridge answer is held, so the ordering is scripted exactly.
+  holdMode = true
+  hold.length = 0
+  const firstRead = p.props.refresh()
+  check('the read under test is in flight', hold.length === 1 && hold[0].write === false,
     JSON.stringify(hold.map((h) => h.write)))
   hold[0].resolve(answerOf(snapshotOf(TILED, Object.assign({}, MODERN_DEFAULTS, { updateIntervalDays: 7 }))))
+  await firstRead
   await flush()
   p.tree = p.renderAgain()
   check('the first read paints the host value', faceInterval() === 7, String(faceInterval()))
@@ -1922,6 +1993,7 @@ console.log('\n[39] a write answer outranks a read that answered first (R1)')
   hold[1].resolve(answerOf(snapshotOf(TILED, Object.assign({}, MODERN_DEFAULTS, { updateIntervalDays: 5 }))))
   await flush()
   await flush()
+  holdMode = false
   p.tree = p.renderAgain()
   const html = toHtml(p.tree)
   check('the write answer is applied although a later read answered first', faceInterval() === 5, String(faceInterval()))
@@ -1935,9 +2007,8 @@ console.log('\n[39] a write answer outranks a read that answered first (R1)')
   // carries the pre-write view) must not paint over the click. Delete that claim
   // (`appliedSeq = seq` in claimWrite) and the pre-write rows reappear here.
   const hold2 = []
-  const q = page(TILED, {
+  const q = await page(TILED, {
     slot: 'main',
-    transport: 'http',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
     fetchImpl: ({ body }) => holdAnswer(body) || new Promise((resolve) => { hold2.push({ write: !!body, resolve }) }),
@@ -1964,21 +2035,20 @@ console.log('\n[39] a write answer outranks a read that answered first (R1)')
   viewport(1440)
 }
 
-console.log('\n[40] only an explicit TRUE from the settings form is "accepted" (R2)')
+console.log('\n[39] only an explicit TRUE from the settings form is "accepted" (R2)')
 {
   viewport(1440)
   // `form.set(...).then((ok) => ok !== false)` treated `undefined` as accepted, so
   // the save went NOWHERE — zero POST, zero verification — and the page still
   // printed 已保存 ✓. Anything but `true` must fall back to POST /options.
-  const mk = (formSet) => page(TILED, {
+  const mk = async (formSet) => await page(TILED, {
     slot: 'main',
-    transport: 'http',
     configForms: true,
     formSet,
     snapshot: Object.assign({}, MODERN_DEFAULTS, { entryId: 'dbhub-live' }),
     props: { useWorkspaces: wsSnap('D:/work/app') },
   })
-  const p = mk('undefined')
+  const p = await mk('undefined')
   await flush()
   p.tree = p.renderAgain()
   await p.props.saveConfig({ updateIntervalDays: 9 })
@@ -1991,7 +2061,7 @@ console.log('\n[40] only an explicit TRUE from the settings form is "accepted" (
   p.dispose()
 
   for (const mode of ['false', 'reject']) {
-    const r = mk(mode)
+    const r = await mk(mode)
     await flush()
     r.tree = r.renderAgain()
     await r.props.saveConfig({ updateIntervalDays: 8 })
@@ -2002,7 +2072,7 @@ console.log('\n[40] only an explicit TRUE from the settings form is "accepted" (
   }
 
   // The good path stays on the form: a `true` answer must not add a stray POST.
-  const ok = mk('ok')
+  const ok = await mk('ok')
   await flush()
   ok.tree = ok.renderAgain()
   await ok.props.saveConfig({ updateIntervalDays: 4 })
@@ -2013,7 +2083,7 @@ console.log('\n[40] only an explicit TRUE from the settings form is "accepted" (
   viewport(1440)
 }
 
-console.log('\n[41] a mangled host value keeps the view and reports an error (R3)')
+console.log('\n[40] a mangled host value keeps the view and reports an error (R3)')
 {
   viewport(1440)
   // `publish({status:'ready', value: body.value || {}})` turned a body without a
@@ -2022,9 +2092,8 @@ console.log('\n[41] a mangled host value keeps the view and reports an error (R3
   // FAILED read/write, never an empty page.
   let badRead = false
   let badWrite = false
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
-    transport: 'http',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
     fetchImpl: ({ body }) => {
@@ -2059,15 +2128,14 @@ console.log('\n[41] a mangled host value keeps the view and reports an error (R3
   viewport(1440)
 }
 
-console.log('\n[42] a non-JSON answer is localized, never a parser trace (R4)')
+console.log('\n[41] a non-JSON answer is localized, never a parser trace (R4)')
 {
   viewport(1440)
   // A reverse proxy answers with its own HTML page; `res.json()` throws
   // "Unexpected token '<', "<!DOCTYPE html>…" — English, with the body quoted.
   let mode = 'ok'
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
-    transport: 'http',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
     fetchImpl: () => (mode === 'html' ? 'html' : undefined),
@@ -2096,12 +2164,12 @@ console.log('\n[42] a non-JSON answer is localized, never a parser trace (R4)')
   viewport(1440)
 }
 
-console.log('\n[43] confirming a delete is single-flight (R5)')
+console.log('\n[42] confirming a delete is single-flight (R5)')
 {
   viewport(1440)
   // Two clicks in the same tick both saw the closure's `pendingRemove` (the state
   // reset only lands on the next render), so one user action sent TWO removes.
-  const p = page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
+  const p = await page(TILED, { props: { useWorkspaces: wsSnap('D:/work/app') } })
   const before = p.opCalls.length
   clickLabel(p.tree, '删除')
   p.tree = p.renderAgain()
@@ -2124,15 +2192,14 @@ console.log('\n[43] confirming a delete is single-flight (R5)')
   viewport(1440)
 }
 
-console.log('\n[44] a failed write rolls the draft back to the host value (R7-2)')
+console.log('\n[43] a failed write rolls the draft back to the host value (R7-2)')
 {
   viewport(1440)
   // Deleting `setDraft(draftFromValue(...))` + `draftEdited.current = false` from
   // `onWriteFail` (keeping only `setSaved(false)`) used to leave every gate green,
   // while the field kept showing a value the store never took.
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
-    transport: 'http',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
     fetchImpl: ({ body }) => (body && body.updateIntervalDays !== undefined ? { status: 401 } : undefined),
@@ -2154,16 +2221,15 @@ console.log('\n[44] a failed write rolls the draft back to the host value (R7-2)
   viewport(1440)
 }
 
-console.log('\n[45] a later failure suppresses the older 已保存 tick (R7-3)')
+console.log('\n[44] a later failure suppresses the older 已保存 tick (R7-3)')
 {
   viewport(1440)
   // `savedHint()` is `saved && !writeError`. Drop `!writeError` and every gate
   // stayed green: the enable/disable write only sets `writeError` (it has no draft
   // to roll back), so a success from a moment ago left 已保存 ✓ standing next to a
   // brand-new failure line.
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
-    transport: 'http',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
     fetchImpl: ({ body }) => {
@@ -2188,7 +2254,7 @@ console.log('\n[45] a later failure suppresses the older 已保存 tick (R7-3)')
   viewport(1440)
 }
 
-console.log('\n[46] the layout follows the MEASURED column, not just the viewport')
+console.log('\n[45] the layout follows the MEASURED column, not just the viewport')
 {
   // The measurement effect used to read `ref.current` inside an empty-dependency
   // effect: once the column was not attached at that instant it never measured
@@ -2212,9 +2278,8 @@ console.log('\n[46] the layout follows the MEASURED column, not just the viewpor
     }
   }
   try {
-    const p = page(TILED, {
+    const p = await page(TILED, {
       slot: 'main',
-      transport: 'http',
       snapshot: Object.assign({}, MODERN_DEFAULTS),
       props: { useWorkspaces: wsSnap('D:/work/app') },
     })
@@ -2238,7 +2303,7 @@ console.log('\n[46] the layout follows the MEASURED column, not just the viewpor
   }
 }
 
-console.log('\n[47] a FAILED update check re-arms the button and shows the error (R8)')
+console.log('\n[46] a FAILED update check re-arms the button and shows the error (R8)')
 {
   viewport(1440)
   // The Host answers a failed check by writing `update.error` and NOT advancing
@@ -2254,9 +2319,8 @@ console.log('\n[47] a FAILED update check re-arms the button and shows the error
     latest: '', latestSpec: '', hasUpdate: false, checkedAt: CHECKED_AT, source: 'npm', error: 'npm: 连接超时',
   })
   let updatePosts = 0
-  const p = page(TILED, {
+  const p = await page(TILED, {
     slot: 'main',
-    transport: 'http',
     snapshot: Object.assign({}, MODERN_DEFAULTS),
     props: { useWorkspaces: wsSnap('D:/work/app') },
     fetchImpl: ({ body }) => {
@@ -2313,6 +2377,14 @@ console.log('\n[47] a FAILED update check re-arms the button and shows the error
 
 if (liveMount) liveMount.dispose()
 
+// No page may leave its 1.5s poll interval behind: a leaked one used to keep the
+// process alive, which showed up as "the gate hangs" instead of a red check.
+check('no poll interval outlives its page', liveIntervals.size === 0, `${liveIntervals.size} live interval(s)`)
+
 console.log(`\n${failures === 0 ? 'ALL CHECKS PASSED' : failures + ' CHECK(S) FAILED'}`)
-process.exitCode = failures === 0 ? 0 : 1
+const exitCode = failures === 0 ? 0 : 1
+// The client's write watchdogs (90s) may legitimately still be pending for writes
+// the tests never answered; they are not a leak signal. Cut them, but only after
+// stdout drained — `process.exit` on its own can truncate a piped stream.
+process.stdout.write('', () => process.exit(exitCode))
 

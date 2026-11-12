@@ -55,10 +55,10 @@
 
 ## 状态通道与inject根因
 
-> **为什么不能改回 inject（5.0 移植的根因）**：dsh 0.1.7 用 Config 表单取代了 settings 命名空间，0.2.x 又删掉浏览器侧 `settingsScope`。旧客户端 `inject: ['slots', 'settingsScope']` 在 0.2.x 上永远等不到服务 → 整个浏览器半区 pending、**无任何报错**，表现就是「配置页 / 侧边栏 / 插件页卡片静默消失」。所以这一层必须做成运行时探测 + 双实现（`legacyFace` / `httpFace`），而不是声明式依赖。
+> **为什么不能改回 inject（5.0 移植的根因）**：dsh 0.1.7 用 Config 表单取代了 settings 命名空间，0.2.x 又删掉浏览器侧 `settingsScope`。旧客户端 `inject: ['slots', 'settingsScope']` 在 0.2.x 上永远等不到服务 → 整个浏览器半区 pending、**无任何报错**，表现就是「配置页 / 侧边栏 / 插件页卡片静默消失」。5.2 起这条状态通道只剩插件自己的 `connection.fetch` 桥（`/api/dsh-dbhub-live/*`）；0.1.x 的 settings 命名空间适配器随 0.1.x 支持一起删除（最低 DSH 0.2.1）。
 
 - 第二个静默失败面：**注入回调是独立作用域**。在回调里引用 `apply()` 的局部变量会 ReferenceError，而错误发生在发布链路上——页面只剩静态值、无任何可见报错。需要的服务必须 `ctx.get(...)` 就地获取。
-- 两条通道都发布同一个 view 是刻意的：客户端只写一份渲染逻辑，通道差异收敛在 `legacyFace` / `httpFace` 两个适配器里。
+- 唯一通道 = 一份渲染逻辑：客户端不再按宿主版本分叉，宿主版本只决定是否显示一条"需要升级 DSH"的警告。
 
 ## 诊断为什么取尾部
 
@@ -79,7 +79,7 @@
 
 - 行内只放图标、来源不做徽章、库名不截断，三条来自同一约束：每个连接只占一行，宽度是稀缺资源。文字按钮吃掉半行；"来源"徽章几乎每行相同却最抢眼；库名被截断是最高频的抱怨。
 - 三面布局的两个阈值（700 / 720）：实测出现过 710px 视口既不算手机（>= 700）也不够宽（< 720）的**空档**，布局判定落空。两阈值之间的窄桌面列必须走紧凑设置条，不能退回竖排。
-- 现代面与 legacy 面必须能同时存在：`render-check` 的旧断言写死了 0.1.x 的 DOM，新界面只能挂在 `dshModern` 下；否则一次"统一界面"就会让旧线渲染异常。
+- 0.1.x 已不再支持，所以只有一套界面：不再需要"现代面/legacy 面同时存在"的分叉，`render-check` 也只钉这一套 DOM（旧 DOM 断言随旧通道一起删除）。
 
 ## 覆盖门为什么先问
 
@@ -91,7 +91,7 @@
 
 ## 版本门与更新检查
 
-- `dshModern` 门（>= 0.2.1，含预发布）不是"只有新版本测过"，而是"新界面依赖的 slot/DOM 能力在这个版本才稳定"。运行版本解析不到时回退为 desktop=true / web=false——桌面端总是新版、旧 web 线保持 legacy，比猜一个值安全。
+- 最低支持版本是 DSH 0.2.1（`DSH_MIN_SUPPORTED`，含预发布：`0.2.1-rc.2` 算 0.2.1；0.1.x 与 0.2.0 一律不支持）。这不是功能门：桥接、工具、配置页都不看版本，`dshTooOld` 只驱动卡片上的一条中英双语警告 + 一条 `warnOnce` 日志（不含路径），让"版本太旧"变成用户能读懂的句子而不是空白卡片。版本解析不到时不判过旧——不能因为探测不到就冤枉一个未知运行时。
 - 更新检查**绝不抛错**：它只是页头一行提示，失败必须只体现为 `error` 字段，不得影响插件任何功能。
 
 ## 模块地图
@@ -99,15 +99,15 @@
 ```
 lib/
   index.mjs      入口：name/inject/apply、Config(volatile)、发布核心 createHostCore(walk/row-mirror/runOp/view)、
-                 双通道接线(0.1.x settings 命名空间 / connection.fetch HTTP 桥)、settings 表单策略与选项写回、configOp 命令处理
-  meta.mjs       插件版本(读 package.json)、DSH 运行时版本探测、semver 比较、dshModern 门
+                 connection.fetch HTTP 桥接线、settings 表单策略与选项写回、configOp 命令处理
+  meta.mjs       插件版本(读 package.json)、DSH 运行时版本探测、semver 比较、最低支持版本门(dshTooOld)
   update.mjs     最新版本检查：npm registry 为主 → GitHub Releases 兜底；内存节流、force、绝不抛错
   bridge.mjs     /api/dsh-dbhub-live 四条 exact Fetch 路由的请求/响应编解码（纯函数）
   config.mjs     路径与原子持久化(store/runtime/prefs)、DSN 解析、工作区发现、环境选项(readOnly/ssh 归一化、默认密钥)、
                  零知识助手(describeConn/connLabel/scrubSecrets)、configure 决策纯函数(decideConfigureStep/argsChangedEndpoint/emptyUserDenied)
   i18n.mjs       宿主侧文案表与插值
   state.mjs      运行时状态机 enabled/phase/toolCount/lastError/mode + 订阅发布
-  options.mjs    部署开关：updateIntervalDays / showSidebarEntry / announceAccessPolicy；层叠 Config > prefs.json > 0.1.x 设置文档 > 环境变量 > 内置默认
+  options.mjs    部署开关：updateIntervalDays / showSidebarEntry / announceAccessPolicy；层叠 Config > prefs.json > 环境变量 > 内置默认
   runtime.mjs    dbhub 可执行文件发现、按需自动安装、定期自动更新
   capability.mjs 上游能力探测（文件级，不 spawn）：[[tools]] readonly 与 ssh_* 需 1.4.0+
   toml.mjs       一次性 TOML 生成器 buildDbhubToml/writeTempToml/removeTempToml/sweepTempToml（文本绝不含秘密）

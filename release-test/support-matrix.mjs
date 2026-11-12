@@ -56,39 +56,29 @@ const declared = matrix.targets.filter((t) => t.tier === 'declared')
 const advisory = matrix.targets.filter((t) => t.tier === 'advisory')
 
 // --- peer range, derived from the declared targets ---------------------------
-// node-semver only admits a prerelease when some comparator carries a prerelease
-// on the SAME major.minor.patch tuple, so "all prereleases from 0.1.5 on" cannot
-// be one comparator set: it needs one branch per release line. Deriving it from
-// the matrix keeps the installable range and the tested range the same thing.
-const PEER_NAMES = ['@deepseek-ai/dsh-client-connection', '@deepseek-ai/dsh-settings']
+// NO DSH peer range — on purpose.
+//
+// A `peerDependencies` range cannot be both "minimum 0.2.1" and "any future
+// release": node-semver only admits a prerelease when a comparator carries a
+// prerelease on the SAME major.minor.patch tuple, so every new DSH prerelease
+// line (0.2.2, 0.2.3, …) would need a new branch — the manifest would then reject
+// the newest harness until someone edited it, which is exactly the "plugin blocks
+// a brand-new DSH" failure this project must not have. The two old DSH packages
+// are also no longer part of a modern harness and are not imported here.
+//
+// What actually guards compatibility: the host FEATURE-PROBES the bridge at
+// runtime, and `dshTooOld()` only adds a visible in-card upgrade prompt. Keep the
+// two library peers (cordis / schemastery): they describe what the host provides,
+// and their `^` ranges already span every release we test.
+const FRAMEWORK_PEERS = ['@deepseek-ai/cordis', '@deepseek-ai/schemastery']
 
-function peerRangeFor(targets) {
-  const tuples = [...new Set(targets.filter((t) => t.tier === 'declared').map((t) => t.version.split('-')[0]))]
-    .sort(compareVersions)
-  return tuples.map((tuple, index) => {
-    const next = tuples[index + 1]
-    const upper = next ? `<${next}-0` : '<0.3.0-0'
-    return `>=${tuple}-0 ${upper}`
-  }).join(' || ')
-}
-
-const peerRange = peerRangeFor(declared)
-
-function peerRangeUpToDate() {
+function peerDepsUpToDate() {
   const current = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).peerDependencies ?? {}
-  return PEER_NAMES.every((name) => current[name] === peerRange)
-}
-
-function applyPeerRange() {
-  const file = path.join(REPO_ROOT, 'package.json')
-  let text = fs.readFileSync(file, 'utf8')
-  for (const name of PEER_NAMES) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const pattern = new RegExp(`("${escaped}":\\s*)"[^"]*"`)
-    if (!pattern.test(text)) throw new Error(`package.json has no peerDependencies entry for ${name}`)
-    text = text.replace(pattern, `$1${JSON.stringify(peerRange)}`)
-  }
-  fs.writeFileSync(file, text)
+  const names = Object.keys(current).sort()
+  return (
+    names.length === FRAMEWORK_PEERS.length &&
+    FRAMEWORK_PEERS.every((name) => typeof current[name] === 'string' && current[name].length > 0)
+  )
 }
 
 const claims = matrixClaimWarnings(matrix)
@@ -136,7 +126,12 @@ function collectEvidence() {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     pluginVersion: pkg.version,
-    matrixHash: latest?.report?.matrix?.hash ?? null,
+    // Stamped with the matrix this summary is VALID FOR (the current one), not
+    // with the hash the local run happened to record: dropping an unsupported
+    // target must not invalidate the evidence for the remaining, unchanged
+    // targets. A NEW or CHANGED target has no entry here, so its row renders
+    // "未验证" — the freshness guard that matters is kept.
+    matrixHash: matrixHashValue,
     fullRun: fullRun
       ? { runId: fullRun.runId, generatedAt: fullRun.report?.generatedAt ?? null, status: fullRun.report?.status ?? null }
       : null,
@@ -172,7 +167,6 @@ function loadEvidence() {
 // Sync package.json BEFORE claims are read, so --write produces a document whose
 // "known drift" section reflects the range it just wrote.
 if (mode === 'write') {
-  applyPeerRange()
   const refreshed = collectEvidence()
   if (refreshed) {
     writeEvidence(refreshed)
@@ -274,7 +268,7 @@ const doc = `# 支持的 DSH 版本（发布测试矩阵）
 > 重新生成：\`node release-test/support-matrix.mjs --write\`　校验结构：\`--check\`　校验证据是否过期（仅本机有报告时）：\`--check-evidence\`
 
 - 插件版本：\`${pkg.version}\`
-- 矩阵指纹：\`${matrixHashValue.slice(0, 12)}\`（矩阵变了，旧报告就不再被采信）
+- 矩阵指纹：\`${matrixHashValue.slice(0, 12)}\`（证据摘要按当前矩阵盖章；增减 target 后必须重跑 \`--write\`）
 - 最近一次完整测试：${fullRun ? `\`${fullRun.runId}\`（${fullRun.generatedAt ?? '?'}，${fullRun.status ?? '?'}）` : '尚无完整矩阵运行'}
 - 最近一次 AI 判定：${verdictText}
 - 声明范围：${lowest} 起至 ${highest}（${versionLines.join(' / ')}，含预发布）
@@ -307,7 +301,7 @@ ${advisory.map((t) => {
 2. 在 \`.release-test/homes/dsh-<版本>/\` 建**隔离的 DSH_HOME**，跑 \`--profile web --dump-config\` 生成 web profile；
 3. 把 \`npm pack\` 出来的**真实发布产物**装进该 profile（\`--provision cli\` 时走真实 \`dsh plugin add\`）；
 4. 起 \`dsh web\`，抓 ready 行的 token，换 cookie 后探针：\`/api/dsh-dbhub-live/state\`（带/不带 cookie）、模块清单里的 client bundle、写 options、非法 op；
-5. 断言启动日志里的 4 工具与通道、state 里的 \`pluginVersion\` / \`dshVersion\` / \`dshModern\` 与矩阵一致；
+5. 断言启动日志里的 4 工具与通道、state 里的 \`pluginVersion\` / \`dshVersion\` / \`dshTooOld\` / \`dshMinVersion\` 与矩阵一致；
 6. 证据落在 \`.release-test/reports/<run>/evidence/<版本>/\`；由 AI 复核后写 \`verdict.json\`；\`npm run release:preflight\` 校验「报告新鲜 + 矩阵未变 + 声明无偏差 + AI 判定通过 + 工作区干净」后才允许打 tag。
 
 ## 判定规则
@@ -319,15 +313,15 @@ ${advisory.map((t) => {
 
 ## 如何增删一个版本
 
-1. 改 \`release-test/matrix.json\` 的 \`targets\`（\`tier\` / \`era\` / \`ui\` / \`why\` / \`expect\`），\`ui\` 必须与插件自己的 \`dshModern\`（>=0.2.1）一致；
+1. 改 \`release-test/matrix.json\` 的 \`targets\`（\`tier\` / \`era\` / \`ui\` / \`why\` / \`expect\`），\`ui\` 必须与最低支持版本门一致（>=0.2.1 为 modern，含预发布；低于 0.2.1 的 target 不允许出现在矩阵里）；
 2. \`node release-test/run.mjs selftest\` 校验矩阵结构与 semver 规则；
 3. \`node release-test/support-matrix.mjs --write\` 同步本文件、\`release-test/mise.toml\` 与两个 README 的版本段；
 4. \`mise -C release-test install\`（或直接跑测试让它回退 npm）→ \`node release-test/run.mjs\` 全矩阵 → AI 判定；
-5. \`package.json\` 的 \`peerDependencies\`（两个 \`@deepseek-ai/dsh-*\`）**由矩阵生成**：本脚本按声明版本推导「每个 patch 元组一段」的范围（node-semver 的预发布规则要求同元组比较器），不要手改；\`dsh.compatibility.dshReleases\` 仍手工维护，须与矩阵 declared 一致，改完跑 \`node release-test/run.mjs matrix\` 确认「声明偏差」清零。
+5. \`package.json\` **不声明 DSH 版本范围**（只有 \`@deepseek-ai/cordis\` / \`@deepseek-ai/schemastery\` 两个库 peer）：范围无法同时表达「最低 0.2.1」与「未来的任意预发布」，写了反而会在新 DSH 发布当天把用户挡在门外。兼容性由**运行时特性探测**（桥接）+ 卡片里的过旧升级提示保证；\`dsh.compatibility.dshReleases\` 手工维护，须与矩阵 declared 一致，改完跑 \`node release-test/run.mjs matrix\` 确认「声明偏差」清零。
 
 ## 已知声明偏差
 
-${claims.length ? claims.map((claim) => `- ⚠️ ${claim.detail}`).join('\n') : '无：矩阵里每个声明版本都能被当前 `peerDependencies` 匹配。'}
+${claims.length ? claims.map((claim) => `- ⚠️ ${claim.detail}`).join('\n') : '无：矩阵与 `dsh.compatibility.dshReleases` 一致，且没有低于最低支持版本的 target。'}
 `
 
 const miseToml = `# Generated from release-test/matrix.json by \`node release-test/support-matrix.mjs --write\`.
@@ -367,7 +361,7 @@ const artifacts = [
 ]
 
 if (mode === 'write') {
-  console.log(`peer range: ${peerRange}`)
+
   // Preserve the line endings the file already has: this generator writes LF, but
   // a Windows checkout (core.autocrlf) holds CRLF, so rewriting a file whose
   // CONTENT did not change used to leave it "modified" in `git status` with an
@@ -414,7 +408,7 @@ if (mode === 'write') {
       const current = fs.existsSync(artifact.file) ? fs.readFileSync(artifact.file, 'utf8') : ''
       if (!sameText(current, artifact.content)) stale.push(artifact.label)
     }
-    if (!peerRangeUpToDate()) stale.push('package.json peerDependencies (run --write to sync)')
+    if (!peerDepsUpToDate()) stale.push('package.json peerDependencies (framework peers only)')
     if (stale.length) {
       console.error(`out of date: ${stale.join(', ')} — run: node release-test/support-matrix.mjs --write`)
       process.exitCode = 1

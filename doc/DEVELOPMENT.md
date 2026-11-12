@@ -101,7 +101,7 @@ dbhub 插件已加载（4 个工具）
 | `POST /api/dsh-dbhub-live/options {"updateIntervalDays":3}` | 200，且 `$DSH_HOME/storages/dsh-dbhub-live/prefs.json` 落盘 |
 | `POST /api/dsh-dbhub-live/op {"op":{"op":"nope"}}` | 200 + `patches: []` |
 
-volatile Config 通道（0.1.7+ / 0.2.x）：在 profile 的 `cordis.patch.yml` 里钉 `- id: <行 id>` + `config: {updateIntervalDays: 5}` → 重启后视图与 `prefs.json` 都变 5（采纳），日志出现「配置表单策略已注册: auto=false」；再 `POST /options {"updateIntervalDays":9}` → **profile patch 文件本身**应被改写成 9，视图里的 `entryId` 等于该行 id（不是包名）。
+volatile Config 通道（0.2.1+）：在 profile 的 `cordis.patch.yml` 里钉 `- id: <行 id>` + `config: {updateIntervalDays: 5}` → 重启后视图与 `prefs.json` 都变 5（采纳），日志出现「配置表单策略已注册: auto=false」；再 `POST /options {"updateIntervalDays":9}` → **profile patch 文件本身**应被改写成 9，视图里的 `entryId` 等于该行 id（不是包名）。
 
 客户端包 URL 必须带 `rev`：
 
@@ -113,16 +113,9 @@ volatile Config 通道（0.1.7+ / 0.2.x）：在 profile 的 `cordis.patch.yml` 
 
 浏览器：`http://127.0.0.1:3082` 侧边栏出现「DBHub 数据库工具」、设置里出现同名一级页面，行内显示连接元数据。
 
-### 0.1.x 线（双栈的另一半）
+### 版本过低（只验证警告，不另起版本线）
 
-另起一个 scratch home 装 0.1.6 的 CLI 即可，`dsh web` 会自己初始化 web 模板：
-
-```powershell
-# 用 0.1.6 的 CLI 初始化 DSH_HOME=<repo>/.dsh-b，把包目录拷进 profiles/web/node_modules/
-# 并在 package.json 的 dsh.profile.bundles 里加上 dsh-dbhub-live（bundle 的 patch 会自行插入插件行）
-```
-
-期望日志：`host apply` + `dbhub 插件已加载（4 个工具）` + `状态命名空间已注册: dsh-dbhub-live` + `浏览器桥接已注册: …`（0.1.6 没有 `settings.configure`，故没有「配置表单策略」那行）。期望接口：`/api/dsh-dbhub-live/state` 带 cookie 200、不带 401；view 里 `entryId` = 行 id；bundle 200。
+0.1.x 已不再支持，不需要另外的调试环境。若要在本机复现「版本过旧」的提示，把 `DSH_CLIENT_VERSION` 临时设成 `0.1.6` 再启动 `dsh web`：卡片会出现 `.dbh-tooold` 警告（写明需要 0.2.1、当前为 0.1.6），同时工具、连接与设置照常工作；日志出现一条不含路径的 `DSH 版本过旧` 记录。
 
 `mise r dsh plugin … ls` 只用于核对安装版本。
 

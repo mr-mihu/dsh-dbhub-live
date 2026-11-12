@@ -5,30 +5,27 @@
 > `.release-test/reports/` 只被 `--write` 读取一次并蒸馏成上面这份摘要，渲染不依赖本机目录，所以干净检出也能复现。
 > 重新生成：`node release-test/support-matrix.mjs --write`　校验结构：`--check`　校验证据是否过期（仅本机有报告时）：`--check-evidence`
 
-- 插件版本：`5.2.0`
-- 矩阵指纹：`40a3fcef6607`（矩阵变了，旧报告就不再被采信）
-- 最近一次完整测试：`20261024-175015-40a3fc`（2026-10-24T09:52:42.537Z，yellow）
+- 插件版本：`6.0.0-rc.1`
+- 矩阵指纹：`34be607694e6`（证据摘要按当前矩阵盖章；增减 target 后必须重跑 `--write`）
+- 最近一次完整测试：尚无完整矩阵运行
 - 最近一次 AI 判定：pass-with-notes — lead agent (DeepSeek Harness) — full functional QA + release matrix evidence review @ 2026-10-24T09:53:33Z
-- 声明范围：0.1.5-rc.3 起至 0.2.1-rc.2（0.1.5 / 0.1.6 / 0.1.7 / 0.2.0 / 0.2.1，含预发布）
+- 声明范围：0.2.1-rc.2 起至 0.2.2-rc.2（0.2.1 / 0.2.2，含预发布）
 
 ## 声明支持（blocking：任一失败即禁止发版）
 
 | DSH 版本 | 集成代际 | 界面 | 声明依据 | 最近验证 | 结果 |
 | --- | --- | --- | --- | --- | --- |
-| `0.1.5-rc.3` | legacy | legacy | README: 0.1.5 起的全部版本线（含 0.2.x） | 2026-10-24 · 91642fa2 · 手工装配 | ⚠️ 通过（有告警） |
-| `0.1.6-alpha.2` | legacy | legacy | package.json dsh.compatibility.dshReleases | 2026-10-24 · 91642fa2 · 手工装配 | ⚠️ 通过（有告警） |
-| `0.1.7-rc.2` | config-form | legacy | 0.1.7 线：settings 命名空间被 Config 表单取代（本插件双栈的转折点） | 2026-10-24 · 91642fa2 · 手工装配 | ⚠️ 通过（有告警） |
-| `0.2.0-rc.2` | modern | legacy | package.json dsh.compatibility.dshReleases | 2026-10-24 · 91642fa2 · 手工装配 | ⚠️ 通过（有告警） |
-| `0.2.1-alpha.1` | modern | modern | package.json dsh.compatibility.dshReleases；也是 dshModern 门槛（>=0.2.1 含预发布） | 2026-10-24 · 91642fa2 · 手工装配 | ⚠️ 通过（有告警） |
-| `0.2.1-rc.2` | modern | modern | npm dist-tag latest（矩阵的当前默认目标） | 2026-10-24 · 91642fa2 · 手工装配 | ⚠️ 通过（有告警） |
+| `0.2.1-rc.2` | modern | modern | 0.2.1 线的基线：插件的最低支持版本 + 已实测通过 | 2026-10-24 · 91642fa2 · 手工装配 | ⚠️ 通过（有告警） |
+| `0.2.1-rc.5` | modern | modern | 0.2.1 线的最后一个 rc（旧版本线只覆盖 rc，不覆盖 alpha） | 未验证 | — |
+| `0.2.2-rc.1` | modern | modern | npm dist-tag latest（用户默认装到的版本） | 未验证 | — |
+| `0.2.2-rc.2` | modern | modern | npm dist-tag next：最新预发布版本，必须覆盖（新版本发布前最先被用户装到） | 未验证 | — |
 
 ## 观察项（advisory：只报告，不阻塞）
 
 | DSH 版本 | 集成代际 | 界面 | 声明依据 | 最近验证 | 结果 |
 | --- | --- | --- | --- | --- | --- |
-| `0.1.7-alpha.2` | config-form | legacy | 0.1.7 早期预发布（观察项，不阻塞发版） | 未验证 | — |
-| `0.2.1-alpha.5` | modern | modern | npm dist-tag alpha（观察项，不阻塞发版） | 未验证 | — |
-| `0.2.1-rc.3` | modern | modern | npm dist-tag next（比 latest 更新的下一版；通过一次完整运行后可提升为 declared） | 未验证 | — |
+| `0.2.1-rc.3` | modern | modern | 0.2.1 线的抽样观察项（不阻塞发版） | 未验证 | — |
+| `0.2.2-alpha.3` | modern | modern | 最新预发布线的 alpha 抽样（观察项） | 未验证 | — |
 
 ## 这些版本是怎么验证的
 
@@ -40,7 +37,7 @@
 2. 在 `.release-test/homes/dsh-<版本>/` 建**隔离的 DSH_HOME**，跑 `--profile web --dump-config` 生成 web profile；
 3. 把 `npm pack` 出来的**真实发布产物**装进该 profile（`--provision cli` 时走真实 `dsh plugin add`）；
 4. 起 `dsh web`，抓 ready 行的 token，换 cookie 后探针：`/api/dsh-dbhub-live/state`（带/不带 cookie）、模块清单里的 client bundle、写 options、非法 op；
-5. 断言启动日志里的 4 工具与通道、state 里的 `pluginVersion` / `dshVersion` / `dshModern` 与矩阵一致；
+5. 断言启动日志里的 4 工具与通道、state 里的 `pluginVersion` / `dshVersion` / `dshTooOld` / `dshMinVersion` 与矩阵一致；
 6. 证据落在 `.release-test/reports/<run>/evidence/<版本>/`；由 AI 复核后写 `verdict.json`；`npm run release:preflight` 校验「报告新鲜 + 矩阵未变 + 声明无偏差 + AI 判定通过 + 工作区干净」后才允许打 tag。
 
 ## 判定规则
@@ -52,12 +49,12 @@
 
 ## 如何增删一个版本
 
-1. 改 `release-test/matrix.json` 的 `targets`（`tier` / `era` / `ui` / `why` / `expect`），`ui` 必须与插件自己的 `dshModern`（>=0.2.1）一致；
+1. 改 `release-test/matrix.json` 的 `targets`（`tier` / `era` / `ui` / `why` / `expect`），`ui` 必须与最低支持版本门一致（>=0.2.1 为 modern，含预发布；低于 0.2.1 的 target 不允许出现在矩阵里）；
 2. `node release-test/run.mjs selftest` 校验矩阵结构与 semver 规则；
 3. `node release-test/support-matrix.mjs --write` 同步本文件、`release-test/mise.toml` 与两个 README 的版本段；
 4. `mise -C release-test install`（或直接跑测试让它回退 npm）→ `node release-test/run.mjs` 全矩阵 → AI 判定；
-5. `package.json` 的 `peerDependencies`（两个 `@deepseek-ai/dsh-*`）**由矩阵生成**：本脚本按声明版本推导「每个 patch 元组一段」的范围（node-semver 的预发布规则要求同元组比较器），不要手改；`dsh.compatibility.dshReleases` 仍手工维护，须与矩阵 declared 一致，改完跑 `node release-test/run.mjs matrix` 确认「声明偏差」清零。
+5. `package.json` **不声明 DSH 版本范围**（只有 `@deepseek-ai/cordis` / `@deepseek-ai/schemastery` 两个库 peer）：范围无法同时表达「最低 0.2.1」与「未来的任意预发布」，写了反而会在新 DSH 发布当天把用户挡在门外。兼容性由**运行时特性探测**（桥接）+ 卡片里的过旧升级提示保证；`dsh.compatibility.dshReleases` 手工维护，须与矩阵 declared 一致，改完跑 `node release-test/run.mjs matrix` 确认「声明偏差」清零。
 
 ## 已知声明偏差
 
-无：矩阵里每个声明版本都能被当前 `peerDependencies` 匹配。
+无：矩阵与 `dsh.compatibility.dshReleases` 一致，且没有低于最低支持版本的 target。

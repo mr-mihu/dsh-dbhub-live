@@ -154,9 +154,9 @@ export async function runProbes(ctx) {
       )
 
       // The view carries the running build's identity on 5.2+. Asserting it is
-      // how a "tested the wrong artifact" or a broken dshModern gate gets caught.
+      // how a "tested the wrong artifact" or a broken version gate gets caught.
       if (value.pluginVersion === undefined) {
-        checks.push(check('state.version-fields', 'info', 'view has no pluginVersion/dshVersion/dshModern fields (artifact predates them)'))
+        checks.push(check('state.version-fields', 'info', 'view has no pluginVersion/dshVersion/dshTooOld fields (artifact predates them)'))
       } else {
         checks.push(
           value.pluginVersion === artifact.version
@@ -168,11 +168,12 @@ export async function runProbes(ctx) {
             ? check('state.dsh-version', 'pass', `plugin detects host ${value.dshVersion}`)
             : check('state.dsh-version', 'fail', `plugin detects host ${value.dshVersion}, expected ${version}`),
         )
-        const wantModern = target.ui === 'modern'
+        // Every matrix target is >= the supported minimum (0.2.1), so the view's
+        // version gate must report "supported" for it.
         checks.push(
-          value.dshModern === wantModern
-            ? check('state.ui-mode', 'pass', `dshModern=${value.dshModern} matches the matrix (${target.ui} face)`)
-            : check('state.ui-mode', 'fail', `dshModern=${value.dshModern}, but the matrix expects the ${target.ui} face for ${version}`),
+          value.dshTooOld === false && value.dshMinVersion === '0.2.1'
+            ? check('state.version-gate', 'pass', `dshTooOld=false, min=${value.dshMinVersion} for ${version} (${target.ui} face)`)
+            : check('state.version-gate', 'fail', `dshTooOld=${value.dshTooOld}, min=${value.dshMinVersion}; the matrix expects a supported host for ${version}`),
         )
       }
 

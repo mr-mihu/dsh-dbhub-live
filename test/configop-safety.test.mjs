@@ -909,18 +909,17 @@ test('switching the SSH auth kind from key to password drops the old key path an
 // ── 9. the opNotice receipt channel (P1-8) ───────────────────────────────
 
 /**
- * The bare minimum `apply(ctx, config)` needs to wire BOTH channels: a tool
- * registry, a workspace registry, one `inject(['settings'])` scope (the legacy
- * namespace) and one `inject(['connection'])` scope whose `fetch.register`
- * records the HTTP routes.
+ * The bare minimum `apply(ctx, config)` needs: a tool registry, a workspace
+ * registry, one `inject(['settings'])` scope (best-effort policy/form wiring)
+ * and one `inject(['connection'])` scope whose `fetch.register` records the HTTP
+ * routes.
  */
 function hostCtx({ subprocess: sub, workspaces }) {
   const tools = []
   const routes = []
-  const settings = {
-    register: () => ({ replace: async () => {}, watch: () => () => {} }),
-    describe: () => [],
-  }
+  // The settings service is wired best-effort only (presentation policy / form
+  // write-through); the 0.1.x namespace reader is gone with 0.1.x.
+  const settings = {}
   const scopeFor = (names) => {
     const scope = { effect: (fn) => { try { fn() } catch (e) { /* contained */ } return () => {} } }
     if (names.includes('settings')) scope.settings = settings

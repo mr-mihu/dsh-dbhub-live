@@ -58,7 +58,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - `renameWorkspaceEnv` 返回 `{ name, collided, renamed }`：落到已存在的环境必须先确认（`{confirm:true}` / 卡片 `overwrite:true`），未确认则 `renamed:false` 且零写入；`newEnv` 空 = 不改名（不会归一成 `default`）。**冲突判据是 `collided === true`**——用 `!renamed` 会把「改到自己的名字」（`{renamed:false, collided:false}`）误报成「目标环境已存在」；同名 = 无需改名，继续后续写入。`copyFrom` 覆盖已有环境同样先问，且选项取自**源行**（源行没有的只读/隧道即清掉）。
 - 描述符 `{dsn, ro, ssh}`：`probeConnection` 验有效连接，`probeSshTunnel` 只验 SSH 层（`SSH_LAYER_RE` → 断；否则 `DB_LAYER_RE` / 指名转发目标 → 通；都没有 → unknown）。探连的 ssh 三态：`null` = 用户解除隧道（按无隧道探）/ 对象 = 表单在编辑（先与已存行 merge）/ **缺省 = 卡片三项全空**（`connDraftOf` 不发 `ssh` 键，此时用已存行的隧道——否则探的是裸连接，不是会保存的那条）。
 - 预算 `PROBE_TIMEOUT_MS = 25s` / `PROBE_TIMEOUT_SSH_MS = 45s` < 客户端看门狗 30s/60s；宿主兜底 = 预算 + 500ms → [原因](doc/ARCHITECTURE.md#环境选项与执行预算)。
-- UI 落点：现代面行内 `.dbh-rochip`（点击发 `{op:'options', readOnly}`），legacy 面 `.dbh-ro`；SSH 只进 tooltip。见 [doc/CLIENT.md](doc/CLIENT.md)。
+- UI 落点：行内 `.dbh-rochip`（点击发 `{op:'options', readOnly}`）；SSH 只进 tooltip。见 [doc/CLIENT.md](doc/CLIENT.md)。
 
 ### source 身份
 - 每条 source 只属于一个工作区，同名不同区是不同目标；`sourceIdOf(row)` 是唯一构造点（`<标题slug>_<路径哈希>[_<envSlug>]`）。
@@ -69,10 +69,10 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - `dbhub_configure` 不回退 `workspaces[0]`（`result.unknownWorkspace` / `result.needWorkspace`）；跨区复用走 `copyFrom`。
 
 ### 状态通道
-- 一个发布核心 `createHostCore`，两条通道：0.1.x settings 命名空间（仅 `settings.register` 存在时）/ `connection.fetch` 的 `/api/dsh-dbhub-live/{state,enabled,options,op}`。
-- 客户端 `inject` **只能 `["slots"]`**；host face 用 `ctx.get('settingsScope')` 探测 → [为什么](doc/ARCHITECTURE.md#状态通道与inject根因)。
-- 注入回调内服务必须 `ctx.get(...)` 就地取；legacy 回调 `wrap()` 防护。
-- view：`{enabled, phase, toolCount, lastError, mode}` + `{updateIntervalDays, showSidebarEntry, announceAccessPolicy, capabilities, workspaces, testResult, opNotice}` + `{pluginVersion, dshVersion, dshModern, runtime, update}`；legacy 额外 `configOp`。**DSN 只从浏览器流向 Host。**
+- 一个发布核心 `createHostCore`，**唯一通道**：`connection.fetch` 的 `/api/dsh-dbhub-live/{state,enabled,options,op}`。0.1.x 的 settings 命名空间通道已随 0.1.x 支持一起删除。
+- 客户端 `inject` **只能 `["slots"]`**；`settingsScope` 不注入也不探测（0.2.x 已删除该服务，注入它会让整个浏览器半区永久 pending）→ [为什么](doc/ARCHITECTURE.md#状态通道与inject根因)。
+- 注入回调内服务必须 `ctx.get(...)` 就地取。
+- view：`{enabled, phase, toolCount, lastError, mode}` + `{updateIntervalDays, showSidebarEntry, announceAccessPolicy, capabilities, workspaces, testResult, opNotice}` + `{pluginVersion, dshVersion, dshMinVersion, dshTooOld, runtime, update}`。**DSN 只从浏览器流向 Host。**
 
 ### 部署开关与连接管理
 - `lib/options.mjs` 唯一持有开关；Config 值经 `options.configValuesOf` → `applyPatch(..., {persist:true})`；`entryIdOf(ctx)` 运行时解析行 id；不绕过 `applyPatch`。
@@ -84,7 +84,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - 诊断取尾部 600（`diagnosticTail`），前缀 `【SSH 层】/【数据库层】/【插件层】`；页面只认自己派发的 nonce → [原因](doc/ARCHITECTURE.md#诊断为什么取尾部)。
 
 ### 版本与更新
-- `dshModern` = DSH >= 0.2.1（含预发布）；解析不到 → desktop true / web false → [原因](doc/ARCHITECTURE.md#版本门与更新检查)。
+- 最低支持 DSH 0.2.1（`DSH_MIN_SUPPORTED`，含预发布：`0.2.1-rc.2` 算 0.2.1）；**0.1.x 与 0.2.0 一律不支持**。`dshTooOld(runtime)` 只驱动一条**卡片可见警告**（+ 一条不含路径的 `warnOnce` 日志），**不是功能门**：工具、配置页、桥接照常工作。解析不到版本 → 不判过旧（不冤枉无法识别的运行时）。
 - `{op:'updateCheck'}` 在 `runOp` 中先于 `handleConfigOp` 拦截；不改行、不写 store。门禁 `test/meta.test.mjs` / `test/update.test.mjs`。
 - `checkedAt` **只由成功结果推进**：失败只写 `error` 并保留旧 `latest`，不动复用窗口——失败也推进等于把下一次重试推到整个 throttle（30 分钟）之后，网络已恢复而卡片还在报错（`test/update.test.mjs` 断言"失败后下一次非 force 调用会重新请求"）。
 
@@ -95,7 +95,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 
 ### 其他不可退化
 - 依赖只进不出：`config ← state ← mcp`；`config ← runtime|toml|capability ← adhoc`；`mcp ← tools ← index`；`adhoc|collect ← tools`；`state|options ← policy ← index`；`meta`/`update` 是叶子。禁循环 import。
-- schema 弹性：`await import('@deepseek-ai/schemastery')` 失败 → 内建最小 schema；不改回静态顶层 import。
+- schema 弹性：`await import('@deepseek-ai/schemastery')` 失败 → `Config` 保持 `undefined`（Loader 跳过校验，页面与工具照常），不改回静态顶层 import。
 - `policy.mjs` 唯一 system prompt 段（order 8900）：已配置连接走 `dbhub_*`、禁 CLI/脚本/驱动/其它 MCP/其它数据库插件绕过、只读被拒不换途径；不支持的库让给用户其它插件、判不准先问。`announceAccessPolicy=false` 时 `text` 为空。门禁 `test/policy.test.mjs`。
 - 启用/禁用：`state.setEnabled` → `credentials.json`；禁用时工具首行返回「插件已禁用」。
 - `lastError` **只由 boot 失败写入**（`state.recordError` / `clearError`），工具调用错误不进卡片：它是"插件起不来"的诊断位，不是运行日志。要接工具错误必须先有"成功即清空"的语义，否则一次偶发失败会永久挂在页头（本次刻意不做）。
@@ -106,11 +106,11 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 
 ### 客户端半（细节见 [doc/CLIENT.md](doc/CLIENT.md)）
 - 手写 lazy-CJS bundle，无构建；`id` = Loader entry 名；三入口都要在：`settings.section`（始终）/ 侧边栏（`enabled && showSidebarEntry`）/ `plugins.row.config`（始终）。
-- **写失败必须可见**：face 的写 promise 在失败时 reject（失败分支不得写 `noop`），组件渲染 `.dbh-error .dbh-writefail[role=alert]` 且**不置 `saved`**；`/state` 失败时读 `snapshot.status === 'error'` 渲染 `.dbh-loadfail` + 「重试」（`face.refresh()`）；`sidebarWanted()` 只在 `enabled === true` 时注册（未知/失败不注册）；`summary` 与 `page` 两种 view 的 Hook 序列必须一致（summary 早退只能放在所有 Hook 之后）。门禁 `check:ui` 的 `[32]`–`[47]` 用失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读 / 非 JSON / 缺 value / 失败的更新检查）钉住，假 react 按组件身份校验 Hook 数。
-- **写/读两条水位线，`form.set` 只认 `true`，缺 value 不是空页**：读按 `appliedSeq` 丢旧（写发起时占一个更高的读序号），写响应另走 `appliedWriteStamp`（**不**与读序号比，否则「写先发 → 读后发 → 读先回 → 写后回」把写自己的答案丢了）；`form.set` 只有 `ok === true` 算受理（`undefined` 曾导致零 POST 还印「已保存」），其余回落 `POST /options`；`value` 不是非空对象时读进 `status:'error'`（保留旧行）、写 reject，绝不 `publish({status:'ready', value:{}})`；`res.json()` 失败统一本地化；每次写最多等 `WRITE_TIMEOUT_MS = 90s`（> SSH 看门狗，超时只按失败渲染）。门禁 `[39]`–`[42]`。
+- **写失败必须可见**：face 的写 promise 在失败时 reject（失败分支不得写 `noop`），组件渲染 `.dbh-error .dbh-writefail[role=alert]` 且**不置 `saved`**；`/state` 失败时读 `snapshot.status === 'error'` 渲染 `.dbh-loadfail` + 「重试」（`face.refresh()`）；`sidebarWanted()` 只在 `enabled === true` 时注册（未知/失败不注册）；`summary` 与 `page` 两种 view 的 Hook 序列必须一致（summary 早退只能放在所有 Hook 之后）。门禁 `check:ui` 的 `[31]`–`[46]` 用失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读 / 非 JSON / 缺 value / 失败的更新检查）钉住，假 react 按组件身份校验 Hook 数。
+- **写/读两条水位线，`form.set` 只认 `true`，缺 value 不是空页**：读按 `appliedSeq` 丢旧（写发起时占一个更高的读序号），写响应另走 `appliedWriteStamp`（**不**与读序号比，否则「写先发 → 读后发 → 读先回 → 写后回」把写自己的答案丢了）；`form.set` 只有 `ok === true` 算受理（`undefined` 曾导致零 POST 还印「已保存」），其余回落 `POST /options`；`value` 不是非空对象时读进 `status:'error'`（保留旧行）、写 reject，绝不 `publish({status:'ready', value:{}})`；`res.json()` 失败统一本地化；每次写最多等 `WRITE_TIMEOUT_MS = 90s`（> SSH 看门狗，超时只按失败渲染）。门禁 `[38]`–`[41]`。
 - `apply()` 可重入：locale 注册失败降级 `localTranslator`。
-- **实测列宽靠回调 ref**（`attachMeasuredWidth`）：observer 由 callback ref 挂/换/卸，卸载 effect 只 disconnect，**没有计时器**。不要在空依赖 effect 里读一次 `ref.current`——列没在那一刻挂上就永不重测，宽度恒 0、布局静默退回 viewport。门禁 `[46]`。
-- 升级链接的 tooltip = `ver.linkHint`（「展开升级说明与安装命令」）；`ver.copySpec`（「点击复制 …」）**只属于面板内的复制按钮**。门禁 `[25]`。
+- **实测列宽靠回调 ref**（`attachMeasuredWidth`）：observer 由 callback ref 挂/换/卸，卸载 effect 只 disconnect，**没有计时器**。不要在空依赖 effect 里读一次 `ref.current`——列没在那一刻挂上就永不重测，宽度恒 0、布局静默退回 viewport。门禁 `[45]`。
+- 升级链接的 tooltip = `ver.linkHint`（「展开升级说明与安装命令」）；`ver.copySpec`（「点击复制 …」）**只属于面板内的复制按钮**。门禁 `[24]`。
 - 两个 locale 字典**不得有重复键**（对象字面量静默保留后者，改前一条永远无效）；`test/client-format.test.mjs` 按源码断言去重 + 中英键集相同 + en 表不含中文。
 - 样式只允许 `--dsw-alias-*` token + 中性半透明兜底；组件不接触 ctx。
 - 行内只显示 `w.conn`；操作只用图标；`source` 可复制 chip；库名不截断 → [原因](doc/ARCHITECTURE.md#布局取舍)。

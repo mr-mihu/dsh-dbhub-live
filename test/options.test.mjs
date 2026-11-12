@@ -106,26 +106,6 @@ test('the sidebar preference survives a restart and is dropped only when non-boo
   assert.deepEqual(JSON.parse(readFileSync(PREFS_PATH, 'utf8')), { updateIntervalDays: 5 })
 })
 
-test('the legacy settings document only fills fields prefs does not own', async () => {
-  // prefs owns the interval; the sidebar switch is NOT in prefs here, so the
-  // older document may still claim it (that is what "unclaimed" means).
-  writeFileSync(PREFS_PATH, JSON.stringify({ updateIntervalDays: 5 }))
-  const fresh = await import('../lib/options.mjs?options4=' + Date.now())
-  assert.equal(fresh.initFromLayers({ legacyUser: { updateIntervalDays: 9, showSidebarEntry: false } }), true)
-  assert.equal(fresh.get('updateIntervalDays'), 5, 'prefs owns this field')
-  assert.equal(fresh.get('showSidebarEntry'), false, 'unclaimed: the legacy layer applies')
-  // A malformed layer is ignored entirely.
-  assert.equal(fresh.initFromLayers({ legacyUser: ['nope'] }), false)
-  assert.equal(fresh.initFromLayers({}), false)
-  assert.equal(fresh.initFromLayers(null), false)
-  // A legacy layer cannot claim a field prefs DOES own.
-  writeFileSync(PREFS_PATH, JSON.stringify({ updateIntervalDays: 5, showSidebarEntry: true }))
-  const owned = await import('../lib/options.mjs?options4b=' + Date.now())
-  assert.equal(owned.initFromLayers({ legacyUser: { updateIntervalDays: 9, showSidebarEntry: false } }), false)
-  assert.equal(owned.get('updateIntervalDays'), 5)
-  assert.equal(owned.get('showSidebarEntry'), true)
-})
-
 test('a corrupt prefs file cannot seed an invalid option', async () => {
   writeFileSync(PREFS_PATH, JSON.stringify({ updateIntervalDays: -4, showSidebarEntry: 'yes', announceAccessPolicy: 'nope', junk: 1 }))
   const fresh = await import('../lib/options.mjs?options5=' + Date.now())

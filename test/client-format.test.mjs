@@ -32,27 +32,26 @@ test('client bundle exports name/inject/apply and returns module.exports', () =>
   assert.match(source, /exports\.inject = inject;/)
   assert.match(source, /exports\.apply = apply;/)
   assert.match(source, /return module\.exports;/)
-  // The transport is PROBED, never injected: a `settingsScope` injection is
-  // unsatisfiable on dsh 0.2.x and keeps the whole browser half pending (the
-  // page, the sidebar entry and the Plugins card all vanish silently).
+  // The transport is NOT injected: injecting `settingsScope` (removed in 0.2.x)
+  // would keep the whole browser half pending. Only `slots` is injected.
   assert.match(source, /var inject = \["slots"\];/)
   assert.doesNotMatch(source, /var inject = \[[^\]]*settingsScope/)
 })
 
-test('client bundle binds its host face through the runtime ladder', () => {
-  // 0.1.x keeps the settings namespace; every newer line reads the plugin's own
-  // authenticated bridge instead.
-  assert.match(source, /function legacyFace\(scope\)/)
+test('client bundle binds its host face through the plugin bridge only', () => {
+  // dsh 0.1.x is no longer supported, so there is exactly one face: the plugin's
+  // own authenticated bridge. The old `settingsScope` face must not come back.
   assert.match(source, /function httpFace\(\)/)
   assert.match(source, /var BRIDGE_BASE = "api\/dsh-dbhub-live";/)
-  assert.match(source, /var legacyScope = typeof ctx\.get === "function" \? ctx\.get\("settingsScope"\) : undefined;/)
-  assert.match(source, /var face = legacyScope && typeof legacyScope\.bind === "function" \? legacyFace\(legacyScope\) : httpFace\(\);/)
+  assert.match(source, /var face = httpFace\(\);/)
+  assert.doesNotMatch(source, /legacyFace/)
+  assert.doesNotMatch(source, /ctx\.get\("settingsScope"\)/)
 })
 
 test('client bundle writes options through the settings form when it can', () => {
-  // dsh 0.1.7+/0.2.x: `ctx.configForms.get(entryId).set(field, value)` — the
-  // entry id arrives in the Host view. POST /options is the fallback (0.1.x, or
-  // a deployment without the settings client).
+  // `ctx.configForms.get(entryId).set(field, value)` — the entry id arrives in
+  // the Host view. POST /options is the fallback (a deployment without the
+  // settings client, or a form that does not accept the field).
   assert.match(source, /var saveOptions = function \(patch\) \{/)
   assert.match(source, /var forms = typeof ctx\.get === "function" \? ctx\.get\("configForms"\) : undefined;/)
   assert.match(source, /form = forms\.get\(entryId\);/)
@@ -142,17 +141,16 @@ test('client bundle owns a sidebar entry gated by enabled AND the user switch', 
   assert.match(source, /return v\.enabled === true && v\.showSidebarEntry !== false;/)
   assert.match(source, /var syncSidebar = function/)
   assert.match(source, /face\.subscribe\(syncSidebar\)/)
-  // The switch itself is back on the settings strip and applies immediately.
-  assert.match(source, /"cfg\.sidebar": "在侧边栏显示入口"/)
-  assert.match(source, /"cfg\.sidebar": "Show the sidebar entry"/)
+  // The switch itself sits in the settings rows/bar and applies immediately.
+  assert.match(source, /"row\.sidebar": "侧边栏入口"/)
+  assert.match(source, /"row\.sidebar": "Sidebar entry"/)
   assert.match(source, /var toggleSidebar = function \(next\)/)
   assert.match(source, /props\.saveConfig\(\{ showSidebarEntry: next \}\);/)
   assert.match(source, /showSidebarEntry: draft\.showSidebarEntry !== false,/)
   // The settings section and the Plugins row never depend on either condition, so
   // no combination can lock the user out of the configuration.
   assert.match(source, /slots\.inject\("settings\.section"/)
-  assert.match(source, /"cfg\.disabledHint":/)
-  assert.match(source, /t\("cfg\.enabledHint"\) : t\("cfg\.disabledHint"\)\) \+ " " \+ t\("cfg\.sidebarHint"\)/)
+  assert.match(source, /"cfg\.sidebarHint":/)
 })
 
 test('client bundle exposes the config editor (saveConfig + editable options)', () => {
@@ -222,9 +220,10 @@ test('client bundle tiles single-environment workspaces instead of folding them'
   assert.match(source, /t\("ws\.source"\) \+ "：" \+ sourceLabelOf\(w, t\)/)
   assert.match(source, /if \(!w\.persisted\) text \+= " " \+ t\("ws\.autoHint"\);/)
   // the read-only flag is a per-row ATTRIBUTE that changes what a query may do,
-  // so it is visible on the chip (the source is a tooltip, this is not)
+  // so it has its own row control (the source is a tooltip, this is not)
   assert.match(source, /var envChip = function \(w\)/)
-  assert.match(source, /className: "dbh-ro", title: t\("ro\.title"\)/)
+  assert.match(source, /var roChip = function \(w\)/)
+  assert.match(source, /className: "dbh-rochip"/)
   assert.match(source, /if \(w\.ro === true\) text \+= " · " \+ t\("ro\.title"\);/)
   assert.match(source, /if \(w\.ssh\) text \+= " · " \+ t\("ro\.sshTitle"/)
   assert.doesNotMatch(source, /dbh-pill/)
@@ -239,7 +238,7 @@ test('client bundle localizes copy through ctx.locale (zh/en dictionaries)', () 
   assert.match(source, /"conn\.title": "Connections"/)
   assert.match(source, /"btn\.addEnv": "＋ 环境"/)
   assert.match(source, /"btn\.addEnv": "＋ Environment"/)
-  assert.match(source, /"cfg\.summary":/)
+  assert.match(source, /"dsh\.tooOld":/)
 })
 
 test('client bundle releases its locale dictionaries on disposal (hot reload)', () => {
@@ -586,12 +585,12 @@ test('client bundle folds the add form behind an explicit entry point', () => {
   assert.match(source, /id: "dbh-ws-list"/)
 })
 
-test('client bundle folds status/options into the header + a settings strip', () => {
-  assert.match(source, /className: "dbh-statustext", title: modeLabel/)
+test('client bundle folds status/options into the header + DSH-style settings rows', () => {
+  assert.match(source, /className: "dbh-titlebar"/)
+  assert.match(source, /className: "dbh-statusline"/)
   assert.match(source, /var toggleSettings = function \(\)/)
-  assert.match(source, /className: "dbh-strip"/)
-  assert.match(source, /t\("cfg\.summary", \{/)
-  assert.match(source, /className: "dbh-cfgsum"/)
+  assert.match(source, /className: "dbh-settings"/)
+  assert.match(source, /className: "dbh-settings dbh-settingsbar"/)
   // view state survives remounts within the page session
   assert.match(source, /var uiMemory = \{ expanded: \{\}, addOpen: false, addTarget: "", settingsOpen: false, advOpen: false \};/)
 })
@@ -613,10 +612,10 @@ test('client bundle keeps the pre-test gate before saving a connection', () => {
   assert.match(source, /className: "dbh-pretest"/)
 })
 
-test('client bundle injects only slots and probes the host transport', () => {
-  // Regression gate for the 0.2.x failure: a never-satisfied `settingsScope`
-  // injection left the plugin pending forever, so nothing rendered and nothing
-  // logged. Only `slots` may be injected; the face probes for the rest.
+test('client bundle injects only slots (the removed settingsScope stays out)', () => {
+  // A never-satisfied `settingsScope` injection left the plugin pending forever,
+  // so nothing rendered and nothing logged. Only `slots` may be injected; the
+  // bridge needs no service at all.
   assert.match(source, /var inject = \["slots"\];/)
   assert.doesNotMatch(source, /inject = \[[^\]]*"settingsScope"/)
   // The live poll belongs to a rendered page, not to the plugin scope: an idle
@@ -683,14 +682,19 @@ test('client bundle disables what the installed dbhub cannot do', () => {
   assert.match(source, /disabled: !roSupported,/)
 })
 
-test('client bundle gates every modern surface on the Host dsh version', () => {
+test('client bundle renders every surface unconditionally and warns on an unsupported dsh', () => {
   // 5.2 surfaces (title/version header, update prompt, wide settings block,
-  // inline read-only toggle, switch-style controls) exist only on dsh >= 0.2.1.
-  // On 0.1.x the bundle must render the OLD DOM — the offscreen gate's legacy
-  // groups pin that, so the flag is read, never inferred from a slot existing.
-  assert.match(source, /var modern = value\.dshModern === true;/)
+  // inline read-only toggle, switch-style controls) are the ONLY surfaces now:
+  // 0.1.x is no longer supported, so nothing is version-gated any more. An old
+  // host gets a full page plus one visible warning line (never a blank card).
+  assert.doesNotMatch(source, /dshModern/)
   assert.match(source, /var pluginVersion = typeof value\.pluginVersion === "string"/)
   assert.match(source, /var dshVersion = typeof value\.dshVersion === "string"/)
+  assert.match(source, /var dshTooOld = value\.dshTooOld === true;/)
+  assert.match(source, /className: "dbh-warncard dbh-tooold"/)
+  assert.match(source, /t\("dsh\.tooOld", \{ min: dshMinVersion, v: dshVersion \|\| "\?" \}\)/)
+  assert.match(source, /"dsh\.tooOld": "此插件需要 DSH \{min\} 或更高版本/)
+  assert.match(source, /"dsh\.tooOld": "This plugin requires DSH \{min\} or later/)
   assert.match(source, /var runtime = value\.runtime === "desktop"/)
   // The three mounts are named, not guessed: settings dialog vs full pages.
   assert.match(source, /function SettingsSectionPanel\(props\)/)
@@ -703,8 +707,8 @@ test('client bundle gates every modern surface on the Host dsh version', () => {
   // that measured once and was never re-armed (see the measurement test).
   assert.match(source, /function attachMeasuredWidth\(state\)/)
   assert.match(source, /var innerRefCb = widthCbRef\.current;/)
-  assert.match(source, /var isMobile = modern && \(viewportWidth > 0/)
-  assert.match(source, /var isWide = modern && !isMobile && surface !== "modal"/)
+  assert.match(source, /var isMobile = viewportWidth > 0 \? viewportWidth < 700/)
+  assert.match(source, /var isWide = !isMobile && surface !== "modal"/)
 })
 
 test('client bundle shows the plugin version and the quiet update prompt', () => {
@@ -746,7 +750,7 @@ test('client bundle renders DSH-style settings rows, the harness Switch and row 
   assert.match(source, /className: "dbh-srow"/)
   // Non-modal pages always use the horizontal bar (a narrow desktop column gets
   // the compact variant instead of four stacked rows).
-  assert.match(source, /var useSettingsBar = modern && !isMobile && surface !== "modal"/)
+  assert.match(source, /var useSettingsBar = !isMobile && surface !== "modal"/)
   assert.match(source, /className: "dbh-settings dbh-settingsbar"/)
   // State words are two-character, current-state labels — never "已开启".
   assert.match(source, /"row\.enable": "启用插件"/)

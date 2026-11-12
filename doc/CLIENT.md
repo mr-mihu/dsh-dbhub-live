@@ -28,11 +28,11 @@
 
 ## host face：探测与写回（别退回 inject）
 
-`export const inject` **只能有 `["slots"]`**。`legacyFace(scope)` 与 `httpFace()` 实现同一接口（`getSnapshot` / `subscribe` / `setEnabled` / `saveConfig` / `configOp` / `refresh`，快照 `{ status, value }`），`ctx.get('settingsScope')` 有则优先 legacy。
+`export const inject` **只能有 `["slots"]`**。`httpFace()` 是唯一实现（`getSnapshot` / `subscribe` / `setEnabled` / `saveConfig` / `configOp` / `refresh`，快照 `{ status, value }`）。`settingsScope` 既不注入也不探测——0.2.x 已删除该服务，而 0.1.x（唯一提供它的版本线）已不再支持。
 
 - HTTP face 四个入口：`GET /state`、`POST /enabled`、`POST /options`、`POST /op`；写完用响应里的 view 直接刷新快照（不等轮询）；`configOp` 的 `{op: …}` 直接 POST。
 - **写失败必须冒泡**：`request` 的 rejection 一路传到调用方（失败分支**不得**写成 `noop`），见下节。`refresh()` 永不 reject（失败时把 `status:'error'` 发布出去，由页面渲染 + 提供重试）。
-- **选项写入优先走官方 settings 表单**：Host 发布 `entryId`，客户端有 `ctx.configForms` 且 entryId 非空时 `configForms.get(entryId).set(field, value)`，失败/解析不到才回退 `POST /options`（0.1.x 与无 settings 客户端走这条）。
+- **选项写入优先走官方 settings 表单**：Host 发布 `entryId`，客户端有 `ctx.configForms` 且 entryId 非空时 `configForms.get(entryId).set(field, value)`，失败/解析不到才回退 `POST /options`（无 settings 客户端的部署走这条）。
 - **HTTP 通道轮询是「按订阅」的**：只有渲染中页面用 `props.subscribe(fn, { live: true })` 起 1.5s 轮询（`document.hidden` 跳过）；插件作用域订阅（`face.subscribe(syncSidebar)`）只做一次性拉取。**空闲 GUI 不得持续轮询**，残留 interval 会让 `check:ui` 挂住不退出。
 - 组件不得接触 `ctx`：数据/回调一律通过注册时的 `inject: () => face` 传入 props。
 
@@ -40,7 +40,7 @@
 
 浏览器半曾经把**所有写失败都当成功**：`httpFace().post` 的 rejection 分支是 `noop`，于是 `saveConfig().then(setSaved(true))` 对 401、`{ok:false,error}`、网络拒绝一律显示「已保存 ✓」，`configOp`（含带 DSN 的保存）、`setEnabled`、`remove` 全部静默丢掉。四条约定按此收口：
 
-1. **写失败必须可见**：face 的写返回 promise，失败时 **reject**（带 message）；组件捕获后写入 `writeError`，在**两个面**都渲染一行 `.dbh-error .dbh-writefail[role=alert]`，并且**不得**把 `saved` 置 true。失败后不锁按钮，再次点击就是重试。
+1. **写失败必须可见**：face 的写返回 promise，失败时 **reject**（带 message）；组件捕获后写入 `writeError`，渲染一行 `.dbh-error .dbh-writefail[role=alert]`，并且**不得**把 `saved` 置 true。失败后不锁按钮，再次点击就是重试。
 2. **错误态可重试**：`StatusCard` 必须读 `snapshot.status`（不是只读 `value`）。`'error'` 时渲染 `.dbh-loadfail` 错误行 + 「重试」按钮（调 `face.refresh()` 做一次真实读取，不是伪造一个空 view）。失败时保留上一次成功读到的行，不显示成"一个连接都没有"。
 3. **未知态不注册入口**：`sidebarWanted()` 只在 `enabled === true` 时返回 true（见「三个入口」）。
 4. **Hook 序列一致**：`{'props.view'}` 的 `summary` / `page` 两种 view 必须**跑完全相同的 Hook 序列**——summary 的早退只能发生在**所有 Hook 之后**，页面树在返回处用 `isPage ? … : summaryNode` 选择。否则同一实例从 `summary` 切到 `page` 会抛 `Rendered more hooks than during the previous render`（`plugins.row.config` 的卡片就是这样同时服务两种 view 的）。
@@ -50,7 +50,7 @@
 - **探测命令发送失败**（401 / 离线）要**立刻**把该次探测收尾成「命令未能送达宿主」，并 `clearTimeout` 掉已起的看门狗；否则页面先转 30s/60s，最后报「测试超时未返回」——把"没送到"报成"连不上"。
 - **写后的响应乱序（两条水位线，别合并成一条）**：读响应按 `seq`/`appliedSeq` 排序——比已应用版本旧的读直接丢弃，写命令**发起时**就取一个高于所有在途读的序号，于是「写之前发起、写之后才回」的轮询答案不会盖掉用户刚点的写。**写响应另算一条水位线**（`appliedWriteStamp`）：它是「用户这次写之后」的状态，**永不**与读序号比较，只与更晚的写比较。否则「写先发 → 读后发 → 读先回 → 写后回」里读拿走了更高序号，写自己的答案被丢掉，卡片停在写前值、旁边还挂着「已保存 ✓」，得等 1.5s 轮询自愈。门禁 `[39]`。
 - **settings 表单的受理只看 `true`**：`form.set(key, raw)` resolve `undefined`（0.2.x 若干构建就是这样）曾被 `ok !== false` 读成「受理」→ 零 POST、零校验，页面仍印「已保存 ✓」。现在只有 `ok === true` 算受理，`false`/`undefined`/reject 一律回落 `POST /options`（那条路由由宿主真写）。门禁 `[40]`。
-- **宿主返回值缺失 ≠ 空页**：`{ok:true}` 却没有 view（反代改写、响应截断）曾被当成 `value: {}` 发布——3 tile→0、modern→legacy（所有 `value.*` 标志消失），弹窗行上还留着「已保存 ✓」。现在 `value` 不是「非空对象」时：**读**保留旧行并进 `status:'error'`（与 fetch 失败同一条 `.dbh-loadfail` + 「重试」路径），**写**直接 reject（`.dbh-writefail` + draft 回滚 + 不置 `saved`），绝不 `publish({status:'ready'})`。门禁 `[41]`。
+- **宿主返回值缺失 ≠ 空页**：`{ok:true}` 却没有 view（反代改写、响应截断）曾被当成 `value: {}` 发布——3 tile→0、布局标志全部消失，弹窗行上还留着「已保存 ✓」。现在 `value` 不是「非空对象」时：**读**保留旧行并进 `status:'error'`（与 fetch 失败同一条 `.dbh-loadfail` + 「重试」路径），**写**直接 reject（`.dbh-writefail` + draft 回滚 + 不置 `saved`），绝不 `publish({status:'ready'})`。门禁 `[40]`。
 - **非 JSON 响应必须本地化**：反代返回 HTML 时 `res.json()` 抛 `Unexpected token '<' … is not valid JSON`——英文栈信息，还带着响应体。解析失败统一映射成传输失败（本地化 `error.write`），底层文本与响应体一律不进页面。门禁 `[42]`。
 - **不可撤销的写要单飞**：删除确认用 ref 同步占位（`setState(null)` 要等下一次渲染，同一 tick 的第二次点击拿到的还是旧闭包），连点只发一个 `remove`；失败后解除占用，再点就是重试。门禁 `[43]`。
 - **失败时不许留旧勾**：`savedHint()` 是 `saved && !writeError`——「已保存 ✓」不能和一条失败行同时出现（启用/停用这类没有 draft 可回滚的写只设 `writeError`，一次先前的成功会把它漏出来）。门禁 `[45]`；写失败**必须**把 draft 放回宿主值（`draftEdited.current = false` + `setDraft(draftFromValue(value))`），否则字段里留着一个 store 从未接受的值，门禁 `[44]`。
@@ -99,26 +99,25 @@
 3. 连接元数据用 `connLabelView` 拆成 `前缀(type://host:port/) + 库名`，**前缀可截断、库名绝不截断**（`dbh-conn-pre` 省略号 / `dbh-conn-db` 不收缩）——"窄行里看不到库名"是最常见的抱怨。
 
 - 行内只允许出现 `w.conn`（元数据）；`srcId` 只是句柄，**绝不回显 DSN**。
-- 🔒 前缀：**现代面不加**（会被误读成"需要密码"，且与只读 chip 的锁冲突）；legacy 面保留原标记。
+- 🔒 前缀：**不加**（会被误读成"需要密码"，且与只读 chip 的锁冲突）。
 - 「来源」（手填 / 扫描 / 复制 / 自动发现）**不得做成行内徽章**——它几乎每行都一样却最抢眼；改为环境名 chip 的 tooltip（`originTitle`），只有"自动发现且未持久化"这一例外在 tooltip 里显式点名。
-- 改名走 `configOp({op:'rename'})`；改名 + 改连接走**一条** `{op:'add', renameFrom}`（`configOp` 在 legacy 通道是单字段，连续两次写会互相覆盖）。
-- 写命令被拒时必须有可见回执：宿主把失败原因放进 `view.opNotice`（一次性 JSON `{ok:false,message}`，下一条命令即清空），两个面都渲染成 `.dbh-notice`。浏览器半**不读** `/op` 响应体，所以收不到这条就等于"点了没反应"。覆盖类确认（改名落到已有环境、`add` 带 `renameFrom`）在卡片侧由 `dbh-warncard` 确认后，把 `overwrite:true` 一起发给宿主。
+- 改名走 `configOp({op:'rename'})`；改名 + 改连接走**一条** `{op:'add', renameFrom}`（桥接上是一条命令，分两次写会互相覆盖）。
+- 写命令被拒时必须有可见回执：宿主把失败原因放进 `view.opNotice`（一次性 JSON `{ok:false,message}`，下一条命令即清空），卡片渲染成 `.dbh-notice`。浏览器半**不读** `/op` 响应体，所以收不到这条就等于"点了没反应"。覆盖类确认（改名落到已有环境、`add` 带 `renameFrom`）在卡片侧由 `dbh-warncard` 确认后，把 `overwrite:true` 一起发给宿主。
 
 ### 顶部与添加
 
-- **legacy 面（0.1.x）顶部只留一行**：状态徽章 + 工具数 + 设置条摘要 + `[⚙ 设置]` + `[启用/禁用]`；自动更新间隔与「在侧边栏显示入口」复选框一起收进默认收起的设置条。
-- **现代面（≥0.2.1）按「三面布局」**：标题 + 版本 + 升级链接；状态行只留状态与连接数；设置用 DSH 行样式；长说明进折叠区。
+- **顶部**：标题 + 版本 + 升级链接；状态行只留状态与连接数；设置用 DSH 行样式；长说明进折叠区。宿主版本过旧时，标题下方多一条 `.dbh-tooold` 警告卡（中英双语，写明最低版本与当前版本）——页面、连接、工具全部照常，**不是**功能门。
 - **添加连接默认收起**：「＋ 添加连接」（全局；工作区用 `<datalist id="dbh-ws-list">` 给已有工作区）/ 分组头「＋ 环境」（工作区自动带入，少一个字段）。保存仍走原有「试连 → 失败才确认」门禁。
 
 ## 环境选项的落点（只读 / SSH）
 
-同一组选项在**两个面**上呈现不同，按 `view.dshModern` 分叉——**这是 legacy 与现代面的分工，不是新旧两套规则**：
+同一组选项只有一套规则，落点固定：
 
-| 元素 | 现代面（`dshModern === true`） | legacy 面（`dshModern === false`） |
-| --- | --- | --- |
-| 只读标记 | 行内 `.dbh-rochip`，弹窗/宽屏/手机三种布局都出现；点击发 `{op:'options', readOnly}`（无 DSN）；必须 **开锁+「可写」/ 闭锁+「只读」**（同一 16px 线性图标风格），否则两个灰色「只读」会被误读成都是只读 | 环境 chip 内 `span.dbh-ro`，说明并入 chip `title` |
-| 设置控件 | 开关必须用 `primitives.Switch`（缺失时才回退 `.dbh-fbswitch`） | `.dbh-checkbox` 复选框 |
-| 连接串 🔒 | 不加 | 保留 |
+| 元素 | 呈现 |
+| --- | --- |
+| 只读标记 | 行内 `.dbh-rochip`，弹窗/宽屏/手机三种布局都出现；点击发 `{op:'options', readOnly}`（无 DSN）；必须 **开锁+「可写」/ 闭锁+「只读」**（同一 16px 线性图标风格），否则两个灰色「只读」会被误读成都是只读 |
+| 设置控件 | 开关必须用 `primitives.Switch`（缺失时才回退 `.dbh-fbswitch`） |
+| 连接串 🔒 | 不加（唯一锁是只读 chip） |
 
 - SSH 只影响路由，**不做徽章**，只进环境 chip 的 tooltip（`ro.sshTitle`）。
 - 编辑表单里的只读勾选保留（两面都有）；`.dbh-checkbox` **不用 `.dbh-input`、不包进 `.dbh-field`**，否则 `render-check` 的 `dbh-field === 3` 与 `typeWithin('dbh-addpanel',0..2)` 索引会变。
@@ -126,13 +125,13 @@
 - 秘密输入 `type="password"`、占位符写明「留空 = 保持原值」，**编辑态绝不回显已存密码/口令/密钥路径**（镜像行只给 `authKind` / `hasPassword` / `hasPassphrase` / `keyReady` 布尔）。
 - 写入载荷统一走 `connDraftOf(form)` / `withConnDraft(op, form)`：只读开关与隧道随 `add` / `test` / `options` 三种 op 一起发出，**绝不单独再发一条**。表单对象在产生 op 时会带 `_draft` 指回原始草稿，别绕过这两个函数手拼 `readOnly` / `ssh`。
 
-## 三面布局契约（5.2，`dshModern` 门）
+## 三面布局契约（5.2）
 
 同一个组件的**三个面由 slot + 实测宽度决定**：`settings.section`（弹窗，窄列）、主面板与 `plugins.row.config` 的 `page`（宽屏整页）、`< 700px` 手机小屏（堆叠紧凑、触摸尺寸；`isWide` 阈值为 720）。
 
 - **实测宽度 = 回调 ref 持有的 `ResizeObserver`**（`attachMeasuredWidth`），不是「effect 里读一次 `ref.current`」：后者依赖数组为空，列没在那一刻挂上（切面、重挂载、宿主延迟挂载）就**永不重测**，宽度恒 0、布局静默退回 `window.innerWidth`。回调 ref 负责挂/换/卸（同一节点重复调用是 no-op），挂载 effect 只负责卸载时 disconnect；**没有任何计时器**（残留 interval 会让 `check:ui` 挂住）。没有 `ResizeObserver` 的宿主（旧浏览器、离屏门）才回退 viewport。
 
-- **新界面必须挂在 `view.dshModern` 下**；`dshModern === false`（DSH 0.1.x）必须渲染**与旧版逐字兼容的 DOM**（含旧页头 `4 个工具（固定）`、⚙ 设置条、`dbh-checkbox`），否则 `scripts/render-check.mjs` 既有断言会红。旧断言不动，新断言由 harness 另行扩展。
+- **唯一界面**：0.1.x 已不再支持（最低 DSH 0.2.1，预发布算同一条线），所以不再有版本分叉的旧 DOM；宿主版本过旧只显示一条 `.dbh-tooold` 警告，页面与操作不受影响（见 `[28]`）。
 - 现代面硬约定：
   1. 页头 = 标题 + 灰色版本号 + 一行「↑ 可升级到 x」文字链接（点击才展开中性说明面板；**禁止红底/红框/error 色**）+ 图标式 ↻；**链接的 tooltip 描述它真正做的事（`ver.linkHint`「展开升级说明与安装命令」），不得写成 `ver.copySpec`（「点击复制 …」）**——复制按钮在面板内，tooltip 与动作不一致时用户会为了复制而点开面板；
   2. 状态行只显示「运行中/已停用 · N 个连接」；工具数 / 一次性模式 / dbhub 版本进页面底部「ⓘ 说明与技术详情」折叠区（默认收起）；
@@ -147,11 +146,11 @@
 - **等待态不给二次提交**：`pendingPretest` 期间保存/添加按钮 `disabled`，避免重复派发同一测试。
 - 探测要几秒（spawn dbhub），但**写入结果必须立刻可见**——靠宿主 `publishFast` 即时回推，不要改回「等整轮扫描」。
 - **删除必须走确认卡**（`.dbh-warncard` + `del.*`）：它是唯一不可撤销的写，取消即零写入；确认后只发一条 `{op:'remove'}`（无 DSN）。
-- **保存/开关的结果必须挂在同一个提示上**：`settingsBar` / `settingsRows`（弹窗、手机）/ legacy strip 共用 `savedHint()`——失败时它返回 `null`（失败由全局 `.dbh-writefail` 行承担），绝不能出现「已保存 ✓」与错误行同框。
+- **保存/开关的结果必须挂在同一个提示上**：`settingsBar` / `settingsRows` 共用 `savedHint()`——失败时它返回 `null`（失败由全局 `.dbh-writefail` 行承担），绝不能出现「已保存 ✓」与错误行同框。
 
 ## 验收
 
-- 布局/交互改动的验收 = `npm run check:ui`（离屏渲染 + 点击交互；分段 `[1]`…`[46]`，涵盖模式判定、默认展开、全部展开/折叠、添加面板、复制、i18n 覆盖率、热重载幂等、覆盖门、HTTP 桥、只读/SSH 载荷、现代三面、版本门、**写失败/错误态/未知态/Hook 序列/间隔校验/删除确认/写读序号/form 受理语义/缺失 value/非 JSON/删除单飞/draft 回滚/tick 抑制/实测列宽**）全绿 + `node test/client-format.test.mjs`。
-- 已知易错门：`[14]` 重复 locale 注册、`[17]` 复制字符串、`[18]` 无 settingsScope 走桥接 + `configForms` 优先与回退 + 轮询可回收、`[19]` 启用∧开关 / 禁用一律隐藏 / 设置页始终在、`[20]`/`[21]`/`[23]` 只读与 SSH 载荷、`[22]` 残留 interval、`[25]` 升级链接 tooltip 与「复制」职责分离、`[28]` 手机布局、`[29]` 0.1.x 渲染旧页、`[30]` 窄桌面窗口保持横向设置条、`[32]`–`[37]` 失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读响应）、`[38]` 假 react 的 effect 循环上限（否则 Hook 回归 = 挂死而不是红）、`[39]` 写/读两条水位线双向、`[40]` 表单只认 `true`、`[41]` 缺失 value、`[42]` 非 JSON、`[43]` 删除单飞、`[46]` 实测列宽驱动布局（宿主挂 ref + 自带 ResizeObserver 桩）。
+- 布局/交互改动的验收 = `npm run check:ui`（离屏渲染 + 点击交互；分段 `[1]`…`[46]`，涵盖模式判定、默认展开、全部展开/折叠、添加面板、复制、i18n 覆盖率、热重载幂等、覆盖门、HTTP 桥、只读/SSH 载荷、三面布局、过旧版本警告、**写失败/错误态/未知态/Hook 序列/间隔校验/删除确认/写读序号/form 受理语义/缺失 value/非 JSON/删除单飞/draft 回滚/tick 抑制/实测列宽**）全绿 + `node test/client-format.test.mjs`。
+- 已知易错门：`[13]` 重复 locale 注册、`[16]` 复制字符串、`[17]` 桥接 / `configForms` 优先与回退 / 轮询可回收、`[18]` 启用∧开关 / 禁用一律隐藏 / 设置页始终在、`[19]`/`[20]`/`[21]` 只读与 SSH 载荷、`[22]` 残留 interval、`[24]` 升级链接 tooltip 与「复制」职责分离、`[26]` 弹窗设置折叠、`[27]` 手机布局、`[28]` 过旧版本只警告不拦功能、`[29]` 窄桌面窗口保持横向设置条、`[31]`–`[36]` 失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读响应）、`[37]` 假 react 的 effect 循环上限（否则 Hook 回归 = 挂死而不是红）、`[38]` 写/读两条水位线双向、`[39]` 表单只认 `true`、`[40]` 缺失 value、`[41]` 非 JSON、`[42]` 删除单飞、`[45]` 实测列宽驱动布局（宿主挂 ref + 自带 ResizeObserver 桩）。
 - **SSH 层测试的空字段在客户端拦下**：`connDraftOf` 在开关打开时恒返回对象，`if (!ssh)` 是死分支；现在 `host`/`user` 任一为空即用 `adv.testSshNeedFields` 就地回话（不派发、不白等一次宿主往返），填好后再点才发 `{op:'test', kind:'ssh'}`。
 - **失败路径必须有桩**：`mount()` 的 `fetchImpl` 是脚本化应答（`undefined` = 正常、`'reject'` = 网络断、`'html'` = 200 但响应体不是 JSON、`{status,payload}` = 指定应答、Promise = 由测试决定何时以及按什么顺序回），只有被接受的应答才记进 `setCalls`/`opCalls`（`posts` 记下发过的每一个写，含被拒的）——所以「写没被接受」「只发了一个 op」都是可断言的。假 react 还会**按组件身份校验 Hook 数**（同类型组件 Hook 数变化即抛，正是 React 的行为），否则条件 Hook 结构性不可见；`render()` 的重渲染循环有 100 轮上限，超限抛 `effect loop did not settle`。
