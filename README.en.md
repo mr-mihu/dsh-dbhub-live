@@ -218,6 +218,8 @@ Only the statement's **first keyword** matters: `SELECT` / `SHOW` / `DESCRIBE` /
 | ProxyJump | Optional, **one hop only**, format `[user@]host[:port]` |
 | Key passphrase / SSH password | **Typed in the UI only**, never echoed back; when editing, **blank = keep the stored value** |
 
+The password/passphrase is stored in the **DSH credential store** (by default `~/.dsh/.credentials.yaml`); the plugin's own connection file keeps only a reference name, so no plaintext secret appears there (connections created before the credential service was available keep plaintext and log a one-time notice).
+
 "Advanced: SSH tunnel" holds **two** test buttons:
 
 - **"Test SSH tunnel"** validates the tunnel layer alone: it first probes TCP reachability of `ssh_host:ssh_port` (about 5 seconds; a failure carries a code such as `ENOTFOUND` / `ECONNREFUSED` / `ETIMEDOUT`), with key auth it checks that the private key file exists and is readable, and finally it **deliberately** asks dbhub to open a tunnel to an address that cannot possibly be listening — then decides from the evidence: an error carrying **SSH signatures** (handshake / authentication / private key) means the tunnel is down; one carrying a **database-layer signature** (`PROTOCOL_CONNECTION_LOST`, `Connection lost`, `Access denied`, `Unknown database`, `ER_*`, `ECONNREFUSED` and the like) means the connection **already got past the tunnel**, so the verdict is "SSH tunnel works"; only when neither is present does it honestly say "cannot be determined", with the tail of the output attached.

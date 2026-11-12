@@ -29,6 +29,7 @@
 | 模型侧 `@db:<句柄>` 语义 / 别名目录（`lib/policy.mjs`） | `test/policy.test.mjs`（目录、上限、零知识）+ AGENTS.md「其他不可退化」+ `doc/CLIENT.md` + 两份 README 的策略段字数 | 单测 + `check:secrets` |
 | 环境级结果行数上限（`maxRows`：store 字段、`{op:'options'}` 写入、`dbhub_execute_sql` 单次覆盖与截断提示） | AGENTS.md「环境选项（只读 / SSH / 结果行数上限）」+ `doc/REQUIREMENTS.md` R84 + `doc/CLIENT.md` 的「环境选项的落点」+ `doc/ARCHITECTURE.md`「环境选项与执行预算」+ `test/max-rows.test.mjs` + `scripts/render-check.mjs` 的 `[48]` 段 + 两份 README（用户可见） | `test/max-rows.test.mjs` + `check:ui` + `check:secrets` + `check:docs` |
 | 会话权限闸门（`dbhub_execute_sql` 的写判定 `classifySql`、`sandboxPolicy.resolve` 与 `approval.request` 两个可选服务、拒绝/弹窗文案） | AGENTS.md「会话权限闸门（写操作）」+ `doc/ARCHITECTURE.md`「会话权限闸门」+ `doc/REQUIREMENTS.md` R85 + `lib/policy.mjs` 的会话权限行 + `test/permission-gate.test.mjs` + `lib/i18n.mjs` 的 `result.sessionReadOnly` / `result.write*` / `approval.writeReason` + 两份 README（用户可见） | `test/permission-gate.test.mjs` + 单测 + `check:secrets` + `check:docs` |
+| SSH 秘密存储（`ctx.get('credentials')` 凭据库、`ssh.passwordRef` / `passphraseRef`、boot 迁移、执行前解析、删除/替换时释放） | AGENTS.md「SSH 秘密与凭据库」+「环境选项」+「存储」+ `doc/ARCHITECTURE.md`「环境选项与执行预算」+ `doc/REQUIREMENTS.md` R86 + `doc/DESENSITIZE.md`「原则」+ `test/cred-store.test.mjs` + `lib/i18n.mjs` 的 `result.sshSecretMissing` / `log.cred*` / `log.secret*` + 两份 README 的 SSH 隧道段 | `test/cred-store.test.mjs` + 单测 + `check:secrets` + `check:docs` |
 
 ## 门禁只保证什么
 

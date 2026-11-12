@@ -218,6 +218,8 @@ AI：…（返回查询结果）
 | ProxyJump | 可选，**只支持一跳**，格式 `[user@]host[:port]` |
 | 密钥口令 / SSH 密码 | **只能在界面输入**、不回显；编辑时**留空 = 保持原值** |
 
+口令保存在 **DSH 凭据库**（默认 `~/.dsh/.credentials.yaml`），插件自己的连接文件只保存引用名——连接文件里看不到明文口令（凭据服务不可用的旧环境仍以明文保存，并会在日志里提示一次）。
+
 「高级：SSH 隧道」里有**两个**测试按钮：
 
 - **「测试 SSH 隧道」**只验证隧道这一层：先做 `ssh_host:ssh_port` 的 TCP 可达性探测（约 5 秒，失败会带 `ENOTFOUND` / `ECONNREFUSED` / `ETIMEDOUT` 等错误码），密钥认证时检查私钥文件存在可读，最后**故意**让 dbhub 对一个不可能在监听的地址建隧道，再按证据判定：报错带 **SSH 自身特征**（握手 / 认证 / 私钥）就是隧道断；带 **数据库层特征**（`PROTOCOL_CONNECTION_LOST`、`Connection lost`、`Access denied`、`Unknown database`、`ER_*`、`ECONNREFUSED` 等）就说明连接**已经穿过隧道**，结论是「SSH 隧道可用」；都没有才如实说「无法判定」并附输出末尾。
