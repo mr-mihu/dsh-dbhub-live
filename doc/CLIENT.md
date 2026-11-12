@@ -124,21 +124,23 @@
 - **顶部**：标题 + 版本 + 升级链接；状态行只留状态与连接数；设置用 DSH 行样式；长说明进折叠区。宿主版本过旧时，标题下方多一条 `.dbh-tooold` 警告卡（中英双语，写明最低版本与当前版本）——页面、连接、工具全部照常，**不是**功能门。
 - **添加连接默认收起**：「＋ 添加连接」（全局；工作区用 `<datalist id="dbh-ws-list">` 给已有工作区）/ 分组头「＋ 环境」（工作区自动带入，少一个字段）。保存仍走原有「试连 → 失败才确认」门禁。
 
-## 环境选项的落点（只读 / SSH）
+## 环境选项的落点（只读 / SSH / 结果行数上限）
 
 同一组选项只有一套规则，落点固定：
 
 | 元素 | 呈现 |
 | --- | --- |
 | 只读标记 | 行内 `.dbh-rochip`，弹窗/宽屏/手机三种布局都出现；点击发 `{op:'options', readOnly}`（无 DSN）；必须 **开锁+「可写」/ 闭锁+「只读」**（同一 16px 线性图标风格），否则两个灰色「只读」会被误读成都是只读 |
+| 最大返回行数 | 「高级」区里的数字输入 `.dbh-caprow`（`type="number"`、`min=0`、占位「0 或留空 = 不限」），`aria-label` = `adv.maxRows`；**不随 SSH 开关出现/消失**（未开隧道时也在），保存走 `connDraftOf`/`withConnDraft` 的 `options` 载荷（`maxRows: 0` = 清空 = 不限）；已设置的上限进环境 chip 的 tooltip（`cap.chip`） |
 | 设置控件 | 开关必须用 `primitives.Switch`（缺失时才回退 `.dbh-fbswitch`） |
 | 连接串 🔒 | 不加（唯一锁是只读 chip） |
 
 - SSH 只影响路由，**不做徽章**，只进环境 chip 的 tooltip（`ro.sshTitle`）。
-- 编辑表单里的只读勾选保留（两面都有）；`.dbh-checkbox` **不用 `.dbh-input`、不包进 `.dbh-field`**，否则 `render-check` 的 `dbh-field === 3` 与 `typeWithin('dbh-addpanel',0..2)` 索引会变。
-- SSH 高级区 `.dbh-adv` 折叠面板**必须排在 DSN 输入之后**，折叠态放 `uiMemory.advOpen`；区内「测试该配置」旁是**「测试 SSH 隧道」**（独立按钮/回执，只验 SSH 层）。
+- 编辑表单里的只读勾选保留（两面都有）；`.dbh-checkbox` **不用 `.dbh-input`、不包进 `.dbh-field`**，否则 `render-check` 的 `dbh-field === 3` 与 `typeWithin('dbh-addpanel',0..2)` 索引会变。**「最大返回行数」刻意用 `.dbh-caprow` 而不是 `.dbh-advrow`**：后者在门禁里被当作"隧道字段"计数（未开隧道时必须为 0），且它必须排在 DSN 之后、SSH 字段之后以保住 `typeWithin('dbh-advbody',0..3)` 的索引。
+- **行数上限的就地校验**：`parseRowCap` 返回 `null`（负数 / 小数 / 非数字文本）时保存按钮**零请求**并渲染 `.dbh-error .dbh-invalid`（`cap.badRows`，错误按表单归属，添加面板与行编辑器各看自己那条）；这是**发请求前**的校验，不是把值塞给宿主再等拒绝。空值 = `0` = 不限，是显式写入（与 `readOnly:false` 同款），不是"省略"。
+- SSH 高级区 `.dbh-adv` 折叠面板**必须排在 DSN 输入之后**，折叠态放 `uiMemory.advOpen`；区内「测试该配置」旁是**「测试 SSH 隧道」**（独立按钮/回执，只验 SSH 层）。折叠按钮**不再因 dbhub 能力过旧而禁用**（面板里还有行数上限，它不依赖 dbhub 方言）；SSH 复选框与相关字段在能力不足时禁用并显示 `capHint`。
 - 秘密输入 `type="password"`、占位符写明「留空 = 保持原值」，**编辑态绝不回显已存密码/口令/密钥路径**（镜像行只给 `authKind` / `hasPassword` / `hasPassphrase` / `keyReady` 布尔）。
-- 写入载荷统一走 `connDraftOf(form)` / `withConnDraft(op, form)`：只读开关与隧道随 `add` / `test` / `options` 三种 op 一起发出，**绝不单独再发一条**。表单对象在产生 op 时会带 `_draft` 指回原始草稿，别绕过这两个函数手拼 `readOnly` / `ssh`。
+- 写入载荷统一走 `connDraftOf(form)` / `withConnDraft(op, form)`：只读开关、行数上限与隧道随 `add` / `test` / `options` 三种 op 一起发出，**绝不单独再发一条**。表单对象在产生 op 时会带 `_draft` 指回原始草稿，别绕过这两个函数手拼 `readOnly` / `maxRows` / `ssh`。
 
 ## 三面布局契约（5.2）
 
@@ -165,7 +167,7 @@
 
 ## 验收
 
-- 布局/交互改动的验收 = `npm run check:ui`（离屏渲染 + 点击交互；分段 `[1]`…`[47]`，涵盖模式判定、默认展开、全部展开/折叠、添加面板、复制、i18n 覆盖率、热重载幂等、覆盖门、HTTP 桥、只读/SSH 载荷、三面布局、过旧版本警告、**写失败/错误态/未知态/Hook 序列/间隔校验/删除确认/写读序号/form 受理语义/缺失 value/非 JSON/删除单飞/draft 回滚/tick 抑制/实测列宽**、**`@` 输入源（形状/候选/多选序列化/空态/无服务部署）**）全绿 + `node test/client-format.test.mjs`。
-- 已知易错门：`[13]` 重复 locale 注册、`[16]` 复制字符串、`[17]` 桥接 / `configForms` 优先与回退 / 轮询可回收、`[18]` 启用∧开关 / 禁用一律隐藏 / 设置页始终在、`[19]`/`[20]`/`[21]` 只读与 SSH 载荷、`[22]` 残留 interval、`[24]` 升级链接 tooltip 与「复制」职责分离、`[26]` 弹窗设置折叠、`[27]` 手机布局、`[28]` 过旧版本只警告不拦功能、`[29]` 窄桌面窗口保持横向设置条、`[31]`–`[36]` 失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读响应）、`[37]` 假 react 的 effect 循环上限（否则 Hook 回归 = 挂死而不是红）、`[38]` 写/读两条水位线双向、`[39]` 表单只认 `true`、`[40]` 缺失 value、`[41]` 非 JSON、`[42]` 删除单飞、`[45]` 实测列宽驱动布局（宿主挂 ref + 自带 ResizeObserver 桩）。
+- 布局/交互改动的验收 = `npm run check:ui`（离屏渲染 + 点击交互；分段 `[1]`…`[48]`，涵盖模式判定、默认展开、全部展开/折叠、添加面板、复制、i18n 覆盖率、热重载幂等、覆盖门、HTTP 桥、只读/SSH 载荷、三面布局、过旧版本警告、**写失败/错误态/未知态/Hook 序列/间隔校验/删除确认/写读序号/form 受理语义/缺失 value/非 JSON/删除单飞/draft 回滚/tick 抑制/实测列宽**、**`@` 输入源（形状/候选/多选序列化/空态/无服务部署）**、**行数上限（数字输入/非法值零请求/正确的 options 载荷）**）全绿 + `node test/client-format.test.mjs`。
+- 已知易错门：`[13]` 重复 locale 注册、`[16]` 复制字符串、`[17]` 桥接 / `configForms` 优先与回退 / 轮询可回收、`[18]` 启用∧开关 / 禁用一律隐藏 / 设置页始终在、`[19]`/`[20]`/`[21]` 只读与 SSH 载荷、`[22]` 残留 interval、`[24]` 升级链接 tooltip 与「复制」职责分离、`[26]` 弹窗设置折叠、`[27]` 手机布局、`[28]` 过旧版本只警告不拦功能、`[29]` 窄桌面窗口保持横向设置条、`[31]`–`[36]` 失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读响应）、`[37]` 假 react 的 effect 循环上限（否则 Hook 回归 = 挂死而不是红）、`[38]` 写/读两条水位线双向、`[39]` 表单只认 `true`、`[40]` 缺失 value、`[41]` 非 JSON、`[42]` 删除单飞、`[45]` 实测列宽驱动布局（宿主挂 ref + 自带 ResizeObserver 桩）、`[48]` 行数上限（作用域必须落在 `.dbh-editbox`：`uiMemory.addOpen` 跨挂载保留，残留的添加面板也有一个 `.dbh-caprow`）。
 - **SSH 层测试的空字段在客户端拦下**：`connDraftOf` 在开关打开时恒返回对象，`if (!ssh)` 是死分支；现在 `host`/`user` 任一为空即用 `adv.testSshNeedFields` 就地回话（不派发、不白等一次宿主往返），填好后再点才发 `{op:'test', kind:'ssh'}`。
 - **失败路径必须有桩**：`mount()` 的 `fetchImpl` 是脚本化应答（`undefined` = 正常、`'reject'` = 网络断、`'html'` = 200 但响应体不是 JSON、`{status,payload}` = 指定应答、Promise = 由测试决定何时以及按什么顺序回），只有被接受的应答才记进 `setCalls`/`opCalls`（`posts` 记下发过的每一个写，含被拒的）——所以「写没被接受」「只发了一个 op」都是可断言的。假 react 还会**按组件身份校验 Hook 数**（同类型组件 Hook 数变化即抛，正是 React 的行为），否则条件 Hook 结构性不可见；`render()` 的重渲染循环有 100 轮上限，超限抛 `effect loop did not settle`。

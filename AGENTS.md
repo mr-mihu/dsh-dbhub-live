@@ -45,9 +45,9 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - 版本门槛：1.4.0 起实测；`< 1.0.0` 拒绝（`result.dbhubTooOld`）；不生成未实测写法。
 - 临时文件在 `$DSH_HOME/storages/dsh-dbhub-live/tmp/`：`finally` 尽力删 + boot 时 `sweepTempToml()`。
 
-### 环境选项（只读 / SSH）
-- store：`credentials.json` 顶层 `{ [wsPath]: { environments: { [env]: { dsn, source, updatedAt, readOnly?, ssh? } } } }`；`ssh = {host,port,user,auth,keyPath?,passphrase?,password?,proxyJump?}`。
-- `setWorkspaceEnv(..., opts?)`：opts 缺省**保留** readOnly/ssh；`{readOnly:false}` / `{ssh:null}` 才是删除。`setWorkspaceEnvOptions` 只改选项不碰 DSN。
+### 环境选项（只读 / SSH / 结果行数上限）
+- store：`credentials.json` 顶层 `{ [wsPath]: { environments: { [env]: { dsn, source, updatedAt, readOnly?, ssh?, maxRows? } } } }`；`ssh = {host,port,user,auth,keyPath?,passphrase?,password?,proxyJump?}`。
+- `setWorkspaceEnv(..., opts?)`：opts 缺省**保留** readOnly/ssh/maxRows；`{readOnly:false}` / `{ssh:null}` / `{maxRows:0}` 才是删除。`setWorkspaceEnvOptions` 只改选项不碰 DSN。
 - 模型传 `readOnly:true` 允许、`false` 拒绝（`result.readOnlyUserOnly`，拦截在 `runConfigure`）。
 - `handleConfigOp`：`add` / `set` / `rename` / `remove` / `test` / `options`；`options` 可带 `newEnv`（改名+改选项原子）；行不存在时提升为持久化行（`source:'promoted'`）。实现在 `applyOptionsOp`。
 - **`options` 无选项字段且无 `newEnv` = 零写入**：不调 `setWorkspaceEnvOptions`（它会推进 `updatedAt` 并重写文件），直接返回 `{patches:[], noop:true}`；只有改名时补丁仅含 `rename`。空补丁写成一次"编辑"会让"最近改动时间"失去意义。
@@ -58,7 +58,8 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - `renameWorkspaceEnv` 返回 `{ name, collided, renamed }`：落到已存在的环境必须先确认（`{confirm:true}` / 卡片 `overwrite:true`），未确认则 `renamed:false` 且零写入；`newEnv` 空 = 不改名（不会归一成 `default`）。**冲突判据是 `collided === true`**——用 `!renamed` 会把「改到自己的名字」（`{renamed:false, collided:false}`）误报成「目标环境已存在」；同名 = 无需改名，继续后续写入。`copyFrom` 覆盖已有环境同样先问，且选项取自**源行**（源行没有的只读/隧道即清掉）。
 - 描述符 `{dsn, ro, ssh}`：`probeConnection` 验有效连接，`probeSshTunnel` 只验 SSH 层（`SSH_LAYER_RE` → 断；否则 `DB_LAYER_RE` / 指名转发目标 → 通；都没有 → unknown）。探连的 ssh 三态：`null` = 用户解除隧道（按无隧道探）/ 对象 = 表单在编辑（先与已存行 merge）/ **缺省 = 卡片三项全空**（`connDraftOf` 不发 `ssh` 键，此时用已存行的隧道——否则探的是裸连接，不是会保存的那条）。
 - 预算 `PROBE_TIMEOUT_MS = 25s` / `PROBE_TIMEOUT_SSH_MS = 45s` < 客户端看门狗 30s/60s；宿主兜底 = 预算 + 500ms → [原因](doc/ARCHITECTURE.md#环境选项与执行预算)。
-- UI 落点：行内 `.dbh-rochip`（点击发 `{op:'options', readOnly}`）；SSH 只进 tooltip。见 [doc/CLIENT.md](doc/CLIENT.md)。
+- UI 落点：行内 `.dbh-rochip`（点击发 `{op:'options', readOnly}`）；SSH 只进 tooltip。行内「高级」区另有「最大返回行数」数字输入（`.dbh-caprow`，占位「0 或留空 = 不限」）。见 [doc/CLIENT.md](doc/CLIENT.md)。
+- **结果行数上限 `maxRows`**：环境级整数，`0`/缺省 = 不限（存量行为不变），`N>0` = 每条语句最多 N 行。存储层 `applyEnvOptions` / `setWorkspaceEnvOptions` 里 `0`/`null` 是**显式 delete**（与 `readOnly:false` 同款），非法值（负数/小数/非数字/NaN）抛 `code:'badMaxRows'` → 卡片 `result.badMaxRows`、模型路径在**改名之前**拒绝（`optionsPatchOf` 在 `applyOptionsOp` 开头抛，零写入）。**裁剪发生在插件侧**（`capExecuteSqlText`，纯函数）：dbhub 的 `max_rows` 在静态 `[[tools]]` 里，单次调用改不了它，所以插件拿到结果文本后自己裁。只裁 `statements[i].rows` 数组（加 `truncated:true`/`shown:N`，**保留原 `count`**、不二次序列化行值），并在结果**首行**加一条本地化提示（写明本次上限、原行数、「可用 maxRows 覆盖」）；**JSON 解析失败或结构不符一律原样返回**。执行侧优先级 = 调用参数 > 环境设置（`resolveRowCap`），参数 `0` = 本次完全不限；`dbhub_execute_sql` 的 `maxRows` **只用于本次裁剪，绝不透传给 dbhub**。门禁 `test/max-rows.test.mjs` + `check:ui` `[48]`。
 
 ### source 身份
 - 每条 source 只属于一个工作区，同名不同区是不同目标；`sourceIdOf(row)` 是唯一构造点（`<标题slug>_<路径哈希>[_<envSlug>]`）。
@@ -107,7 +108,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 
 ### 客户端半（细节见 [doc/CLIENT.md](doc/CLIENT.md)）
 - 手写 lazy-CJS bundle，无构建；`id` = Loader entry 名；三入口都要在：`settings.section`（始终）/ 侧边栏（`enabled && showSidebarEntry`）/ `plugins.row.config`（始终）。
-- **写失败必须可见**：face 的写 promise 在失败时 reject（失败分支不得写 `noop`），组件渲染 `.dbh-error .dbh-writefail[role=alert]` 且**不置 `saved`**；`/state` 失败时读 `snapshot.status === 'error'` 渲染 `.dbh-loadfail` + 「重试」（`face.refresh()`）；`sidebarWanted()` 只在 `enabled === true` 时注册（未知/失败不注册）；`summary` 与 `page` 两种 view 的 Hook 序列必须一致（summary 早退只能放在所有 Hook 之后）。门禁 `check:ui` 的 `[31]`–`[47]` 用失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读 / 非 JSON / 缺 value / 失败的更新检查）钉住，假 react 按组件身份校验 Hook 数。
+- **写失败必须可见**：face 的写 promise 在失败时 reject（失败分支不得写 `noop`），组件渲染 `.dbh-error .dbh-writefail[role=alert]` 且**不置 `saved`**；`/state` 失败时读 `snapshot.status === 'error'` 渲染 `.dbh-loadfail` + 「重试」（`face.refresh()`）；`sidebarWanted()` 只在 `enabled === true` 时注册（未知/失败不注册）；`summary` 与 `page` 两种 view 的 Hook 序列必须一致（summary 早退只能放在所有 Hook 之后）。门禁 `check:ui` 的 `[31]`–`[48]` 用失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读 / 非 JSON / 缺 value / 失败的更新检查）钉住，假 react 按组件身份校验 Hook 数。
 - **`@` 输入源**：`ctx.inject(['inputTriggers'], …)`（可选服务，**不进导出的 `inject`**，否则缺失时整个浏览器半区永久 pending）；注册名 `dbhub`/`trigger:'@'` 是稳定 ASCII（它同时是 reference 路由键，不做本地化）。候选只来自 `/state` 的 workspaces 行（复用 `workspacesOf`/`groupRows`），每行只带**别名 / 句柄 / `conn` / 工作区标题 / 只读标记**，绝无 DSN/主机/账号；`onPick` 的 `insert.source` 必须等于注册名、`ref` 用不可变句柄；`codec.serialize → '@db:<句柄>'`（**多选靠它逐 chip 序列化**）、`codec.clipboardText` 用当前别名；`lexicon`/`subscribeLexicon` 跟随 face 已有通知（**不新增定时器**），`warm` 只触发一次既有 `refresh`；**首次 `@` 早于第一次 `/state` 落地时，`candidates()` 先等一次有界的 `refresh`**（并发共享同一个 promise），否则空分组会让菜单立刻关闭、用户第一次按 `@` 像是坏的；停用/读失败/无行 → 空候选（空组自动关菜单），绝不抛错或显示假数据。门禁 `check:ui` `[47]`。
 - **写/读两条水位线，`form.set` 只认 `true`，缺 value 不是空页**：读按 `appliedSeq` 丢旧（写发起时占一个更高的读序号），写响应另走 `appliedWriteStamp`（**不**与读序号比，否则「写先发 → 读后发 → 读先回 → 写后回」把写自己的答案丢了）；`form.set` 只有 `ok === true` 算受理（`undefined` 曾导致零 POST 还印「已保存」），其余回落 `POST /options`；`value` 不是非空对象时读进 `status:'error'`（保留旧行）、写 reject，绝不 `publish({status:'ready', value:{}})`；`res.json()` 失败统一本地化；每次写最多等 `WRITE_TIMEOUT_MS = 90s`（> SSH 看门狗，超时只按失败渲染）。门禁 `[38]`–`[41]`。
 - `apply()` 可重入：locale 注册失败降级 `localTranslator`。

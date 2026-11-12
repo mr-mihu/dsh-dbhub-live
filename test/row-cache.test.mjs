@@ -124,7 +124,7 @@ test('a patched row still summarizes to metadata only (no DSN, no credentials)',
   assert.equal(summaries.length, 1)
   assert.deepEqual(
     Object.keys(summaries[0]).sort(),
-    ['alias', 'conn', 'env', 'path', 'persisted', 'ro', 'source', 'ssh', 'srcId', 'title'].sort(),
+    ['alias', 'conn', 'env', 'maxRows', 'path', 'persisted', 'ro', 'source', 'ssh', 'srcId', 'title'].sort(),
   )
   const text = JSON.stringify(summaries)
   assert.equal(text.includes('CHANGE_ME'), false)

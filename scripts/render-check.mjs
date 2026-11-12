@@ -2524,6 +2524,79 @@ check('a host without inputTriggers still mounts and registers nothing',
   atNoService.inputTriggers === null && !!slotEntry(atNoService, 'settings.section'),
   JSON.stringify({ triggers: atNoService.inputTriggers, settings: !!slotEntry(atNoService, 'settings.section') }))
 
+console.log('\n[48] per-environment row cap: number input, local refusal, options patch')
+{
+  const rows = [
+    row('cap-app', 'D:/work/cap', 'default', 'mysql://127.0.0.1:3306/app'),
+    row('cap-app', 'D:/work/cap', 'prod', 'postgres://127.0.0.1:5432/app', { maxRows: 500 }),
+  ]
+  const p = await page(rows, {})
+  const chips = classed(p.tree, 'dbh-envname')
+  // The cap changes what a query RETURNS, so a capped row says so in the same
+  // tooltip that carries the other per-row attributes.
+  check('a capped row states its cap in the chip tooltip',
+    String(chips[1].props.title || '').includes('最多 500 行'), String(chips[1].props.title))
+  check('an uncapped row says nothing about a cap',
+    !String(chips[0].props.title || '').includes('最多'), String(chips[0].props.title))
+
+  clickLabelAt(p.tree, '修改', 1)
+  p.tree = p.renderAgain()
+  // `uiMemory.advOpen` is module-level (it survives remounts on purpose) and so
+  // is the add panel, so scope every probe to THIS row's editor instead of the
+  // whole tree — a leftover open add panel also carries a cap row.
+  const editScope = () => classed(p.tree, 'dbh-editbox')[0]
+  const editCapRows = () => (editScope() ? classed(editScope(), 'dbh-caprow') : [])
+  if (editScope() && classed(editScope(), 'dbh-advbody').length === 0) {
+    clickWithin(p.tree, 'dbh-editbox', '高级：SSH 隧道')
+    p.tree = p.renderAgain()
+  }
+  check('the row cap lives inside the row editor (one row)',
+    editCapRows().length === 1, `got ${editCapRows().length}`)
+  const capInput = classed(editCapRows()[0] || { children: [] }, 'dbh-input')[0]
+  check('it is a number input prefilled from the row, advertising "0 or blank = unlimited"',
+    !!capInput && capInput.props.type === 'number' && String(capInput.props.value) === '500'
+    && capInput.props.placeholder === '0 或留空 = 不限',
+    JSON.stringify(capInput && capInput.props))
+
+  // ① An illegal value is refused LOCALLY: one visible reason, ZERO requests.
+  const postsBefore = p.posts.length
+  typeWithin(editScope(), 'dbh-caprow', 0, '1.5')
+  p.tree = p.renderAgain()
+  clickWithin(p.tree, 'dbh-editrow', '保存')
+  p.tree = p.renderAgain()
+  check('an invalid cap sends no request at all', p.posts.length === postsBefore, JSON.stringify(p.posts.slice(postsBefore)))
+  check('…and names what the field accepts', classed(p.tree, 'dbh-invalid').length === 1
+    && toHtml(classed(p.tree, 'dbh-invalid')[0]).includes('不小于 0 的整数'), toHtml(p.tree).slice(0, 400))
+  check('no cap write was dispatched for the invalid value',
+    !p.opCalls.some((o) => o.op === 'options' && o.maxRows !== undefined), JSON.stringify(p.opCalls))
+
+  // ② A legal value goes through the NORMAL options write — never a DSN.
+  typeWithin(editScope(), 'dbh-caprow', 0, '250')
+  p.tree = p.renderAgain()
+  check('typing clears the previous refusal', classed(p.tree, 'dbh-invalid').length === 0)
+  const opsBefore = p.opCalls.length
+  clickWithin(p.tree, 'dbh-editrow', '保存')
+  p.tree = p.renderAgain()
+  const capOp = p.opCalls.slice(opsBefore).filter((o) => o.op === 'options').pop()
+  check('saving sends an options op carrying the new cap', !!capOp && capOp.maxRows === 250, JSON.stringify(capOp))
+  check('the cap write carries no DSN', !!capOp && capOp.dsn === undefined, JSON.stringify(capOp))
+  check('the cap write targets the row environment', !!capOp && capOp.env === 'prod', JSON.stringify(capOp))
+
+  // ③ An emptied field is the explicit "unlimited" (0), exactly like
+  // `readOnly: false`: the write must CLEAR the stored cap, not omit it.
+  await flush()
+  p.tree = p.renderAgain()
+  clickLabelAt(p.tree, '修改', 1)
+  p.tree = p.renderAgain()
+  typeWithin(editScope(), 'dbh-caprow', 0, '')
+  p.tree = p.renderAgain()
+  const clearBefore = p.opCalls.length
+  clickWithin(p.tree, 'dbh-editrow', '保存')
+  p.tree = p.renderAgain()
+  const clearOp = p.opCalls.slice(clearBefore).filter((o) => o.op === 'options').pop()
+  check('an emptied field saves 0 (unlimited)', !!clearOp && clearOp.maxRows === 0, JSON.stringify(clearOp))
+}
+
 if (liveMount) liveMount.dispose()
 
 // No page may leave its 1.5s poll interval behind: a leaked one used to keep the

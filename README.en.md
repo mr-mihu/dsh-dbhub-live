@@ -134,7 +134,7 @@ You: in @app_prod look up the tables referencing orders, then match them against
 | --- | --- |
 | `dbhub_configure(...)` | Configure / change a workspace connection. **It does not accept a `dsn` argument** — the password and connection string are always typed in the UI; `type`/`host`/`port`/`database`/`user` may be passed as non-sensitive prefills. Supports renaming with `env=<new name>` + `renameFrom=<old name>`, cross-workspace copying with `copyFrom=<another workspace's source>`, `readOnly:true` (`readOnly:false` is refused) and the tunnel options `sshHost`/`sshPort`/`sshUser`/`sshAuthKind`/`sshKeyPath`/`sshProxyJump` (**the SSH password and passphrase can only be typed by you in the dialog**). |
 | `dbhub_list_sources()` | List every connection source, **grouped by workspace** and marking the **[CURRENT WORKSPACE]**; metadata and the **source value** only. |
-| `dbhub_execute_sql(source, sql)` | Execute SQL on the given source; `source` comes from `dbhub_list_sources`. Every call is an independent one-shot connection; separate multiple statements with `;`. |
+| `dbhub_execute_sql(source, sql, maxRows?)` | Execute SQL on the given source; `source` comes from `dbhub_list_sources`. Every call is an independent one-shot connection; separate multiple statements with `;`. The optional `maxRows` overrides that environment's "max rows returned": a positive integer = at most that many rows per statement for this call, `0` = no limit for this call, omitted = use the environment setting (see "Result row limit" below). |
 | `dbhub_search_objects(source, object_type, ...)` | Search database objects (tables / views / columns / indexes, etc.). |
 
 > **Every source belongs to exactly one workspace**: to reuse a connection from another workspace, copy it over with `dbhub_configure`'s `copyFrom` — do not query another workspace's source directly.
@@ -218,6 +218,15 @@ Both are **per-environment** connection options executed by dbhub's native featu
 Order of checks: ① your machine can log in with `ssh user@bastion`; ② **the address in the connection string must be the one the bastion sees** (write `127.0.0.1` when the database runs on the bastion itself) — this is the most common cause; ③ the key path exists and is readable (remember the passphrase for an encrypted key); ④ ProxyJump is a single hop.
 
 **Prerequisites and limits**: dbhub **1.4.0+** is required (an older version fails with an explicit error rather than being silently ignored); multi-hop, `ProxyCommand` and ssh-agent are **not supported**, and the plugin does **not reuse** the SSH configuration of any other plugin (including DSH's own SSH tooling) — the tunnel information comes only from what you type in. Read-only and SSH are two independent switches; either can be used on its own.
+
+## ✂️ Result row limit (per environment + per call)
+
+Every connection can carry a **maximum rows returned**: `dbhub_execute_sql` returns at most that many rows per statement, so a single `select *` cannot pour a whole table into the model context. The default is **no limit**, and existing connections behave exactly as before.
+
+- **Where to set it**: connection row ✏ → expand "Advanced: SSH tunnel"; the "Max rows" number input sits at the bottom (placeholder "0 or blank = unlimited"). A capped connection says "max N rows" in its environment-name tooltip. The cap is stored **per environment**, with that connection; a negative number, a fraction or non-numeric text is **refused on the spot without sending a request**.
+- **Truncation is always visible**: the receipt's **first line** states the effective cap, the original row count of every truncated statement, and that `maxRows` can override it for this call. A truncated statement carries `truncated: true` and `shown: N`, while its original `count` is preserved.
+- **Per-call override**: pass `maxRows` to `dbhub_execute_sql` — a positive integer caps each statement for this call, **`0` means no limit at all for this call**, and omitting it uses the environment setting. Priority is **call argument > environment setting**; it affects only that call, never changes the stored value, and is **never forwarded to dbhub**.
+- **How and where it happens**: the plugin trims the result host-side (dbhub's `max_rows` is static configuration and cannot express a per-call limit); when the result is not the expected JSON or its shape differs, it is returned **verbatim** — trimming never turns a good result into a broken one. A hand-edited invalid environment value is treated as "unlimited", so it can neither shrink every query to one row nor make the environment fail.
 
 ## Data Location
 

@@ -301,6 +301,7 @@ test('describeEnvOptions never leaks a password', async () => {
   })
   assert.deepEqual(described, {
     ro: true,
+    maxRows: 0,
     ssh: {
       host: 'bastion.example.com', port: 22, user: 'deploy', authKind: 'password',
       hasPassword: true, hasPassphrase: false, keyReady: false, proxyJump: '',
@@ -317,6 +318,7 @@ test('describeEnvOptions reports key readiness without leaking the key path', as
   })
   assert.deepEqual(described, {
     ro: false,
+    maxRows: 0,
     ssh: {
       host: 'bastion.example.com', port: 2222, user: 'deploy', authKind: 'key',
       hasPassword: false, hasPassphrase: true, keyReady: false, proxyJump: 'jump.example.com',
