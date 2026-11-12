@@ -242,7 +242,7 @@ ${detailTable(declared, 'zh')}
 
 </details>
 
-完整证据、判定规则与已知偏差见 [doc/SUPPORT-MATRIX.md](doc/SUPPORT-MATRIX.md)。
+完整证据、判定规则与已知偏差见 [doc/SUPPORT-MATRIX.md](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/SUPPORT-MATRIX.md)。
 ${END}`
 
 const enBlock = `${BEGIN}
@@ -257,7 +257,7 @@ ${detailTable(declared, 'en')}
 
 </details>
 
-Full evidence, review rules and known drift live in [doc/SUPPORT-MATRIX.md](doc/SUPPORT-MATRIX.md).
+Full evidence, review rules and known drift live in [doc/SUPPORT-MATRIX.md](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/SUPPORT-MATRIX.md).
 ${END}`
 
 const doc = `# 支持的 DSH 版本（发布测试矩阵）

@@ -149,7 +149,7 @@
 
 > 本节沉淀发布物的边界：业务需求以本文为准，用户安装使用以 `README.md` 为准，开发过程记录不随包分发。
 
-- R70. 发布包（npm 包）必须且只包含运行与自证所需内容：`lib`（含浏览器半 `client.js`）、九份文档（`doc/REQUIREMENTS.md`、`doc/ARCHITECTURE.md`、`doc/DEVELOPMENT.md`、`doc/CLIENT.md`、`doc/RELEASE.md`、`doc/DESENSITIZE.md`、`doc/IMPACT-MATRIX.md`、生成物 `doc/SUPPORT-MATRIX.md`、`doc/CHANGELOG.md`）、`doc/images`（README 截图）、`test`、`scripts`、`release-test`（包内脚本的依赖：`test:release` / `support:*` / `release:verdict` / `release:preflight` 都引用它）、`cordis.patch.yml`、两份 README（`README.md` 与 `README.en.md`）、`AGENTS.md` 与 `LICENSE`。**凡是 `AGENTS.md` 或两份 README 链接到的 `doc/` 文档都必须随包**（否则发布出去的链接是死的，`npm run check:docs` 守这条）。`PLAN-*.md`、`implementation-notes.md`、`RELEASE-NOTES-*.md` 与 `IDEAS.md` 是**本地开发记录/想法池**：既不纳入版本控制（由忽略规则排除）、也不在发布清单里，因此永不随包分发，不得把过程性文档当作产品交付物。`release-test/evidence-summary.json` 是证据摘要（随包提交），`.release-test/`（报告、缓存、隔离 home）永不随包。
+- R70. 发布包（npm 包）必须且只包含运行与自证所需内容：`lib`（含浏览器半 `client.js`）、`cordis.patch.yml`、两份 README（`README.md` 与 `README.en.md`，npm 页要渲染）、`LICENSE` 与 `package.json` 本身（实测 22 个文件 / 约 186 kB）。**开发资料一律不进包**：`doc/`、`test/`、`scripts/`、`release-test/`、`AGENTS.md`、截图都不随包；README 里的文档链接用 GitHub 绝对地址、截图用 raw 地址，保证 npm 页面上可点可看（`npm run check:docs` 守这条：两份 README 里若出现相对 `doc/` 链接，目标必须在 `files` 里）。`PLAN-*.md`、`implementation-notes.md`、`RELEASE-NOTES-*.md` 与 `IDEAS.md` 是**本地开发记录/想法池**：既不纳入版本控制（由忽略规则排除）、也不在发布清单里，因此永不随包分发，不得把过程性文档当作产品交付物。`release-test/evidence-summary.json` 是证据摘要（随包提交），`.release-test/`（报告、缓存、隔离 home）永不随包。
 
 ## 十四、模型侧数据库访问策略（提示词约束）
 

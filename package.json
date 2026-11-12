@@ -12,23 +12,9 @@
   },
   "files": [
     "lib",
-    "doc/REQUIREMENTS.md",
-    "doc/ARCHITECTURE.md",
-    "doc/DEVELOPMENT.md",
-    "doc/CLIENT.md",
-    "doc/RELEASE.md",
-    "doc/DESENSITIZE.md",
-    "doc/IMPACT-MATRIX.md",
-    "doc/SUPPORT-MATRIX.md",
-    "doc/CHANGELOG.md",
-    "doc/images",
-    "test",
-    "scripts",
-    "release-test",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
-    "AGENTS.md",
     "LICENSE"
   ],
   "keywords": [

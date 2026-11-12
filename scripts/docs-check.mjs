@@ -141,7 +141,7 @@ try {
 }
 const shipped = new Set(Array.isArray(pkg?.files) ? pkg.files : [])
 
-const linkedDocs = new Set()
+const linkedDocs = new Map()
 for (const source of ENTRY_DOCS) {
   const abs = join(ROOT, source)
   if (!existsSync(abs)) {
@@ -153,16 +153,25 @@ for (const source of ENTRY_DOCS) {
     const clean = target.split('#')[0]
     if (!clean.endsWith('.md')) continue
     const normalized = posix.normalize(clean)
-    if (normalized.startsWith(`${DOC_DIR}/`)) linkedDocs.add(normalized)
+    if (!normalized.startsWith(`${DOC_DIR}/`)) continue
+    if (!linkedDocs.has(normalized)) linkedDocs.set(normalized, new Set())
+    linkedDocs.get(normalized).add(source)
   }
 }
-for (const doc of linkedDocs) {
+// Only the documents that SHIP must have their link targets in the tarball.
+// `AGENTS.md` is a repository file (it is not in `files`), so its links only need
+// to resolve on disk; the published READMEs are what npm users actually see.
+const SHIPPED_ENTRY_DOCS = new Set(['README.md', 'README.en.md'])
+for (const [doc, sources] of linkedDocs) {
   if (!existsSync(join(ROOT, doc))) {
-    record('AGENTS.md / README.md / README.en.md', `linked document "${doc}" is missing on disk`)
+    record([...sources].join(', '), `linked document "${doc}" is missing on disk`)
     continue
   }
-  if (!shipped.has(doc)) {
-    record('AGENTS.md / README.md / README.en.md', `linked document "${doc}" is not in package.json "files" — the published package would have a dangling link`)
+  if ([...sources].some((source) => SHIPPED_ENTRY_DOCS.has(source)) && !shipped.has(doc)) {
+    record(
+      [...sources].filter((source) => SHIPPED_ENTRY_DOCS.has(source)).join(', '),
+      `linked document "${doc}" is not in package.json "files" — the published package would have a dangling link`,
+    )
   }
 }
 for (const entry of shipped) {

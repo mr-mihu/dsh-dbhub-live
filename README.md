@@ -15,7 +15,7 @@
 <details>
 <summary>📷 界面预览：设置 → DBHub 数据库工具</summary>
 
-![DBHub 数据库工具配置页](doc/images/settings-page.png)
+![DBHub 数据库工具配置页](https://raw.githubusercontent.com/mr-mihu/dsh-dbhub-live/dev/doc/images/settings-page.png)
 
 </details>
 
@@ -50,7 +50,7 @@
 
 </details>
 
-完整证据、判定规则与已知偏差见 [doc/SUPPORT-MATRIX.md](doc/SUPPORT-MATRIX.md)。
+完整证据、判定规则与已知偏差见 [doc/SUPPORT-MATRIX.md](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/SUPPORT-MATRIX.md)。
 <!-- release-test:versions:end -->
 
 ## 安装
@@ -71,7 +71,7 @@ npx @deepseek-ai/dsh plugin --profile desktop add dsh-dbhub-live
 
 装完 web 端**重启 `dsh web`**，打开 **设置 → DBHub 数据库工具** 即可看到配置页（也有左侧栏快捷入口和插件页那行的「配置」，三个入口是同一个页面）。
 
-> 环境要求：**DSH 0.2.1 或更高版本**（含 0.2.1 的预发布版；**0.1.x 与 0.2.0 不再支持**）。宿主版本过旧时插件不会变成空白：配置页顶部会显示一条中英双语提示（写明所需版本与当前版本），工具、连接与设置照常可用——但请尽快升级 DSH。建议本机有 Node.js ≥ 18（用于自动安装 dbhub）。**只读模式与 SSH 隧道需要 dbhub 1.4.0+**，插件会自动检测并给出升级指引。每个版本的实测记录见 [doc/SUPPORT-MATRIX.md](doc/SUPPORT-MATRIX.md)（由发布测试自动生成，发版前必跑）。
+> 环境要求：**DSH 0.2.1 或更高版本**（含 0.2.1 的预发布版；**0.1.x 与 0.2.0 不再支持**）。宿主版本过旧时插件不会变成空白：配置页顶部会显示一条中英双语提示（写明所需版本与当前版本），工具、连接与设置照常可用——但请尽快升级 DSH。建议本机有 Node.js ≥ 18（用于自动安装 dbhub）。**只读模式与 SSH 隧道需要 dbhub 1.4.0+**，插件会自动检测并给出升级指引。每个版本的实测记录见 [doc/SUPPORT-MATRIX.md](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/SUPPORT-MATRIX.md)（由发布测试自动生成，发版前必跑）。
 
 ## 更新
 
@@ -103,7 +103,7 @@ AI：…（返回查询结果）
 <details>
 <summary>📷 实际效果：向 AI 提问，直接拿到查询结果</summary>
 
-![向 AI 提问并拿到查询结果](doc/images/chat-query.png)
+![向 AI 提问并拿到查询结果](https://raw.githubusercontent.com/mr-mihu/dsh-dbhub-live/dev/doc/images/chat-query.png)
 
 </details>
 
@@ -147,7 +147,7 @@ AI：…（返回查询结果）
 <details>
 <summary>📷 连接行编辑器：只读模式与 SSH 隧道</summary>
 
-![连接行与「测试 SSH 隧道」](doc/images/row-editor.png)
+![连接行与「测试 SSH 隧道」](https://raw.githubusercontent.com/mr-mihu/dsh-dbhub-live/dev/doc/images/row-editor.png)
 
 </details>
 
@@ -247,7 +247,7 @@ dsh plugin --profile desktop remove dsh-dbhub-live
 
 ## 版本历史
 
-每个正式版本的变更摘要见 [doc/CHANGELOG.md](doc/CHANGELOG.md)；逐版本的发布说明在 [GitHub Releases](https://github.com/mr-mihu/dsh-dbhub-live/releases)。
+每个正式版本的变更摘要见 [doc/CHANGELOG.md](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/CHANGELOG.md)；逐版本的发布说明在 [GitHub Releases](https://github.com/mr-mihu/dsh-dbhub-live/releases)。
 
 ## 许可证
 

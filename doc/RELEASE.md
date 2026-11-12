@@ -101,8 +101,8 @@ gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> dsh-dbhu
 
 ## 包内容
 
-`package.json` 的 `files` 决定 npm 包内容：`lib`、`doc/REQUIREMENTS.md`、`doc/ARCHITECTURE.md`、`doc/DEVELOPMENT.md`、`doc/CLIENT.md`、`doc/RELEASE.md`、`doc/DESENSITIZE.md`、`doc/IMPACT-MATRIX.md`、`doc/SUPPORT-MATRIX.md`、`doc/CHANGELOG.md`（九份文档：`AGENTS.md` 与两份 README 链接到的都要随包，否则发布出去的链接是死的）、`doc/images`、`test`、`scripts`、`release-test`（`test:release` / `support:*` / `release:verdict` / `release-preflight` 这些脚本都在包里，缺它必 `ERR_MODULE_NOT_FOUND`；它是纯 ESM、无依赖、无证据，`.release-test/` 仍被 `.gitignore` 排除）、`cordis.patch.yml`、`README.md`、`README.en.md`、`AGENTS.md`、`LICENSE`。
+`package.json` 的 `files` **只放运行时**：`lib`（含浏览器半 `client.js`）、`cordis.patch.yml`、`LICENSE`、两份 README（npm 页要渲染）、`package.json` 本身——实测 22 个文件 / 约 186 kB。文档、测试、门禁脚本、`release-test`、`AGENTS.md` 与截图**都不进包**（它们是仓库的开发资料，不是用户运行需要的东西）；`test:release` / `support:*` / `release:preflight` 这些命令因此在 tarball 里不可用，只能在工作树里跑。
 
-本地文档（`doc/PLAN-*.md`、`doc/implementation-notes.md`、`doc/RELEASE-NOTES-*.md`）被 `.gitignore` 排除，**永不进 git / npm 包**；`doc/IDEAS.md` 是未排期的想法池，同样不随包分发（README 不链接它）。`doc/SUPPORT-MATRIX.md` 是生成物但**随包**（README 链接它），它的输入只有 `release-test/matrix.json` 与提交的 `release-test/evidence-summary.json`。
+README 里指向文档的链接一律用 GitHub 绝对地址（`blob/dev/doc/...`），截图用 `raw.githubusercontent.com/...`，这样 npm 页面上也能点开、看到图——相对链接在 tarball 里会断。`doc/SUPPORT-MATRIX.md` 是生成物（输入只有 `release-test/matrix.json` 与提交的 `evidence-summary.json`），只在仓库里阅读。
 
 `prepublishOnly` = `npm run check && npm run check:ui && npm run test:unit && npm run check:docs && npm run check:secrets && npm run release:preflight`——发布前自动跑全套（语法 / 客户端离屏门禁 / 全部单测 / 文档 / 脱敏 / 发版闸门），不只是原来那三样。
