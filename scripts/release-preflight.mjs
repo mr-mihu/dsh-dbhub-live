@@ -54,11 +54,27 @@ async function main() {
   facts.dirty = git.dirty
   facts.matrixHash = currentMatrixHash
 
+  // A PRERELEASE of the plugin may ship BEFORE the full matrix has run: that is
+  // what "preview" means here, and the matrix is then run against the PUBLISHED
+  // package (doc/RELEASE.md). A STABLE version may not — for `x.y.z` every
+  // evidence problem below stays hard. The safety checks that do not depend on
+  // evidence (dirty tree, red report, failed verdict) stay hard for both.
+  const isPreview = String(pkg.version).includes('-')
+  facts.preview = isPreview
+  /** Evidence gap: blocking for a stable version, a loud warning for a preview. */
+  const evidence = (message) => {
+    if (!isPreview) {
+      problems.push(message)
+      return
+    }
+    warnings.push(`预览版放行（发布后必须用 npm 包跑全量矩阵）：${message}`)
+  }
+
   // 1. A run must exist at all.
   const explicit = arg('run')
   const resolved = explicit ? runPath(String(explicit)) : latestRun()?.dir ?? null
   if (!resolved) {
-    problems.push('没有找到任何发布测试报告 —— 先跑 `npm run test:release`')
+    evidence('没有找到任何发布测试报告 —— 先跑 `npm run test:release`')
     return finish()
   }
   const reportDir = path.resolve(resolved)
@@ -68,7 +84,7 @@ async function main() {
 
   // 2. The report must be about THIS version, built from THIS commit, recently.
   if (report.plugin?.version !== pkg.version) {
-    problems.push(`报告测的是 ${report.plugin?.version}，当前 package.json 是 ${pkg.version} —— 版本变了，必须重跑`)
+    evidence(`报告测的是 ${report.plugin?.version}，当前 package.json 是 ${pkg.version} —— 版本变了，必须重跑`)
   }
   // Compare TREE hashes: that is exactly the set of files the artifact was packed
   // from. A squash/merge that lands the same content is fine; any real change is not.
@@ -87,9 +103,9 @@ async function main() {
     if (changed && changed.length && changed.every(isAllowedDiff)) {
       warnings.push(`报告之后只有生成文档变化（${changed.join(', ')}）—— 视为同一产物，有效`)
     } else if (report.git?.commit !== git.commit) {
-      problems.push(`报告对应的提交是 ${String(report.git?.commit).slice(0, 8)}（tree ${String(report.git?.tree).slice(0, 8)}），当前 HEAD 是 ${String(git.commit).slice(0, 8)}（tree ${String(git.tree).slice(0, 8)}）—— 内容变了，必须重跑`)
+      evidence(`报告对应的提交是 ${String(report.git?.commit).slice(0, 8)}（tree ${String(report.git?.tree).slice(0, 8)}），当前 HEAD 是 ${String(git.commit).slice(0, 8)}（tree ${String(git.tree).slice(0, 8)}）—— 内容变了，必须重跑`)
     } else {
-      problems.push('无法确认报告与当前工作树一致（缺少 tree 记录）—— 用当前版本的 harness 重跑')
+      evidence('无法确认报告与当前工作树一致（缺少 tree 记录）—— 用当前版本的 harness 重跑')
     }
   } else if (report.git?.commit !== git.commit) {
     warnings.push(`tree 相同但提交不同（报告 ${String(report.git?.commit).slice(0, 8)} → HEAD ${String(git.commit).slice(0, 8)}）：内容一致，视为有效`)
@@ -100,12 +116,12 @@ async function main() {
   const ageHours = (Date.now() - Date.parse(report.generatedAt)) / 3_600_000
   facts.reportAgeHours = Math.round(ageHours * 10) / 10
   if (!(ageHours <= MAX_AGE_HOURS)) {
-    problems.push(`报告已过期：${Math.round(ageHours)} 小时前（上限 ${MAX_AGE_HOURS}）—— 重跑 \`npm run test:release\``)
+    evidence(`报告已过期：${Math.round(ageHours)} 小时前（上限 ${MAX_AGE_HOURS}）—— 重跑 \`npm run test:release\``)
   }
 
   // 3. The support matrix must not have changed since the run.
   if (report.matrix?.hash !== currentMatrixHash) {
-    problems.push('matrix.json 在测试之后被改过 —— 矩阵变了旧报告不再有效，重跑')
+    evidence('matrix.json 在测试之后被改过 —— 矩阵变了旧报告不再有效，重跑')
   }
 
   // 4. Claim drift blocks the release even if tests are green.
@@ -122,7 +138,7 @@ async function main() {
   for (const version of declared) {
     const target = tested.get(version)
     if (!target) {
-      problems.push(`声明支持的 ${version} 未出现在这次测试里（用了 --only/--tier 的局部运行不能作为发版依据）`)
+      evidence(`声明支持的 ${version} 未出现在这次测试里（用了 --only/--tier 的局部运行不能作为发版依据）`)
       continue
     }
     if (target.status === 'fail' || target.status === 'error') {

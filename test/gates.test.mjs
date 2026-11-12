@@ -283,6 +283,12 @@ function runCapture(cmd, args, cwd) {
 async function stagePreflightFixture() {
   const dir = stageRepo()
   const git = (...args) => runCapture('git', args, dir)
+  // Pin a STABLE version in the fixture: the gate's evidence rules are hard for
+  // `x.y.z` and warnings for a prerelease (a preview may ship before the matrix
+  // runs, by policy). Without this the fixture would exercise the relaxed path.
+  const pkgFile = join(dir, 'package.json')
+  const pkgBefore = JSON.parse(readFileSync(pkgFile, 'utf8'))
+  writeFileSync(pkgFile, JSON.stringify({ ...pkgBefore, version: '1.2.3' }, null, 2) + '\n')
   const init = git('init', '-q')
   if (init.code !== 0) {
     rmSync(dir, { recursive: true, force: true })
@@ -483,6 +489,37 @@ test('release:preflight — stale evidence still blocks the release (sanity)', a
     const bad = run('scripts/release-preflight.mjs', ['--json'], dir)
     assert.equal(bad.code, 1, bad.out)
     assert.match(bad.out, /报告已过期/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('release:preflight — a preview may ship before the matrix, but never from a dirty tree', async (t) => {
+  const fixture = await stagePreflightFixture()
+  if (!fixture) {
+    t.skip('git is not available — the preflight fixture needs a real commit')
+    return
+  }
+  const { dir, writeRun, git } = fixture
+  try {
+    // A preview version: evidence gaps become warnings, so the same stale report
+    // that blocks a stable release must NOT block here.
+    const pkgFile = join(dir, 'package.json')
+    const pkg = JSON.parse(readFileSync(pkgFile, 'utf8'))
+    writeFileSync(pkgFile, JSON.stringify({ ...pkg, version: '1.2.3-rc.1' }, null, 2) + '\n')
+    writeRun({ pass: 18, skip: 0 })
+    git('add', '-A')
+    git('-c', 'user.email=fixture@example.invalid', '-c', 'user.name=fixture', 'commit', '-q', '-m', 'preview')
+    const preview = run('scripts/release-preflight.mjs', ['--json'], dir)
+    assert.equal(preview.code, 0, `a preview may publish before the matrix runs:\n${preview.out}`)
+    assert.match(preview.out, /预览版放行/)
+
+    // The safety rule that does NOT depend on evidence still blocks: a preview may
+    // not ship from a dirty tree either.
+    appendFileSync(join(dir, 'lib', 'collect.mjs'), '\n// uncommitted change\n')
+    const dirty = run('scripts/release-preflight.mjs', ['--json'], dir)
+    assert.equal(dirty.code, 1, `a dirty tree must block even a preview:\n${dirty.out}`)
+    assert.match(dirty.out, /工作区不干净/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

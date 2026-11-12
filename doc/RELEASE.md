@@ -77,6 +77,16 @@ gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> dsh-dbhu
 
 **给代理的默认行为**：本仓库里代理只往 `dev` 提交/推送；`main` 只通过 PR 合入。需要动 `main` 或发 npm 时先停下来向用户确认。
 
+## 预览版先发、后跑矩阵（`-rc` 专用）
+
+测试版（`6.0.0-rc.1` 这类）**允许在矩阵跑之前发布**，发到 `dev` tag，绝不覆盖 `latest`：
+
+1. 本地四门禁 + `test:unit` + 在**最新预发布 harness**（当前 `0.2.2-rc.x`）上跑一次真实浏览器回归；
+2. `npm publish --tag dev` —— `prepublishOnly` 会跑 `release:preflight`，证据类问题在预览版上只作警告；
+3. **发完立刻**用 npm 包安装到各声明版本上跑 `npm run test:release`，产出证据；
+4. 证据齐了再考虑 `x.y.z` 正式版（此时 `release:preflight` 对证据是硬阻断）。
+
+未跑矩阵就发正式版仍会被拦住，这条不能绕过。
 ## 版本号策略（测试版本 → 发布版本）
 
 - **基线 = 代码库当前版本**（`package.json` 版本，即最近一次发布）。测试/调试迭代一律在基线上挂 `-dev.<序号>`，序号从 1 递增、不复用，`pnpm pack` 产物随之换名。
