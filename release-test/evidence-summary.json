@@ -1,29 +1,84 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-12T05:07:09.393Z",
+  "generatedAt": "2026-11-12T07:24:50.557Z",
   "pluginVersion": "6.0.0-rc.1",
   "matrixHash": "34be607694e6f525fb529409a749224aaaef8a1c95afbe41ad3babd5617ea947",
-  "fullRun": null,
+  "fullRun": {
+    "runId": "20261112-152205-34be60",
+    "generatedAt": "2026-11-12T07:22:59.539Z",
+    "status": "green"
+  },
   "verdict": {
     "state": "complete",
-    "overall": "pass-with-notes",
-    "reviewer": "lead agent (DeepSeek Harness) — full functional QA + release matrix evidence review",
-    "reviewedAt": "2026-10-24T09:53:33Z"
+    "overall": "pass",
+    "reviewer": "dsh-agent (lead)",
+    "reviewedAt": "2026-11-12T07:25:00.000Z"
   },
   "targets": {
     "0.2.1-rc.2": {
-      "runId": "20261024-175015-40a3fc",
-      "generatedAt": "2026-10-24T09:52:42.537Z",
-      "status": "warn",
-      "provisionMode": "manual",
+      "runId": "20261112-152205-34be60",
+      "generatedAt": "2026-11-12T07:22:59.539Z",
+      "status": "pass",
+      "provisionMode": "cli",
       "cliSource": "mise",
-      "readyMs": 16949,
-      "pluginVersion": "5.2.0",
-      "commit": "91642fa2",
+      "readyMs": 5701,
+      "pluginVersion": "6.0.0-rc.1",
+      "commit": "42462db5",
       "counts": {
-        "pass": 20,
+        "pass": 21,
         "fail": 0,
-        "warn": 1,
+        "warn": 0,
+        "skip": 0,
+        "info": 2
+      }
+    },
+    "0.2.1-rc.5": {
+      "runId": "20261112-152205-34be60",
+      "generatedAt": "2026-11-12T07:22:59.539Z",
+      "status": "pass",
+      "provisionMode": "cli",
+      "cliSource": "mise",
+      "readyMs": 21074,
+      "pluginVersion": "6.0.0-rc.1",
+      "commit": "42462db5",
+      "counts": {
+        "pass": 21,
+        "fail": 0,
+        "warn": 0,
+        "skip": 0,
+        "info": 2
+      }
+    },
+    "0.2.2-rc.1": {
+      "runId": "20261112-152205-34be60",
+      "generatedAt": "2026-11-12T07:22:59.539Z",
+      "status": "pass",
+      "provisionMode": "cli",
+      "cliSource": "mise",
+      "readyMs": 5461,
+      "pluginVersion": "6.0.0-rc.1",
+      "commit": "42462db5",
+      "counts": {
+        "pass": 21,
+        "fail": 0,
+        "warn": 0,
+        "skip": 0,
+        "info": 2
+      }
+    },
+    "0.2.2-rc.2": {
+      "runId": "20261112-152205-34be60",
+      "generatedAt": "2026-11-12T07:22:59.539Z",
+      "status": "pass",
+      "provisionMode": "cli",
+      "cliSource": "mise",
+      "readyMs": 5505,
+      "pluginVersion": "6.0.0-rc.1",
+      "commit": "42462db5",
+      "counts": {
+        "pass": 21,
+        "fail": 0,
+        "warn": 0,
         "skip": 0,
         "info": 2
       }
