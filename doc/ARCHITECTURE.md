@@ -48,6 +48,17 @@
 - 预算与看门狗的三角关系：客户端看门狗必须**严格大于**宿主探测预算，否则客户端先放弃、界面报"测试超时"，而宿主那条 dbhub 还在跑；宿主再加 +500ms 兜底，处理 spawn 本身永不 settle 的情况。三个数字必须一起改，`test/adhoc-toml.test.mjs` 会断言。
 - **行数上限为什么裁在插件侧**：dbhub 的 `max_rows` 属于 TOML 的 `[[tools]]`，是**静态**配置（一次生成的临时配置对应整次调用），无法被单次调用覆盖；而用户要的恰恰是"环境默认 + 单次覆盖"。既然插件本来就持有结果文本，就由插件裁：`capExecuteSqlText` 只切 `rows` 数组并加 `truncated`/`shown`，`count` 与其它字段原样保留，首行加一条本地化提示。取舍是**失败必须安全**：非 JSON / 结构不符一律原样返回——裁剪是锦上添花，绝不能把一条可用的结果变成坏结果。环境值 `0`/缺省 = 不限，所以存量用户行为逐字节不变。
 
+## 会话权限闸门
+
+> 需求：`dbhub_execute_sql` 要尊重会话输入框的权限模式（仅可查看 / 工作区内修改 / 完全权限），而插件的「环境只读」开关含义保持不变。两者的区别是**谁设的、存哪里**：环境只读是用户在配置页设的连接属性（持久化，dbhub 执行），会话权限是这一轮对话的临时策略（DSH 的 `sandboxPolicy`，不落本插件存储）。
+
+- **为什么位置只能在 `runSourceTool` 里、`runAdhoc` 之前**：闸门要先知道这条 source 的 `ro`（用户设了只读就什么都不做，保持 dbhub 的硬拒绝），所以必须等 `resolveSource` 完成；又必须在 spawn 之前，否则一次被拒的写仍会付出"一条进程 + 一份临时 TOML + 一次能力探测"的代价。放在 `base === 'execute_sql'` 分支里，`search_objects`（本身就是读）与 `dbhub_configure`（根本不经过 `runSourceTool`）自然不受影响——这也是选它而不是选"工具 execute 开头"的原因：后者拿不到已解析的行，还会把两个不相关的工具卷进来。
+- **为什么要自己判 SQL**：dbhub 的 `[[tools]] readonly` 在静态 TOML 里，是**连接级**的，回答不了"这一轮会话准不准写"；而闸门必须在 spawn 前回答。这就是 R59 警告的"插件自制分类"的边界，所以范围被钉死：分类器**只用来拒绝或询问**，绝不用来放行 dbhub 会拒绝的东西——环境只读开启时它根本不介入，环境关闭时它只会更严。另一个方向也钉死：**宁可判成写**（多问一次），因为把写判成读是这个功能唯一的失效方式。
+- **分类器的保守点**：只认"语句**开头**就是读关键词"；`WITH` 要找到主语句且必须是 `SELECT`；一条写 → 整次写；空/只有注释 → 读（dbhub 自己会报错，不该变成权限弹窗）。注释与引号都要按状态机处理（`;` 在 `'…'`、反引号、`--`/`#`/`/*…*/` 里不算分隔），`\'` 与 `''` 都要认。**MySQL 可执行注释 `/*!…*/` 是例外**：服务器会执行它的正文，所以只丢掉 `/*!` 与版本号、正文照常参与判定——否则 `/*! DROP TABLE t */` 就是一条真实绕过路径。
+- **两个服务都是可选的**：`sandboxPolicy` 缺失（headless / SDK 部署）就**不设闸**，行为与旧版逐字节一致；`resolve()` 抛异常（例如会话 cwd 不可用）同样不设闸，只 `warnOnce` 一次——权限探针坏掉不该把所有写入变成拒绝，这是刻意的降级方向。反过来 `approval` 侧**必须关死**：服务缺失、`request` 抛异常（不在开启的轮次里）都不是"放行"的理由。
+- **弹窗内容的取舍**：`reason` 会被写进会话日志（`approval/asked`），所以只给 source 句柄 + 语句类型 + 前 `APPROVAL_SQL_HEAD_MAX = 48` 字符，并过 `scrubSecrets`——整段语句可能含业务数据或字面量口令，不该进日志，也不该成为卡片标题。`displayReason` 用同一段本地化文案（客户端对字符串原样展示，不会当 key 解析）。
+- **`approval.request` 的 `'rejected'` 有两种来源**：用户点了拒绝，以及会话策略是"从不询问"（DSH 在 `decide()` 里直接返回 `'rejected'`，不弹窗）。因此拒绝文案写成"用户拒绝了本次写入（或取消了确认）"，另外为 `'unavailable'`（没有可用回答通道）单独保留一句——不假装知道到底是哪一种。
+
 ## envSlug事故
 
 - 早期实现把非 ASCII 环境名统一 slug 化成一个值，`线上` 与 `测试` 拿到同一个 source 句柄 → 解析时**静默查错库**（模型以为在测环境，实际打线上）。现在：`default` 裸值、纯 ASCII 保留原 slug（既有 source 不变）、非 ASCII 取 `env-<shortHash>`。这是回归红线，不是风格问题。
@@ -116,7 +127,7 @@ lib/
   adhoc.mjs      唯一执行引擎：一次性 dbhub 进程（描述符 {dsn,ro,ssh}）、--dsn 或临时 TOML、stderr 清洗、
                  probeConnection、probeSshTunnel、diagnosticTail/DIAG_TAIL_MAX=600/failureLayerOf
   collect.mjs    授权扫描项目配置文件(mise/.env)提取 DSN 候选，含 askUser 桥接；连接别名 assignConnectionAliases（唯一实现点）
-  tools.mjs      4 个工具的定义与注册；configure 探连优先
+  tools.mjs      4 个工具的定义与注册；configure 探连优先；SQL 写判定 classifySql + 会话权限闸门（sandboxPolicy/approval）
   policy.mjs     模型侧访问策略：唯一的 system prompt 段（order 8900，含 @db:<句柄> 语义与别名→句柄目录；取行函数由 index 传入）
   client.js      Web 半（手写 lazy-CJS bundle，无构建）：settings.section + 侧边栏面板 + plugins.row.config(summary/page) + 输入框 `@` 输入源
 test/            node:test 单测（纯逻辑 + bridge/客户端契约 + 零知识泄漏门）

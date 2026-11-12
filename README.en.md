@@ -29,6 +29,7 @@ Install it and you can simply tell the AI "show me the last 10 rows of the order
 | 🧮 **Always 4 tools** | However many environments you add, the model context never grows |
 | 🗂 **Per workspace × environment** | One workspace can hold `default` / `prod` / `dev`… (environment names may be Chinese), told apart by their `source` — never the wrong database |
 | 🛡 **Per-environment read-only** | Writes are refused natively by dbhub; **the model can switch it on but never off** (only you can switch it off on the configure page) |
+| 🚦 **Honours the session permission** | With "Read Only" selected in the composer, write statements are refused outright; with "Workspace Write" every write asks you first |
 | 🔐 **Manual SSH tunnel** | Databases behind a bastion are reachable too; the SSH password / key passphrase is typed in the UI only |
 | 🔗 **Pick sources with `@` in the composer** | Type `@` in the message box and pick a connection; **one message may reference several**, each on its own database |
 | 📦 **Works out of the box** | If dbhub is missing it is installed for you, then kept up to date at your interval |
@@ -194,6 +195,17 @@ The same component offers **three layouts**, picked automatically from the host 
 Both are **per-environment** connection options executed by dbhub's native features. Once either is on, every execution in that environment switches to a **temporary, generated dbhub configuration** (the file holds only `${…}` placeholders and no password at all — the real values reach the child process through its environment) and is deleted as soon as the call ends; every other environment is unaffected.
 
 **Read-only mode**: in all three layouts the connection row carries a small "RO" switch next to the datasource — one click flips it (you can also click ✏ and tick it in the edit form; the model can enable it for an environment too). dbhub then lets read statements through only (measured on MySQL: `select/with/explain/show/describe/desc`), and writes come straight back as `READONLY_VIOLATION`; object search keeps working. **Turning read-only off is something only you can do on the configure page** — an attempt by the model is refused. A read-only environment's name gains a small "RO" badge.
+
+**The session permission is a second gate**: the mode you pick in the composer ("Read Only" / "Workspace Write" / "Full access") gates write statements **independently of the per-environment read-only switch**; both apply:
+
+| Env read-only | Session permission | Write statement | Read statement |
+| --- | --- | --- | --- |
+| on | any | unchanged: dbhub refuses it (`READONLY_VIOLATION`) | runs |
+| off | Full access | runs directly | runs |
+| off | Workspace Write | **asks you for confirmation** (once per write; a refusal means it does not run) | runs |
+| off | Read Only | **refused outright** (dbhub is not even started) | runs |
+
+Only the statement's **first keyword** matters: `SELECT` / `SHOW` / `DESCRIBE` / `DESC` / `EXPLAIN` / `VALUES` / `TABLE` / `PRAGMA`, and `WITH … SELECT`, count as reads; everything else counts as a write. It is deliberately **conservative**: one write anywhere in a multi-statement text makes the whole call a write (`SELECT 1; DROP TABLE t`). A refusal states the reason and the next step (and explicitly forbids falling back to a command-line client, a throwaway script, or another plugin). Where the runtime has no session-permission layer (headless / automated calls), this gate is not installed and behaviour is exactly as before.
 
 **SSH tunnel** (configured by hand, for databases sitting behind a bastion):
 

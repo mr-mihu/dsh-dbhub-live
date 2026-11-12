@@ -61,6 +61,16 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - UI 落点：行内 `.dbh-rochip`（点击发 `{op:'options', readOnly}`）；SSH 只进 tooltip。行内「高级」区另有「最大返回行数」数字输入（`.dbh-caprow`，占位「0 或留空 = 不限」）。见 [doc/CLIENT.md](doc/CLIENT.md)。
 - **结果行数上限 `maxRows`**：环境级整数，`0`/缺省 = 不限（存量行为不变），`N>0` = 每条语句最多 N 行。存储层 `applyEnvOptions` / `setWorkspaceEnvOptions` 里 `0`/`null` 是**显式 delete**（与 `readOnly:false` 同款），非法值（负数/小数/非数字/NaN）抛 `code:'badMaxRows'` → 卡片 `result.badMaxRows`、模型路径在**改名之前**拒绝（`optionsPatchOf` 在 `applyOptionsOp` 开头抛，零写入）。**裁剪发生在插件侧**（`capExecuteSqlText`，纯函数）：dbhub 的 `max_rows` 在静态 `[[tools]]` 里，单次调用改不了它，所以插件拿到结果文本后自己裁。只裁 `statements[i].rows` 数组（加 `truncated:true`/`shown:N`，**保留原 `count`**、不二次序列化行值），并在结果**首行**加一条本地化提示（写明本次上限、原行数、「可用 maxRows 覆盖」）；**JSON 解析失败或结构不符一律原样返回**。执行侧优先级 = 调用参数 > 环境设置（`resolveRowCap`），参数 `0` = 本次完全不限；`dbhub_execute_sql` 的 `maxRows` **只用于本次裁剪，绝不透传给 dbhub**。门禁 `test/max-rows.test.mjs` + `check:ui` `[48]`。
 
+### 会话权限闸门（写操作）
+- `dbhub_execute_sql` 尊重**会话输入框的权限模式**；插件的「环境只读」开关含义**不变**（仍由 dbhub 的 `[[tools]] readonly` 硬拒绝，插件只给「需用户在设置里关闭」的引导）。两者是独立属性，闸门**只可能更严**，绝不放宽 dbhub 的拒绝（R59：插件不取代上游判定）。
+- 组合：环境只读**开** → 闸门不介入（任何会话模式下都不 spawn 前拒绝）；环境只读**关** → 会话「仅可查看」= 本地拒绝（不 spawn dbhub / 不写临时 TOML / 不写 store）、「工作区内修改」= 写语句**每次**弹窗一次（只有 `allowed-once` 算授权）、「完全权限」= 直接执行；读语句四种组合一律直接执行。
+- **闸门位置**：`runSourceTool` 里 `base === 'execute_sql'` 的分支、`runAdhoc` **之前**（源句柄已解析，才能读到该环境的 `ro`）。因此 `dbhub_search_objects`（`base !== 'execute_sql'`）与 `dbhub_configure`（根本不走 `runSourceTool`）完全不受影响。
+- 写判定是**纯函数** `classifySql(sql)`：剥前导空白/注释 → 按顶层 `;` 拆语句（`'…'`/`"…"`/反引号/注释里的 `;` 不算；`\'` 与 `''` 要处理）→ 首关键词白名单 `SELECT/SHOW/DESCRIBE/DESC/EXPLAIN/VALUES/TABLE/PRAGMA`，`WITH` 向后扫过配平括号找主语句且必须 `SELECT`；其余（含无法识别的开头）一律写。**任一条写 → 整次写**；空/只有注释 = 读。**宁可误判成写**。MySQL 可执行注释 `/*!…*/` 的正文参与判定（只丢标记与版本号），否则是一条真实绕过。
+- 选项 **`sandboxPolicy`**（`ctx.get` 就地取）：`resolve({ session })` 取 `mode`。服务缺失（无头/SDK）**不设闸**；`resolve()` 抛异常同样不设闸并只 `warnOnce` 一次（文案不含 DSN/路径）。未知 mode 按「不设闸」处理（不替会话发明规则）。
+- 选项 **`approval`**：`request({ agent, toolName, ...(callId !== undefined ? {callId} : {}), reason, displayReason, signal })`。`rejected`/`cancelled` → 「用户拒绝」拒绝；`unavailable` → 「当前会话不允许弹窗确认（从不询问）」拒绝；服务缺失或 `request` 抛异常（不在开启的轮次里）→ **fail closed** + `warnOnce` 一次。拒绝路径**零 spawn / 零临时文件 / 零 store 写**。
+- 弹窗文案 `approval.writeReason`：只给 **source 句柄 + 语句类型关键词 + 语句前 `APPROVAL_SQL_HEAD_MAX = 48` 字符（过 `scrubSecrets`）**；`reason` 同时进会话日志，所以**不得整段回显语句**，也不得出现 DSN/主机/账号。拒绝文案必须写明下一步，并禁止改用命令行/脚本/其它插件绕过。
+- 依赖图不变：两个服务都是 `ctx.get` 运行时取的**可选服务**，没有新增 import；`policy` 仍是叶子。门禁 `test/permission-gate.test.mjs`。
+
 ### source 身份
 - 每条 source 只属于一个工作区，同名不同区是不同目标；`sourceIdOf(row)` 是唯一构造点（`<标题slug>_<路径哈希>[_<envSlug>]`）。
 - `envSlug`：`default` 裸值 / 纯小写 ASCII 且名即 slug 时原样（`prod`/`test`/`dev`，**逐字节不变**）/ 其余（`PROD`、`Prod`、`dev!`、`!!!`、名字被长度上限截断）一律 `<slug>-<shortHash(原名)>`，非 ASCII 仍 `env-<hash>` → [原因](doc/ARCHITECTURE.md#envslug事故)。
@@ -98,7 +108,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 ### 其他不可退化
 - 依赖只进不出：`config ← state ← mcp`；`config ← runtime|toml|capability ← adhoc`；`mcp ← tools ← index`；`adhoc|collect ← tools`（`collect ← mcp` 只为 `assignConnectionAliases`，collect 不反向依赖）；`state|options ← policy ← index`（policy **不** import mcp：`@` 目录的取行函数由 index 传入）；`meta`/`update` 是叶子。禁循环 import。
 - schema 弹性：`await import('@deepseek-ai/schemastery')` 失败 → `Config` 保持 `undefined`（Loader 跳过校验，页面与工具照常），不改回静态顶层 import。
-- `policy.mjs` 唯一 system prompt 段（order 8900）：已配置连接走 `dbhub_*`、禁 CLI/脚本/驱动/其它 MCP/其它数据库插件绕过、只读被拒不换途径；不支持的库让给用户其它插件、判不准先问。另解释 `@db:<句柄>` 标记（按出现顺序一一对应、一条消息可有多个）并附 `别名→句柄` 目录（`POLICY_CATALOG_MAX = 12`，超出附 `dbhub_list_sources` 指针，**只有别名与句柄**，绝无 DSN/主机/账号）。取行函数由 index 传入（`registerDbhubPolicy(ctx, latestSummaries)`），policy 不 import mcp。`announceAccessPolicy=false` 时 `text` 为空。门禁 `test/policy.test.mjs`。
+- `policy.mjs` 唯一 system prompt 段（order 8900）：已配置连接走 `dbhub_*`、禁 CLI/脚本/驱动/其它 MCP/其它数据库插件绕过、只读被拒不换途径；另有一行钉会话权限（「仅可查看」不写库、「工作区内修改」写操作弹窗确认、被拒后同样不得换途径）。不支持的库让给用户其它插件、判不准先问。另解释 `@db:<句柄>` 标记（按出现顺序一一对应、一条消息可有多个）并附 `别名→句柄` 目录（`POLICY_CATALOG_MAX = 12`，超出附 `dbhub_list_sources` 指针，**只有别名与句柄**，绝无 DSN/主机/账号）。取行函数由 index 传入（`registerDbhubPolicy(ctx, latestSummaries)`），policy 不 import mcp。`announceAccessPolicy=false` 时 `text` 为空。门禁 `test/policy.test.mjs`（含 900 字符预算）。
 - 启用/禁用：`state.setEnabled` → `credentials.json`；禁用时工具首行返回「插件已禁用」。
 - `lastError` **只由 boot 失败写入**（`state.recordError` / `clearError`），工具调用错误不进卡片：它是"插件起不来"的诊断位，不是运行日志。要接工具错误必须先有"成功即清空"的语义，否则一次偶发失败会永久挂在页头（本次刻意不做）。
 - SSH 口令弹窗**只在没给 keyPath 时出现**（`tools.mjs` 的 `auth==='key' && !keyPath` 分支）：给了路径就按"无口令"假设，**零打扰是刻意的**（`test/configure-options.test.mjs` 用 `dialogs === 0` 钉住）。带口令的私钥需用户先在界面里配 passphrase，不要让模型路径去追问。

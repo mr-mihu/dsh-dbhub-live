@@ -68,6 +68,18 @@ test('the authority claim is scoped, and other plugins keep the databases this o
   assert.match(text, /先问用户/)
 })
 
+test('the policy pins the session-permission boundary next to the read-only one', () => {
+  state.setEnabled(true)
+  options.applyPatch({ announceAccessPolicy: true })
+  const text = policy.dbhubPolicyText()
+  // The composer's permission mode is a SECOND gate in front of a write, so the
+  // prompt must name it and must close the same "route around it" exit.
+  assert.match(text, /仅可查看/)
+  assert.match(text, /工作区内修改/)
+  assert.match(text, /弹窗/)
+  assert.match(text, /被拒绝后同样不得换途径写入/)
+})
+
 test('a disabled plugin, or the announcement switched off, contributes an EMPTY section', () => {
   options.applyPatch({ announceAccessPolicy: true })
   state.setEnabled(false)

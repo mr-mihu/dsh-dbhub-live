@@ -28,6 +28,7 @@
 | 输入框 `@` 数据源 / 连接别名（`lib/client.js` 的 input source、`lib/collect.mjs` 的 `assignConnectionAliases`） | 本表 + AGENTS.md「客户端半」与「状态通道」+ `doc/CLIENT.md` 的 `@` 输入源一节 + `doc/REQUIREMENTS.md` R80-R83 + `scripts/render-check.mjs` 的 `[47]` 段（假 ctx 的 `inject` 桩）+ `test/collect-alias.test.mjs` + 两份 README（用户可见） | `check:ui` + 单测 + `check:secrets` |
 | 模型侧 `@db:<句柄>` 语义 / 别名目录（`lib/policy.mjs`） | `test/policy.test.mjs`（目录、上限、零知识）+ AGENTS.md「其他不可退化」+ `doc/CLIENT.md` + 两份 README 的策略段字数 | 单测 + `check:secrets` |
 | 环境级结果行数上限（`maxRows`：store 字段、`{op:'options'}` 写入、`dbhub_execute_sql` 单次覆盖与截断提示） | AGENTS.md「环境选项（只读 / SSH / 结果行数上限）」+ `doc/REQUIREMENTS.md` R84 + `doc/CLIENT.md` 的「环境选项的落点」+ `doc/ARCHITECTURE.md`「环境选项与执行预算」+ `test/max-rows.test.mjs` + `scripts/render-check.mjs` 的 `[48]` 段 + 两份 README（用户可见） | `test/max-rows.test.mjs` + `check:ui` + `check:secrets` + `check:docs` |
+| 会话权限闸门（`dbhub_execute_sql` 的写判定 `classifySql`、`sandboxPolicy.resolve` 与 `approval.request` 两个可选服务、拒绝/弹窗文案） | AGENTS.md「会话权限闸门（写操作）」+ `doc/ARCHITECTURE.md`「会话权限闸门」+ `doc/REQUIREMENTS.md` R85 + `lib/policy.mjs` 的会话权限行 + `test/permission-gate.test.mjs` + `lib/i18n.mjs` 的 `result.sessionReadOnly` / `result.write*` / `approval.writeReason` + 两份 README（用户可见） | `test/permission-gate.test.mjs` + 单测 + `check:secrets` + `check:docs` |
 
 ## 门禁只保证什么
 
