@@ -2597,6 +2597,278 @@ console.log('\n[48] per-environment row cap: number input, local refusal, option
   check('an emptied field saves 0 (unlimited)', !!clearOp && clearOp.maxRows === 0, JSON.stringify(clearOp))
 }
 
+console.log('\n[49] connection search / sort / batch test (display-only, local state)')
+{
+  viewport(1440)
+  // Fresh workspace paths on purpose: `uiMemory.expanded` is module-level and
+  // survives every mount in this gate, so reusing another fixture's path could
+  // inherit an open/closed choice made by an earlier section.
+  const LS_TILED = [
+    row('alpha', 'D:/qa/ls-alpha', 'default', 'mysql://127.0.0.1:3306/alpha'),
+    row('beta', 'D:/qa/ls-beta', 'default', 'postgres://127.0.0.1:5432/beta'),
+    row('zeta', 'D:/qa/ls-zeta', 'default', 'sqlite://127.0.0.1:0/zeta', { alias: 'ls_zeta_prod' }),
+  ]
+  // A workspace snapshot supplies the `最近更新` stamp (the Host publishes it on
+  // workspace items, not on connection rows).
+  const wsRecent = (map) => (sel) => sel({
+    items: Object.keys(map).map((path) => ({ path, updatedAt: map[path] })),
+  })
+  const sortMap = {
+    'D:/qa/ls-alpha': '2026-01-01T00:00:00Z',
+    'D:/qa/ls-beta': '2026-03-01T00:00:00Z',
+    'D:/qa/ls-zeta': '2026-06-01T00:00:00Z',
+  }
+  const searchInputOf = (tree) => classed(tree, 'dbh-search-input')[0]
+  const textOf = (el) => (el && el.children ? el.children.map(toHtml).join('') : '')
+  const typeSearch = (p, value) => {
+    const input = searchInputOf(p.tree)
+    if (input && typeof input.props.onChange === 'function') input.props.onChange({ target: { value } })
+    p.tree = p.renderAgain()
+  }
+
+  // ── search ─────────────────────────────────────────────────────────────
+  const p = await page(LS_TILED, { snapshot: Object.assign({}, MODERN_DEFAULTS), props: { useWorkspaces: wsRecent(sortMap) } })
+  check('the list offers a search box above the rows (tiled layout)',
+    count(p.tree, 'dbh-search-input') === 1, `got ${count(p.tree, 'dbh-search-input')}`)
+  check('…with the 搜索连接… placeholder', String((searchInputOf(p.tree) || { props: {} }).props.placeholder || '') === '搜索连接…',
+    JSON.stringify((searchInputOf(p.tree) || { props: {} }).props.placeholder))
+  check('every row is listed before filtering', count(p.tree, 'dbh-tile') === 3, `got ${count(p.tree, 'dbh-tile')}`)
+
+  typeSearch(p, 'BETA')
+  check('the filter is case-insensitive', count(p.tree, 'dbh-tile') === 1, `got ${count(p.tree, 'dbh-tile')}`)
+  check('an active filter shows "N / M" beside the box',
+    textMatching(p.tree, 'dbh-searchcount').includes('1 / 3'), textMatching(p.tree, 'dbh-searchcount'))
+  typeSearch(p, 'ls_zeta_prod')
+  check('the alias is searchable', count(p.tree, 'dbh-tile') === 1
+    && toHtml(p.tree).includes('zeta'), `got ${count(p.tree, 'dbh-tile')}`)
+  typeSearch(p, '5432')
+  check('the connection metadata is searchable', count(p.tree, 'dbh-tile') === 1
+    && toHtml(p.tree).includes('beta'), `got ${count(p.tree, 'dbh-tile')}`)
+  typeSearch(p, '   ')
+  check('a blank query lists everything again', count(p.tree, 'dbh-tile') === 3, `got ${count(p.tree, 'dbh-tile')}`)
+
+  typeSearch(p, 'nope-does-not-exist')
+  const noMatchHtml = toHtml(p.tree)
+  check('no match renders its own empty state, not "还没有配置连接"',
+    count(p.tree, 'dbh-nomatch') === 1 && noMatchHtml.includes('没有匹配的连接'), noMatchHtml.slice(0, 400))
+  check('…and never pretends the plugin has no connections',
+    !noMatchHtml.includes('还没有配置连接'), noMatchHtml.slice(0, 400))
+  const clearBtn = classed(p.tree, 'dbh-clearsearch')[0]
+  check('the empty state offers 清除搜索', !!clearBtn && toHtml(clearBtn).includes('清除搜索'))
+  if (clearBtn && typeof clearBtn.props.onClick === 'function') clearBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  p.tree = p.renderAgain()
+  check('clearing the search restores every row', count(p.tree, 'dbh-tile') === 3, `got ${count(p.tree, 'dbh-tile')}`)
+  check('clearing the search empties the box', String((searchInputOf(p.tree) || { props: {} }).props.value || '') === '')
+
+  // A search that narrows to ONE group leaves the matching rows visible: a match
+  // hidden inside a folded group after typing is a search that looks broken.
+  const LS_GROUPED = [
+    row('ga', 'D:/qa/ls-ga', 'default', 'mysql://127.0.0.1:3306/ga'),
+    row('ga', 'D:/qa/ls-ga', '线上', 'mysql://127.0.0.1:3307/ga'),
+    row('gb', 'D:/qa/ls-gb', 'default', 'postgres://127.0.0.1:5432/gb'),
+  ]
+  const g = await page(LS_GROUPED, { snapshot: Object.assign({}, MODERN_DEFAULTS) })
+  check('the search box is present in the grouped layout too', count(g.tree, 'dbh-search-input') === 1)
+  typeSearch(g, '线上')
+  check('a Chinese environment name matches', count(g.tree, 'dbh-group') === 1 && count(g.tree, 'dbh-envrow') === 1,
+    `groups=${count(g.tree, 'dbh-group')} rows=${count(g.tree, 'dbh-envrow')}`)
+  check('…and the matching row is visible without clicking the group',
+    toHtml(g.tree).includes('线上'), toHtml(g.tree).slice(0, 300))
+  const gEmpty = await page([], { snapshot: Object.assign({}, MODERN_DEFAULTS) })
+  check('the search box exists in the empty layout as well', count(gEmpty.tree, 'dbh-search-input') === 1)
+  check('no connections at all keeps the real empty state (not the no-match one)',
+    toHtml(gEmpty.tree).includes('暂无连接') && count(gEmpty.tree, 'dbh-nomatch') === 0, toHtml(gEmpty.tree).slice(0, 300))
+
+  // ── sort ───────────────────────────────────────────────────────────────
+  const s = await page(LS_TILED, { snapshot: Object.assign({}, MODERN_DEFAULTS), props: { useWorkspaces: wsRecent(sortMap) } })
+  const tileNames = (tree) => classed(tree, 'dbh-tiletitle').map(textOf)
+  check('the default order is by name (workspace title)', JSON.stringify(tileNames(s.tree)) === JSON.stringify(['alpha', 'beta', 'zeta']),
+    JSON.stringify(tileNames(s.tree)))
+  const sortBtns = () => classed(s.tree, 'dbh-sortbtn')
+  check('two sort options are offered', sortBtns().length === 2, `got ${sortBtns().length}`)
+  const recentBtn = sortBtns().filter((el) => toHtml(el).includes('最近更新'))[0]
+  if (recentBtn && typeof recentBtn.props.onClick === 'function') recentBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  s.tree = s.renderAgain()
+  check('recently-updated reorders by updatedAt, newest first',
+    JSON.stringify(tileNames(s.tree)) === JSON.stringify(['zeta', 'beta', 'alpha']), JSON.stringify(tileNames(s.tree)))
+  check('the active sort option is marked',
+    String((sortBtns().filter((el) => el.props['aria-pressed'] === true)[0] || { props: {} }).props['aria-pressed']) === 'true')
+  const nameBtn = sortBtns().filter((el) => toHtml(el).includes('名称'))[0]
+  if (nameBtn && typeof nameBtn.props.onClick === 'function') nameBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  s.tree = s.renderAgain()
+  check('switching back restores the name order',
+    JSON.stringify(tileNames(s.tree)) === JSON.stringify(['alpha', 'beta', 'zeta']), JSON.stringify(tileNames(s.tree)))
+
+  // Groups must follow the same order — sorting only the rows inside a fixed
+  // group order would leave the list looking unsorted.
+  const LS_GROUPSORT = [
+    row('zzz', 'D:/qa/ls-zzz', 'default', 'mysql://127.0.0.1:3306/z1'),
+    row('zzz', 'D:/qa/ls-zzz', 'prod', 'mysql://127.0.0.1:3307/z2'),
+    row('aaa', 'D:/qa/ls-aaa', 'default', 'mysql://127.0.0.1:3308/a1'),
+    row('aaa', 'D:/qa/ls-aaa', 'prod', 'mysql://127.0.0.1:3309/a2'),
+  ]
+  const gs = await page(LS_GROUPSORT, {
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsRecent({ 'D:/qa/ls-aaa': '2026-01-01T00:00:00Z', 'D:/qa/ls-zzz': '2026-05-01T00:00:00Z' }) },
+  })
+  const groupTitles = (tree) => classed(tree, 'dbh-grouptitle').map(textOf)
+  check('groups start in name order', JSON.stringify(groupTitles(gs.tree)) === JSON.stringify(['aaa', 'zzz']), JSON.stringify(groupTitles(gs.tree)))
+  const gsRecent = classed(gs.tree, 'dbh-sortbtn').filter((el) => toHtml(el).includes('最近更新'))[0]
+  if (gsRecent && typeof gsRecent.props.onClick === 'function') gsRecent.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  gs.tree = gs.renderAgain()
+  check('the GROUP order follows the sort, not only the rows',
+    JSON.stringify(groupTitles(gs.tree)) === JSON.stringify(['zzz', 'aaa']), JSON.stringify(groupTitles(gs.tree)))
+  const gsName = classed(gs.tree, 'dbh-sortbtn').filter((el) => toHtml(el).includes('名称'))[0]
+  if (gsName && typeof gsName.props.onClick === 'function') gsName.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  gs.tree = gs.renderAgain()
+  check('…and switching back re-orders the groups as well',
+    JSON.stringify(groupTitles(gs.tree)) === JSON.stringify(['aaa', 'zzz']), JSON.stringify(groupTitles(gs.tree)))
+
+  // ── batch test: 2 at a time, per-row state, stop, summary ──────────────
+  //
+  // Five rows so a queue really exists while two probes run: "stop" must show
+  // that the QUEUED rows go back to untested while the two in flight finish.
+  const LS_BATCH = [
+    row('t1', 'D:/qa/ls-t1', 'default', 'mysql://127.0.0.1:3306/t1'),
+    row('t2', 'D:/qa/ls-t2', 'default', 'mysql://127.0.0.1:3307/t2'),
+    row('t3', 'D:/qa/ls-t3', 'default', 'mysql://127.0.0.1:3308/t3'),
+    row('t4', 'D:/qa/ls-t4', 'default', 'mysql://127.0.0.1:3309/t4'),
+    row('t5', 'D:/qa/ls-t5', 'default', 'mysql://127.0.0.1:3310/t5'),
+  ]
+  const held = []
+  const answerOf = (payload) => ({ ok: true, status: 200, json: async () => payload })
+  // Settle the nth held probe, if the implementation dispatched one at all: a
+  // regression that drops the batch must go red on every assertion, not crash the
+  // gate on the first missing promise.
+  const settleProbe = async (index, ok, message) => {
+    const probe = held[index]
+    if (probe) probe.resolve(answerOf(probePayload(probe.nonce, ok, message)))
+    await flush()
+    await flush()
+  }
+  const probePayload = (nonce, ok, message) => ({
+    ok: true,
+    value: snapshotOf(LS_BATCH, Object.assign({}, MODERN_DEFAULTS, { testResult: JSON.stringify({ nonce, ok, message }) })),
+  })
+  // Timer accounting for the batch window: every timer created from here on (the
+  // per-row watchdogs AND the bridge's write ceilings) must be gone once the card
+  // unmounts. Timeouts are tracked by hand — the gate only tracks intervals.
+  const pendingTimers = new Map()
+  const realSetTimeout = globalThis.setTimeout
+  const realClearTimeout = globalThis.clearTimeout
+  globalThis.setTimeout = function (fn, ms, ...rest) {
+    const id = realSetTimeout(function () {
+      pendingTimers.delete(id)
+      if (typeof fn === 'function') fn()
+    }, ms, ...rest)
+    pendingTimers.set(id, ms)
+    return id
+  }
+  globalThis.clearTimeout = function (id) {
+    pendingTimers.delete(id)
+    return realClearTimeout(id)
+  }
+  const b = await page(LS_BATCH, {
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    // Only the probes are held: everything else (the page read, the throttled
+    // update check) answers normally, so the card really has its rows.
+    fetchImpl: ({ body }) => {
+      if (!body || !body.op || body.op.op !== 'test') return undefined
+      return new Promise((resolve) => held.push({ nonce: body.op.nonce, env: body.op.env, resolve }))
+    },
+  })
+  const batchBtn = () => classed(b.tree, 'dbh-batchbtn')[0]
+  const batchLabel = () => (batchBtn() ? toHtml(batchBtn()) : '')
+  check('the header offers 测试全部 with the visible row count',
+    count(b.tree, 'dbh-batchbtn') === 1 && batchLabel().includes('测试全部（5）'), batchLabel())
+  if (batchBtn() && typeof batchBtn().props.onClick === 'function') batchBtn().props.onClick({ stopPropagation() {}, preventDefault() {} })
+  b.tree = b.renderAgain()
+  check('a batch runs at most TWO probes at a time', held.length === 2, String(held.length) + ' probe(s) dispatched')
+  check('queued rows say 等待', count(b.tree, 'dbh-test-wait') === 3, 'got ' + count(b.tree, 'dbh-test-wait'))
+  check('running rows say 测试中…', count(b.tree, 'dbh-test-batch') === 2, 'got ' + count(b.tree, 'dbh-test-batch'))
+  check('the summary counts everything as untested while the run is open',
+    textMatching(b.tree, 'dbh-batchsum').includes('5 未测'), textMatching(b.tree, 'dbh-batchsum'))
+  check('the running control becomes 停止', batchLabel().includes('停止'), batchLabel())
+
+  // Resolve the first probe: its row reports SUCCESS from the POST answer (no
+  // mirror, no 1.5s poll) and the next queued row starts.
+  await settleProbe(0, true, '')
+  b.tree = b.renderAgain()
+  check('a finished row reports 通过 ✓', count(b.tree, 'dbh-batch-ok') === 1, 'got ' + count(b.tree, 'dbh-batch-ok'))
+  check('a finished row frees its slot (a third probe is running)', held.length === 3, held.length + ' dispatched')
+  check('the summary counts the pass', textMatching(b.tree, 'dbh-batchsum').includes('1 通过'), textMatching(b.tree, 'dbh-batchsum'))
+
+  // A failure carries its reason, truncated so one long Host text cannot push the
+  // whole list around.
+  const longReason = '连接被拒绝：' + 'x'.repeat(180)
+  await settleProbe(1, false, longReason)
+  b.tree = b.renderAgain()
+  const failText = textMatching(b.tree, 'dbh-batch-fail')
+  check('a failed row reports 失败 ✗', count(b.tree, 'dbh-batch-fail') === 1, 'got ' + count(b.tree, 'dbh-batch-fail'))
+  check('…with the reason truncated', failText.includes('连接被拒绝') && failText.includes('…') && failText.length < 200, failText)
+  check('the summary counts the failure', textMatching(b.tree, 'dbh-batchsum').includes('1 失败'), textMatching(b.tree, 'dbh-batchsum'))
+  check('the queue is down to one row', count(b.tree, 'dbh-test-wait') === 1 && count(b.tree, 'dbh-test-batch') === 2,
+    'wait=' + count(b.tree, 'dbh-test-wait') + ' running=' + count(b.tree, 'dbh-test-batch'))
+
+  // Stop: the QUEUED row goes back to untested, and the two requests already in
+  // flight are allowed to finish (no fake cancellation, no new dispatch).
+  const heldBeforeStop = held.length
+  if (batchBtn() && typeof batchBtn().props.onClick === 'function') batchBtn().props.onClick({ stopPropagation() {}, preventDefault() {} })
+  b.tree = b.renderAgain()
+  check('stopping dispatches nothing more', held.length === heldBeforeStop, held.length + ' vs ' + heldBeforeStop)
+  check('the queued row goes back to untested (no 等待 / 测试中 lie)',
+    count(b.tree, 'dbh-test-wait') === 0 && count(b.tree, 'dbh-test-batch') === 2,
+    'wait=' + count(b.tree, 'dbh-test-wait') + ' running=' + count(b.tree, 'dbh-test-batch'))
+  check('the control is 测试全部 again after a stop', batchLabel().includes('测试全部'), batchLabel())
+  check('the summary keeps three untested rows', textMatching(b.tree, 'dbh-batchsum').includes('3 未测'), textMatching(b.tree, 'dbh-batchsum'))
+  // Both probes that were already in flight still land.
+  await settleProbe(2, true, '')
+  await settleProbe(3, true, '')
+  b.tree = b.renderAgain()
+  check('in-flight probes still settle after the stop', count(b.tree, 'dbh-batch-ok') === 3, 'got ' + count(b.tree, 'dbh-batch-ok'))
+  check('the stopped row was never dispatched', held.length === heldBeforeStop, String(held.length))
+  check('the summary reflects the stopped run (3 pass / 1 fail / 1 untested)',
+    textMatching(b.tree, 'dbh-batchsum').includes('3 通过') && textMatching(b.tree, 'dbh-batchsum').includes('1 失败')
+    && textMatching(b.tree, 'dbh-batchsum').includes('1 未测'), textMatching(b.tree, 'dbh-batchsum'))
+
+  // N = what the user can SEE: filtering to one row must run one probe, not five
+  // ("I filtered to 1 and it tested 5" is the complaint this pins).
+  typeSearch(b, 't1')
+  check('the batch button counts the FILTERED rows', batchLabel().includes('测试全部（1）'), batchLabel())
+  const heldBeforeFiltered = held.length
+  if (batchBtn() && typeof batchBtn().props.onClick === 'function') batchBtn().props.onClick({ stopPropagation() {}, preventDefault() {} })
+  b.tree = b.renderAgain()
+  check('only the visible row is probed', held.length === heldBeforeFiltered + 1, (held.length - heldBeforeFiltered) + ' probe(s)')
+  // Answer it, so the row carries a finished BATCH verdict for the retest below.
+  await settleProbe(held.length - 1, true, '')
+  b.tree = b.renderAgain()
+  const testPosts = b.posts.filter((x) => x.body && x.body.op && x.body.op.op === 'test')
+  check('every probe keeps the existing op shape (no DSN, no new field)',
+    testPosts.length > 0 && testPosts.every((x) => x.body.op.dsn === undefined
+      && Object.keys(x.body.op).sort().join(',') === 'env,nonce,op,workspace'), JSON.stringify(testPosts.slice(0, 2)))
+
+  // A row that already carries a batch verdict must still answer a manual retest:
+  // the batch line renders over the single-click line, so the click has to take the
+  // row back (and the tally must stop counting a verdict it no longer shows).
+  const manualBefore = held.length
+  clickLabel(b.tree, '测试')
+  b.tree = b.renderAgain()
+  check('a manual retest of a batch row dispatches one probe', held.length === manualBefore + 1, `${held.length - manualBefore} probe(s)`)
+  check('…and the row reports the single-click transient, not the old batch verdict',
+    toHtml(b.tree).includes('测试中…') && count(b.tree, 'dbh-batch-ok') === 0, toHtml(b.tree).slice(-500))
+  await settleProbe(held.length - 1, true, '')
+  b.tree = b.renderAgain()
+
+  // Unmount: the batch's watchdog + the write ceiling must both be cleared. Every
+  // probe above has been answered, so nothing is left pending on purpose.
+  await flush()
+  b.tree = b.renderAgain()
+  b.dispose()
+  globalThis.setTimeout = realSetTimeout
+  globalThis.clearTimeout = realClearTimeout
+  check('unmounting the card leaves no timer behind', pendingTimers.size === 0, `${pendingTimers.size} live timer(s)`)
+}
+
 if (liveMount) liveMount.dispose()
 
 // No page may leave its 1.5s poll interval behind: a leaked one used to keep the

@@ -208,7 +208,10 @@ test('client bundle folds workspaces per group, with click-to-expand groups', ()
 test('client bundle tiles single-environment workspaces instead of folding them', () => {
   assert.match(source, /var tileView = function \(g\)/)
   assert.match(source, /className: "dbh-tiles"/)
-  assert.match(source, /groups\.map\(tileView\)/)
+  // The list renders the SEARCHED + SORTED groups (`sortRows` / `filterRows`);
+  // the unfiltered `groups` stays the source of truth for the header count, the
+  // add-form datalist and the collision check behind every write.
+  assert.match(source, /visibleGroups\.map\(tileView\)/)
   // one row per connection: env chip + 🔒 metadata + actions
   assert.match(source, /var envRow = function \(w\)/)
   assert.match(source, /className: "dbh-envrow"/)
@@ -849,6 +852,17 @@ test('client locale tables define every key once and stay language-pure', () => 
   // ("e.g. prod / dev / test / 线上") is what a user on an en host actually reads.
   const leaked = en.filter(([, value]) => /[\u4e00-\u9fff]/.test(value)).map(([k]) => k)
   assert.deepEqual(leaked, [], 'the en table embeds Chinese text')
+  // The SAME placeholders on both sides: a `{n}` that exists in one dictionary
+  // only is an unfilled `{n}` (or a silently lost number) for the other locale.
+  // The list controls are parameterized ("N / M", "X passed / Y failed / …"), so
+  // this is a real failure mode, not a theoretical one — and `check:ui` only
+  // renders the filtered/batch copy in zh.
+  const zhMap = new Map(zh)
+  const placeholders = (text) => [...String(text).matchAll(/\{([A-Za-z]+)\}/g)].map((m) => m[1]).sort().join(',')
+  const mismatched = en
+    .filter(([key, value]) => zhMap.has(key) && placeholders(value) !== placeholders(zhMap.get(key)))
+    .map(([key]) => key)
+  assert.deepEqual(mismatched, [], 'zh/en placeholders differ')
 })
 
 // ── measured column ─────────────────────────────────────────────────────────
