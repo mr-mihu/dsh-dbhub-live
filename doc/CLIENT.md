@@ -56,7 +56,7 @@
 浏览器半曾经把**所有写失败都当成功**：`httpFace().post` 的 rejection 分支是 `noop`，于是 `saveConfig().then(setSaved(true))` 对 401、`{ok:false,error}`、网络拒绝一律显示「已保存 ✓」，`configOp`（含带 DSN 的保存）、`setEnabled`、`remove` 全部静默丢掉。四条约定按此收口：
 
 1. **写失败必须可见**：face 的写返回 promise，失败时 **reject**（带 message）；组件捕获后写入 `writeError`，渲染一行 `.dbh-error .dbh-writefail[role=alert]`，并且**不得**把 `saved` 置 true。失败后不锁按钮，再次点击就是重试。
-2. **错误态可重试**：`StatusCard` 必须读 `snapshot.status`（不是只读 `value`）。`'error'` 时渲染 `.dbh-loadfail` 错误行 + 「重试」按钮（调 `face.refresh()` 做一次真实读取，不是伪造一个空 view）。失败时保留上一次成功读到的行，不显示成"一个连接都没有"。
+2. **错误态可重试**：`StatusCard` 必须读 `snapshot.status`（不是只读 `value`）。`'error'` 时渲染 `.dbh-loadfail` 错误行 + 「重试」按钮（调 `face.refresh()` 做一次真实读取，不是伪造一个空 view）。失败时保留上一次成功读到的行，不显示成"一个连接都没有"。**错误行还要带一句自救指引**（去「设置 → 插件」确认启用；升级后重启）——宿主半没加载时，这张卡片是唯一还能说话的地方。写被拒后补一次 `refresh()`：写会占一个更高的读序号、把先发的 `/state` 读丢掉，没有这一步卡片可能停在 `loading` 直到下一次轮询。门禁 `[33]`。
 3. **未知态不注册入口**：`sidebarWanted()` 只在 `enabled === true` 时返回 true（见「三个入口」）。
 4. **Hook 序列一致**：`{'props.view'}` 的 `summary` / `page` 两种 view 必须**跑完全相同的 Hook 序列**——summary 的早退只能发生在**所有 Hook 之后**，页面树在返回处用 `isPage ? … : summaryNode` 选择。否则同一实例从 `summary` 切到 `page` 会抛 `Rendered more hooks than during the previous render`（`plugins.row.config` 的卡片就是这样同时服务两种 view 的）。
 

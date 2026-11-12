@@ -1790,6 +1790,10 @@ console.log('\n[33] a failed /state is visible + retryable, unknown ≠ "show th
   p.tree = p.renderAgain()
   check('a failed read renders an error line', count(p.tree, 'dbh-loadfail') === 1, toHtml(p.tree).slice(0, 300))
   check('the error line offers a retry control', count(p.tree, 'dbh-retry') === 1)
+  // Self-rescue: a read that never recovers usually means the Host half is not
+  // running, and the card must say where to look instead of leaving a bare error.
+  check('the error line explains what to check when it keeps failing',
+    /设置 → 插件|Settings → Plugins/.test(toHtml(p.tree)), toHtml(p.tree).slice(0, 400))
   check('a failed read never prints 已保存', !toHtml(p.tree).includes('已保存'))
   check('an unknown state registers NO sidebar entry', slotEntry(p, 'sidebar.panellist') === null)
   const readsBefore = p.getCalls.length

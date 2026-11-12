@@ -288,6 +288,7 @@ On desktop you can also uninstall directly on the **left menu → Plugins** page
 | No "Upgrade to …" hint appears in the header | You may already be on the latest version, or this check could not reach the npm registry / GitHub Releases; press "Check for updates" to retry. A failed check is only a hint and does not affect plugin functionality. |
 | How do I upgrade on desktop | Uninstall on the **left menu → Plugins** page, then reinstall the latest version; connections and credentials live in `~/.dsh/storages/dsh-dbhub-live` and are still there after the reinstall. |
 | After a dsh upgrade the plugin is reported as incompatible | Check that dsh is 0.2.1 or later, then upgrade the plugin to the latest version; forcing it through with `allow-version` buys nothing. |
+| The configure page keeps saying "the plugin state could not be read" | The panel cannot reach the Host half, usually because the **plugin is disabled** or the **Host half never loaded**: check under **Settings → Plugins** that the row is enabled, and restart DSH after a version change. Tool calls are unaffected — only this panel cannot read the state. |
 | Automatic dbhub updates are not wanted | Set "Auto-update interval (days)" to `0` on the configure page and save, or set `DSH_DBHUB_UPDATE_DAYS=0`. |
 
 **Environment variables** (only these two, not exposed in the UI): `DSH_DBHUB_PACKAGE` (the package that gets auto-installed, default `@bytebase/dbhub`), `DSH_DBHUB_UPDATE_DAYS` (the seed for the auto-update interval, default `7`, overridden by the value saved on the configure page).
