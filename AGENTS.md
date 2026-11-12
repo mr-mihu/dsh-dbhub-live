@@ -70,6 +70,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 
 ### 状态通道
 - 一个发布核心 `createHostCore`，**唯一通道**：`connection.fetch` 的 `/api/dsh-dbhub-live/{state,enabled,options,op}`。0.1.x 的 settings 命名空间通道已随 0.1.x 支持一起删除。
+- **每条 summary 行带 `alias`**（`collect.mjs` 的 `assignConnectionAliases` 是唯一实现点，`summarizeRows` 把它写进 `/state` 的 `workspaces`）：环境名在**所有工作区**里唯一时就是它，否则 `<工作区>_<环境>`，仍撞名再确定性追加 `-2`/`-3`；按 `title+env+path` 排序分配，**与扫描顺序无关**；非空、不含空白、不含 `@`。别名只是显示/手打短名，身份仍是不可变的 `srcId`。
 - 客户端 `inject` **只能 `["slots"]`**；`settingsScope` 不注入也不探测（0.2.x 已删除该服务，注入它会让整个浏览器半区永久 pending）→ [为什么](doc/ARCHITECTURE.md#状态通道与inject根因)。
 - 注入回调内服务必须 `ctx.get(...)` 就地取。
 - view：`{enabled, phase, toolCount, lastError, mode}` + `{updateIntervalDays, showSidebarEntry, announceAccessPolicy, capabilities, workspaces, testResult, opNotice}` + `{pluginVersion, dshVersion, dshMinVersion, dshTooOld, runtime, update}`。**DSN 只从浏览器流向 Host。**
@@ -94,9 +95,9 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - `resolveWorkspaceRef` 必须用与扫描同一个 `listWorkspaces(ctx)`。
 
 ### 其他不可退化
-- 依赖只进不出：`config ← state ← mcp`；`config ← runtime|toml|capability ← adhoc`；`mcp ← tools ← index`；`adhoc|collect ← tools`；`state|options ← policy ← index`；`meta`/`update` 是叶子。禁循环 import。
+- 依赖只进不出：`config ← state ← mcp`；`config ← runtime|toml|capability ← adhoc`；`mcp ← tools ← index`；`adhoc|collect ← tools`（`collect ← mcp` 只为 `assignConnectionAliases`，collect 不反向依赖）；`state|options ← policy ← index`（policy **不** import mcp：`@` 目录的取行函数由 index 传入）；`meta`/`update` 是叶子。禁循环 import。
 - schema 弹性：`await import('@deepseek-ai/schemastery')` 失败 → `Config` 保持 `undefined`（Loader 跳过校验，页面与工具照常），不改回静态顶层 import。
-- `policy.mjs` 唯一 system prompt 段（order 8900）：已配置连接走 `dbhub_*`、禁 CLI/脚本/驱动/其它 MCP/其它数据库插件绕过、只读被拒不换途径；不支持的库让给用户其它插件、判不准先问。`announceAccessPolicy=false` 时 `text` 为空。门禁 `test/policy.test.mjs`。
+- `policy.mjs` 唯一 system prompt 段（order 8900）：已配置连接走 `dbhub_*`、禁 CLI/脚本/驱动/其它 MCP/其它数据库插件绕过、只读被拒不换途径；不支持的库让给用户其它插件、判不准先问。另解释 `@db:<句柄>` 标记（按出现顺序一一对应、一条消息可有多个）并附 `别名→句柄` 目录（`POLICY_CATALOG_MAX = 12`，超出附 `dbhub_list_sources` 指针，**只有别名与句柄**，绝无 DSN/主机/账号）。取行函数由 index 传入（`registerDbhubPolicy(ctx, latestSummaries)`），policy 不 import mcp。`announceAccessPolicy=false` 时 `text` 为空。门禁 `test/policy.test.mjs`。
 - 启用/禁用：`state.setEnabled` → `credentials.json`；禁用时工具首行返回「插件已禁用」。
 - `lastError` **只由 boot 失败写入**（`state.recordError` / `clearError`），工具调用错误不进卡片：它是"插件起不来"的诊断位，不是运行日志。要接工具错误必须先有"成功即清空"的语义，否则一次偶发失败会永久挂在页头（本次刻意不做）。
 - SSH 口令弹窗**只在没给 keyPath 时出现**（`tools.mjs` 的 `auth==='key' && !keyPath` 分支）：给了路径就按"无口令"假设，**零打扰是刻意的**（`test/configure-options.test.mjs` 用 `dialogs === 0` 钉住）。带口令的私钥需用户先在界面里配 passphrase，不要让模型路径去追问。
@@ -106,7 +107,8 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 
 ### 客户端半（细节见 [doc/CLIENT.md](doc/CLIENT.md)）
 - 手写 lazy-CJS bundle，无构建；`id` = Loader entry 名；三入口都要在：`settings.section`（始终）/ 侧边栏（`enabled && showSidebarEntry`）/ `plugins.row.config`（始终）。
-- **写失败必须可见**：face 的写 promise 在失败时 reject（失败分支不得写 `noop`），组件渲染 `.dbh-error .dbh-writefail[role=alert]` 且**不置 `saved`**；`/state` 失败时读 `snapshot.status === 'error'` 渲染 `.dbh-loadfail` + 「重试」（`face.refresh()`）；`sidebarWanted()` 只在 `enabled === true` 时注册（未知/失败不注册）；`summary` 与 `page` 两种 view 的 Hook 序列必须一致（summary 早退只能放在所有 Hook 之后）。门禁 `check:ui` 的 `[31]`–`[46]` 用失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读 / 非 JSON / 缺 value / 失败的更新检查）钉住，假 react 按组件身份校验 Hook 数。
+- **写失败必须可见**：face 的写 promise 在失败时 reject（失败分支不得写 `noop`），组件渲染 `.dbh-error .dbh-writefail[role=alert]` 且**不置 `saved`**；`/state` 失败时读 `snapshot.status === 'error'` 渲染 `.dbh-loadfail` + 「重试」（`face.refresh()`）；`sidebarWanted()` 只在 `enabled === true` 时注册（未知/失败不注册）；`summary` 与 `page` 两种 view 的 Hook 序列必须一致（summary 早退只能放在所有 Hook 之后）。门禁 `check:ui` 的 `[31]`–`[47]` 用失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读 / 非 JSON / 缺 value / 失败的更新检查）钉住，假 react 按组件身份校验 Hook 数。
+- **`@` 输入源**：`ctx.inject(['inputTriggers'], …)`（可选服务，**不进导出的 `inject`**，否则缺失时整个浏览器半区永久 pending）；注册名 `dbhub`/`trigger:'@'` 是稳定 ASCII（它同时是 reference 路由键，不做本地化）。候选只来自 `/state` 的 workspaces 行（复用 `workspacesOf`/`groupRows`），每行只带**别名 / 句柄 / `conn` / 工作区标题 / 只读标记**，绝无 DSN/主机/账号；`onPick` 的 `insert.source` 必须等于注册名、`ref` 用不可变句柄；`codec.serialize → '@db:<句柄>'`（**多选靠它逐 chip 序列化**）、`codec.clipboardText` 用当前别名；`lexicon`/`subscribeLexicon` 跟随 face 已有通知（**不新增定时器**），`warm` 只触发一次既有 `refresh`；**首次 `@` 早于第一次 `/state` 落地时，`candidates()` 先等一次有界的 `refresh`**（并发共享同一个 promise），否则空分组会让菜单立刻关闭、用户第一次按 `@` 像是坏的；停用/读失败/无行 → 空候选（空组自动关菜单），绝不抛错或显示假数据。门禁 `check:ui` `[47]`。
 - **写/读两条水位线，`form.set` 只认 `true`，缺 value 不是空页**：读按 `appliedSeq` 丢旧（写发起时占一个更高的读序号），写响应另走 `appliedWriteStamp`（**不**与读序号比，否则「写先发 → 读后发 → 读先回 → 写后回」把写自己的答案丢了）；`form.set` 只有 `ok === true` 算受理（`undefined` 曾导致零 POST 还印「已保存」），其余回落 `POST /options`；`value` 不是非空对象时读进 `status:'error'`（保留旧行）、写 reject，绝不 `publish({status:'ready', value:{}})`；`res.json()` 失败统一本地化；每次写最多等 `WRITE_TIMEOUT_MS = 90s`（> SSH 看门狗，超时只按失败渲染）。门禁 `[38]`–`[41]`。
 - `apply()` 可重入：locale 注册失败降级 `localTranslator`。
 - **实测列宽靠回调 ref**（`attachMeasuredWidth`）：observer 由 callback ref 挂/换/卸，卸载 effect 只 disconnect，**没有计时器**。不要在空依赖 effect 里读一次 `ref.current`——列没在那一刻挂上就永不重测，宽度恒 0、布局静默退回 viewport。门禁 `[45]`。

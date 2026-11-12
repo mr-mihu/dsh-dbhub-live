@@ -779,6 +779,26 @@ test('client bundle renders DSH-style settings rows, the harness Switch and row 
   assert.match(source, /className: "dbh-title"/)
 })
 
+test('client bundle contributes the composer `@` source (one message, many references)', () => {
+  // The `@` menu is the one surface where the USER names connections; every
+  // submitted chip serializes on its own, which is what makes several
+  // references in one message work. The source is registered through the
+  // OPTIONAL service, so it must never join the exported `inject` list.
+  assert.match(source, /ctx\.inject\(\["inputTriggers"\], function \(scope\) \{/)
+  assert.match(source, /scope\.inputTriggers\.registerSource\(dbhubInputSource\);/)
+  assert.match(source, /name: "dbhub",\s*\n\s*trigger: "@",/)
+  assert.match(source, /serialize: function \(ref\) \{ return "@db:" \+ String\(ref \|\| ""\); \},/)
+  assert.match(source, /clipboardText: function \(ref\) \{ return "@" \+ aliasOfHandle\(ref\); \},/)
+  assert.match(source, /insert: \{\s*\n\s*source: "dbhub",/)
+  assert.match(source, /appearance: "file",/)
+  // A candidate carries the alias, the handle and the metadata label only.
+  assert.match(source, /var cand = \{ name: alias, label: alias, description: bits\.join\(" · "\), value: handle \};/)
+  assert.match(source, /if \(v\.enabled !== true\) return \[\];/)
+  // ... and the service stays out of the declared dependencies.
+  assert.match(source, /var inject = \["slots"\];/)
+  assert.doesNotMatch(source, /var inject = \[[^\]]*inputTriggers/)
+})
+
 // ── locale tables ───────────────────────────────────────────────────────────
 //
 // The bundle is hand-written and its dictionaries are plain object literals, so

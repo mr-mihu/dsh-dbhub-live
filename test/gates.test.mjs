@@ -214,6 +214,35 @@ test('check:secrets — a config file nobody registered is still covered (D1 sco
     rmSync(dir, { recursive: true, force: true })
   }
 })
+test('check:ui — a broken `@` reference contract fails the client gate (G7)', () => {
+  // The composer source is a CONTRACT, not decoration: `codec.serialize` must
+  // hand the model the immutable handle. A bundle that emitted a bare `@ref`
+  // still renders the page perfectly, so only a dedicated assertion can catch
+  // it — and that assertion has to be proven able to fail.
+  const dir = stageRepo()
+  try {
+    const clean = run('scripts/render-check.mjs', [], dir)
+    assert.equal(clean.code, 0, `pristine copy must pass the offscreen gate:\n${clean.out}`)
+    const clientFile = join(dir, 'lib', 'client.js')
+    const original = readFileSync(clientFile, 'utf8')
+    try {
+      const mutated = original.replace(
+        'return "@db:" + String(ref || "");',
+        'return "@" + String(ref || "");',
+      )
+      assert.notEqual(mutated, original, 'the bad sample must actually change the bundle')
+      writeFileSync(clientFile, mutated)
+      const bad = run('scripts/render-check.mjs', [], dir)
+      assert.equal(bad.code, 1, `a wrong @ marker must fail the gate:\n${bad.out}`)
+      assert.match(bad.out, /FAIL .*serialize/)
+    } finally {
+      writeFileSync(clientFile, original)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('check:docs — a dead link in either README fails the gate (G3)', () => {
   const dir = stageRepo()
   try {

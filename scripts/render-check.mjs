@@ -322,6 +322,23 @@ function mount(snapshot, opts = {}) {
       },
     }),
   }
+  // The optional `inputTriggers` service (the composer's `@` menu). Stubbed on
+  // purpose: this gate must not depend on the DSH package that ships the real
+  // service, only on the shape the bundle uses. Registered sources are kept so
+  // the assertions can inspect them; `opts.inputTriggers === false` models a
+  // deployment that does NOT provide the service (the callback must never fire).
+  const inputTriggers = opts.inputTriggers === false ? null : {
+    sources: [],
+    registerSource(source) {
+      this.sources.push(source)
+      // A real registration is disposable: a hot reload re-applies the bundle,
+      // so the effect's cleanup has to release the group.
+      return () => {
+        const at = this.sources.indexOf(source)
+        if (at >= 0) this.sources.splice(at, 1)
+      }
+    },
+  }
   const ctx = {
     get(name) {
       if (name === 'configForms') return opts.configForms ? configForms : undefined
@@ -362,6 +379,25 @@ function mount(snapshot, opts = {}) {
     },
     on(event, fn) {
       if (event === 'dispose') disposeHandlers.push(fn)
+      return () => {}
+    },
+    // The core Cordis injector. `slots` is satisfied for every mount (the fake
+    // slot registry below); `inputTriggers` only when the option allows it.
+    // The callback receives a scope whose `effect` runs IMMEDIATELY and owns the
+    // returned disposer, which is what makes the source live for the mount and
+    // released by a simulated hot reload.
+    inject(names, cb) {
+      const wanted = Array.isArray(names) ? names : [names]
+      if (wanted.indexOf('inputTriggers') < 0 || !inputTriggers) return () => {}
+      const scope = {
+        inputTriggers,
+        effect(fn) {
+          const cleanup = fn()
+          ctx.effect(() => cleanup)
+          return () => {}
+        },
+      }
+      cb(scope)
       return () => {}
     },
     slots: {
@@ -441,7 +477,7 @@ function mount(snapshot, opts = {}) {
   }
   bundle.apply(ctx)
   return {
-    registrations, setCalls, opCalls, getCalls, formSets, posts,
+    registrations, setCalls, opCalls, getCalls, formSets, posts, inputTriggers,
     /** What the plugin scope disposal (a hot reload) does. */
     dispose() {
       // Component effect cleanups first: the HTTP face stops polling in its
@@ -556,6 +592,9 @@ function checkBoxWithin(node, cls, index, checked) {
 
 const row = (title, path, env, conn, extra = {}) => Object.assign({
   title, path, env, conn, source: 'persisted(user)', persisted: true,
+  // The alias is computed by the HOST from the whole row set (collect.mjs); the
+  // fixture spells the same shape out so the `@` menu has something to name.
+  alias: title + (env === 'default' ? '' : '_' + env),
   srcId: `${title}_1a2b3c${env === 'default' ? '' : '_' + env}`,
 }, extra)
 
@@ -587,6 +626,15 @@ const SINGLE_MULTI = [
 const DUP_TITLES = [
   row('app', 'D:/work/one/app', 'default', 'mysql://127.0.0.1:3306/a'),
   row('app', 'D:/work/two/app', 'default', 'mysql://127.0.0.1:3306/b'),
+]
+// Composer `@` menu fixture: two DIFFERENT workspaces both own an environment
+// named `prod`, so the Host aliases them apart (`app_prod` / `billing_prod`) and
+// the menu must keep both. The alias is a Host field (like `srcId`); the client
+// never derives it.
+const AT_MENU = [
+  row('app', 'D:/work/app', 'prod', 'mysql://127.0.0.1:3307/app', { alias: 'app_prod', ro: true }),
+  row('billing', 'D:/work/billing', 'prod', 'postgres://127.0.0.1:5432/bill', { alias: 'billing_prod' }),
+  row('app', 'D:/work/app', 'default', 'mysql://127.0.0.1:3306/app', { alias: 'default' }),
 ]
 const wsSnap = (path, updatedAt = '2026-01-01T00:00:00Z') => (sel) => sel({ items: [{ path, updatedAt }] })
 
@@ -2374,6 +2422,107 @@ console.log('\n[46] a FAILED update check re-arms the button and shows the error
     JSON.stringify(p.opCalls.filter((o) => o.op === 'updateCheck').length))
   viewport(1440)
 }
+
+console.log('\n[47] the composer `@` source names connections without leaking them')
+
+// ① The source shape: the optional input-trigger service is stubbed by the fake
+// host, so what is asserted here is the contract the bundle uses (trigger, group
+// name, hooks) — not another plugin's implementation.
+const at1 = await page(AT_MENU, {})
+const atSources = at1.inputTriggers ? at1.inputTriggers.sources : []
+check('exactly one dbhub @ source is registered', atSources.length === 1, JSON.stringify(atSources.map((s) => s && s.name)))
+const atSrc = atSources[0] || {}
+check('the source is the stable @ group "dbhub"', atSrc.trigger === '@' && atSrc.name === 'dbhub',
+  JSON.stringify({ trigger: atSrc.trigger, name: atSrc.name }))
+check('the source exposes candidates/onPick/codec/lexicon/subscribeLexicon/warm',
+  typeof atSrc.candidates === 'function' && typeof atSrc.onPick === 'function'
+  && !!atSrc.codec && typeof atSrc.codec.serialize === 'function' && typeof atSrc.codec.clipboardText === 'function'
+  && typeof atSrc.lexicon === 'function' && typeof atSrc.subscribeLexicon === 'function' && typeof atSrc.warm === 'function')
+
+// ② Candidates come from the SAME /state rows the card renders.
+const atCandidates = typeof atSrc.candidates === 'function'
+  ? await atSrc.candidates(null, { query: '', position: 0, drilled: false })
+  : []
+check('one candidate per connection row', atCandidates.length === 3, JSON.stringify(atCandidates.map((c) => c && c.name)))
+const atNames = atCandidates.map((c) => c && c.name)
+check('candidate names are the Host aliases and stay unique in the menu',
+  new Set(atNames).size === 3 && atNames.indexOf('default') >= 0, JSON.stringify(atNames))
+check('two workspaces both owning prod keep DISTINCT aliases',
+  atNames.indexOf('app_prod') >= 0 && atNames.indexOf('billing_prod') >= 0, JSON.stringify(atNames))
+const atByName = (name) => atCandidates.find((c) => c && c.name === name) || {}
+const atProd = atByName('app_prod')
+check('a candidate describes its workspace, its metadata label and the read-only flag',
+  atProd.label === 'app_prod'
+  && String(atProd.description).includes('app')
+  && String(atProd.description).includes('mysql://127.0.0.1:3307/app')
+  && String(atProd.description).includes('只读'),
+  JSON.stringify(atProd))
+check('the section is the workspace title', atProd.section === 'app' && atByName('billing_prod').section === 'billing',
+  JSON.stringify(atCandidates.map((c) => c && c.section)))
+check('the candidate VALUE is the immutable source handle', atProd.value === 'app_1a2b3c_prod', JSON.stringify(atProd.value))
+const atLeak = JSON.stringify(atCandidates)
+check('no DSN, credential or local path reaches a candidate',
+  !/:\/\/[^/\s]*:[^@\s]+@/.test(atLeak) && !atLeak.includes('D:/work') && !/password|passwd|secret|token/i.test(atLeak),
+  atLeak)
+
+// ③ Pick → insert: the routing key is the source name, the payload is the handle.
+const atPicked = typeof atSrc.onPick === 'function'
+  ? atSrc.onPick({ candidate: atProd, session: null, position: 0, via: 'menu', action: 'pick', span: { start: 0, end: 0 } })
+  : null
+const atInsert = atPicked && atPicked.insert
+check('pick inserts a reference routed back to this source',
+  !!atInsert && atInsert.source === 'dbhub' && atInsert.appearance === 'file', JSON.stringify(atPicked))
+check('the insert carries the HANDLE (not the alias) and shows the alias',
+  !!atInsert && atInsert.ref === 'app_1a2b3c_prod' && atInsert.label === 'app_prod' && atInsert.clipboardText === '@app_prod',
+  JSON.stringify(atInsert))
+
+// ④ Codec: each chip serializes on its own — that is what makes SEVERAL
+// references in one message work.
+check('serialize turns a reference into the model marker @db:<handle>',
+  atSrc.codec.serialize('app_1a2b3c_prod') === '@db:app_1a2b3c_prod', atSrc.codec.serialize('app_1a2b3c_prod'))
+check('clipboardText resolves the CURRENT alias of the handle',
+  atSrc.codec.clipboardText('app_1a2b3c_prod') === '@app_prod', atSrc.codec.clipboardText('app_1a2b3c_prod'))
+check('an UNKNOWN handle falls back to the handle, never to a guess',
+  atSrc.codec.clipboardText('gone_zzzz') === '@gone_zzzz', atSrc.codec.clipboardText('gone_zzzz'))
+const atTwoRefs = [atByName('app_prod').value, atByName('billing_prod').value].map((r) => atSrc.codec.serialize(r))
+check('one message can carry several references, each serialized on its own',
+  atTwoRefs.join(' ') === '@db:app_1a2b3c_prod @db:billing_1a2b3c_prod', JSON.stringify(atTwoRefs))
+check('the lexicon lists every alias',
+  JSON.stringify(atSrc.lexicon(null).slice().sort()) === JSON.stringify(['app_prod', 'billing_prod', 'default']),
+  JSON.stringify(atSrc.lexicon(null)))
+
+// ⑤ The lexicon follows the published snapshot (the card's own notification
+// point — no second timer, no polling).
+let atLexiconUpdates = 0
+const atUnsubscribe = atSrc.subscribeLexicon(null, () => { atLexiconUpdates += 1 })
+await at1.props.refresh()
+await flush()
+atUnsubscribe()
+check('the lexicon follows the published snapshot', atLexiconUpdates > 0, String(atLexiconUpdates))
+
+// ⑥ No data = no candidates. A disabled plugin, an unreadable state and an
+// empty row set are all "empty group" (which closes the menu), never a throw.
+const atEmpty = await page([], {})
+check('a hot reload releases the previous @ group', at1.inputTriggers.sources.length === 0,
+  JSON.stringify(at1.inputTriggers.sources.length))
+const atEmptySrc = (atEmpty.inputTriggers.sources || [])[0] || {}
+check('no connection rows → no candidates', (await atEmptySrc.candidates(null, {})).length === 0)
+
+const atFailedPage = await page(AT_MENU, { fetchImpl: () => 'reject' })
+const atFailedSrc = (atFailedPage.inputTriggers.sources || [])[0] || {}
+check('a failed /state read yields NO candidates', (await atFailedSrc.candidates(null, {})).length === 0)
+check('...and an empty lexicon', (atFailedSrc.lexicon(null) || []).length === 0)
+
+const atDisabled = await page(AT_MENU, { snapshot: { enabled: false } })
+const atDisabledSrc = (atDisabled.inputTriggers.sources || [])[0] || {}
+check('a disabled plugin offers no references', (await atDisabledSrc.candidates(null, {})).length === 0)
+
+// ⑦ A host WITHOUT the service must still mount the whole plugin half (that is
+// why the service is injected optionally, not declared in `inject`).
+const atNoService = await page(AT_MENU, { inputTriggers: false })
+check('a host without inputTriggers still mounts and registers nothing',
+  atNoService.inputTriggers === null && !!slotEntry(atNoService, 'settings.section'),
+  JSON.stringify({ triggers: atNoService.inputTriggers, settings: !!slotEntry(atNoService, 'settings.section') }))
 
 if (liveMount) liveMount.dispose()
 

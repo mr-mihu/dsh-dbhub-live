@@ -111,13 +111,13 @@ lib/
   runtime.mjs    dbhub 可执行文件发现、按需自动安装、定期自动更新
   capability.mjs 上游能力探测（文件级，不 spawn）：[[tools]] readonly 与 ssh_* 需 1.4.0+
   toml.mjs       一次性 TOML 生成器 buildDbhubToml/writeTempToml/removeTempToml/sweepTempToml（文本绝不含秘密）
-  mcp.mjs        MCP JSON-RPC 客户端、工具注册表、来源发现 collectSources/resolveSource、摘要缓存、测试快路径 resolveTestDsn
+  mcp.mjs        MCP JSON-RPC 客户端、工具注册表、来源发现 collectSources/resolveSource、摘要缓存（每行含稳定别名 alias）、测试快路径 resolveTestDsn
   adhoc.mjs      唯一执行引擎：一次性 dbhub 进程（描述符 {dsn,ro,ssh}）、--dsn 或临时 TOML、stderr 清洗、
                  probeConnection、probeSshTunnel、diagnosticTail/DIAG_TAIL_MAX=600/failureLayerOf
-  collect.mjs    授权扫描项目配置文件(mise/.env)提取 DSN 候选，含 askUser 桥接
+  collect.mjs    授权扫描项目配置文件(mise/.env)提取 DSN 候选，含 askUser 桥接；连接别名 assignConnectionAliases（唯一实现点）
   tools.mjs      4 个工具的定义与注册；configure 探连优先
-  policy.mjs     模型侧访问策略：唯一的 system prompt 段（order 8900）
-  client.js      Web 半（手写 lazy-CJS bundle，无构建）：settings.section + 侧边栏面板 + plugins.row.config(summary/page)
+  policy.mjs     模型侧访问策略：唯一的 system prompt 段（order 8900，含 @db:<句柄> 语义与别名→句柄目录；取行函数由 index 传入）
+  client.js      Web 半（手写 lazy-CJS bundle，无构建）：settings.section + 侧边栏面板 + plugins.row.config(summary/page) + 输入框 `@` 输入源
 test/            node:test 单测（纯逻辑 + bridge/客户端契约 + 零知识泄漏门）
 scripts/         desensitize.config.mjs(槽位表=单一事实源) / desensitize-check.mjs / docs-check.mjs / render-check.mjs / release-preflight.mjs
 release-test/    版本矩阵实测：matrix.json(唯一声明) / run.mjs / support-matrix.mjs / mise.toml

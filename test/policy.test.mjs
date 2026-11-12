@@ -85,12 +85,63 @@ test('the policy text stays inside its budget and its zero-knowledge frame', () 
   state.setEnabled(true)
   options.applyPatch({ announceAccessPolicy: true })
   const text = policy.dbhubPolicyText()
-  assert.ok(text.length <= 420, 'token budget: ' + String(text.length) + ' chars')
+  // The prose alone (no catalog) — the catalog is bounded separately below.
+  assert.ok(text.length <= 900, 'token budget: ' + String(text.length) + ' chars')
   // A real-looking DSN would leak a credential into the system prompt.
   assert.doesNotMatch(text, /[a-z]+:\/\/[^/\s]*:[^@\s]+@/)
   // `{{name}}` is interpolated strictly by prompt assembly: an unregistered
   // name would make every assembly throw, i.e. the model would get no prompt.
   assert.doesNotMatch(text, /\{\{[a-z_]+\}\}/)
+})
+
+test('the section explains the @db:<handle> marker and one-message-many-references', () => {
+  state.setEnabled(true)
+  options.applyPatch({ announceAccessPolicy: true })
+  const text = policy.dbhubPolicyText()
+  // The composer serializes every chip into this exact marker, so the model has
+  // to be told what it is and that several may appear in one message.
+  assert.match(text, /@db:<句柄>/)
+  assert.match(text, /一条消息可以出现多个标记/)
+  assert.match(text, /按标记出现的顺序/)
+  assert.match(text, /source 参数/)
+})
+
+test('the catalog lists alias→handle only, and truncates with a pointer to dbhub_list_sources', () => {
+  state.setEnabled(true)
+  options.applyPatch({ announceAccessPolicy: true })
+  const rows = [
+    { alias: 'app_prod', srcId: 'app_ab12_prod' },
+    { alias: 'billing_prod', srcId: 'billing_cd34_prod' },
+  ]
+  const text = policy.dbhubPolicyText(rows)
+  assert.match(text, /@ 标记目录（别名→句柄）：/)
+  assert.ok(text.includes('app_prod→app_ab12_prod'), text)
+  assert.ok(text.includes('billing_prod→billing_cd34_prod'), text)
+  // Sorted, so the prompt does not depend on the walk order.
+  assert.ok(text.indexOf('app_prod→') < text.indexOf('billing_prod→'))
+  // Zero knowledge: the catalog is handles and aliases only — never a DSN shape,
+  // a host, a user or a port.
+  assert.doesNotMatch(text, /:\/\//)
+  assert.doesNotMatch(text, /[a-z]+:\/\/[^/\s]*:[^@\s]+@/)
+  assert.doesNotMatch(text, /\b(?:host|user|password|passwd|dsn)\s*=/i)
+  // A row without the two required fields is skipped, not rendered as a hole.
+  assert.equal(policy.dbhubPolicyText([{ alias: 'x' }, { srcId: 'y' }]), policy.dbhubPolicyText())
+
+  const many = Array.from({ length: 40 }, (_, i) => ({ alias: 'env' + i, srcId: 'ws_ab' + i }))
+  const capped = policy.dbhubPolicyText(many)
+  const entries = capped.split('@ 标记目录（别名→句柄）：')[1] || ''
+  assert.equal(entries.split('、').length, policy.POLICY_CATALOG_MAX,
+    'the catalog is capped at POLICY_CATALOG_MAX entries')
+  assert.ok(entries.includes('其余用 dbhub_list_sources 查看'), entries)
+  // The whole section still stays inside a prompt-sized budget.
+  assert.ok(capped.length <= 1400, 'catalog budget: ' + String(capped.length))
+})
+
+test('no rows means no catalog line at all', () => {
+  state.setEnabled(true)
+  options.applyPatch({ announceAccessPolicy: true })
+  assert.equal(policy.dbhubPolicyText([]), policy.dbhubPolicyText())
+  assert.doesNotMatch(policy.dbhubPolicyText([]), /标记目录/)
 })
 
 test('registration injects the optional systemPrompt service and owns the section', () => {
@@ -124,6 +175,26 @@ test('registration injects the optional systemPrompt service and owns the sectio
   // The section is effect-owned, so a re-run of apply() disposes it instead of
   // throwing on the duplicate name.
   assert.deepEqual(effects, ['dsh-dbhub-live: access policy'])
+})
+
+test('the catalog provider is read per assembly (connections change at runtime)', () => {
+  const sections = []
+  const ctx = {
+    inject(deps, cb) {
+      cb({
+        systemPrompt: { section(def) { sections.push(def); return () => {} } },
+        effect(fn) { return fn() },
+      })
+    },
+  }
+  // The provider is handed in, not imported: `policy` may not depend on `mcp`.
+  let rows = []
+  policy.registerDbhubPolicy(ctx, () => rows)
+  assert.doesNotMatch(sections[0].text(), /标记目录/)
+  rows = [{ alias: 'app_prod', srcId: 'app_ab12_prod' }]
+  assert.match(sections[0].text(), /app_prod→app_ab12_prod/)
+  rows = []
+  assert.doesNotMatch(sections[0].text(), /标记目录/)
 })
 
 test('a deployment without systemPrompt registers nothing and does not throw', () => {

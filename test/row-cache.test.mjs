@@ -124,13 +124,14 @@ test('a patched row still summarizes to metadata only (no DSN, no credentials)',
   assert.equal(summaries.length, 1)
   assert.deepEqual(
     Object.keys(summaries[0]).sort(),
-    ['conn', 'env', 'path', 'persisted', 'ro', 'source', 'ssh', 'srcId', 'title'].sort(),
+    ['alias', 'conn', 'env', 'path', 'persisted', 'ro', 'source', 'ssh', 'srcId', 'title'].sort(),
   )
   const text = JSON.stringify(summaries)
   assert.equal(text.includes('CHANGE_ME'), false)
   assert.equal(text.includes('mysql://user'), false, 'no credentialed URL shape survives')
   assert.equal(text.includes('"dsn"'), false)
   assert.equal(summaries[0].conn, 'mysql://127.0.0.1:3307/app')
+  assert.equal(summaries[0].alias, 'prod', 'the unrivaled environment name is the alias')
   assert.equal(summaries[0].source, 'persisted(user)', 'provenance stays, credentials do not')
   assert.equal(summaries[0].ro, false)
   assert.equal(summaries[0].ssh, null)

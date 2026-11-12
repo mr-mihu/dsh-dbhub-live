@@ -36,6 +36,21 @@
 - **HTTP 通道轮询是「按订阅」的**：只有渲染中页面用 `props.subscribe(fn, { live: true })` 起 1.5s 轮询（`document.hidden` 跳过）；插件作用域订阅（`face.subscribe(syncSidebar)`）只做一次性拉取。**空闲 GUI 不得持续轮询**，残留 interval 会让 `check:ui` 挂住不退出。
 - 组件不得接触 `ctx`：数据/回调一律通过注册时的 `inject: () => face` 传入 props。
 
+## `@` 输入源（输入框里多选数据源）
+
+除三个页面入口外，`apply()` 还向 DSH 的 **input-trigger** 服务（`ctx.inputTriggers`，`@deepseek-ai/dsh-client-ui-input-trigger`）注册**一个** `@` 分组。契约（改动前先读 `lib/client.js` 的注释头）：
+
+- **可选注入，绝不写进导出的 `inject`**：`ctx.inject(["inputTriggers"], (scope) => scope.effect(() => scope.inputTriggers.registerSource(source), …))`。导出 `inject` 仍只有 `["slots"]`——把可选服务写进去，缺失时整个浏览器半区会永久 pending（与 `settingsScope` 同一个坑）。
+- **`name: 'dbhub'` 是稳定 ASCII**：它既是菜单分组标题，又是提交时 reference 的路由键（`insert.source` 必须与它逐字相同），不做本地化、不随 locale 变。
+- **`candidates()` 只读 `/state` 快照**：复用 `workspacesOf` / `groupRows`（不要新写一份 JSON 解析），每行映射为一个候选：`name`/`label` = Host 计算的**别名**（`alias`，菜单内唯一），`description` = `<工作区标题> · <conn>`（只读时追加 `ro.chip`），`section` = 工作区标题，`value` = 不可变 source 句柄（`srcId`）。**没有别名或句柄的行直接跳过**——客户端不另算一套别名，否则菜单名可能撞车。
+- **零知识**：候选里只允许别名 / 句柄 / `conn`（类型·主机·端口·库名）/ 工作区标题 / 「只读」。**不出现 DSN、账号、密码、本机路径**（`srcId` 只是句柄）。
+- **`onPick` 返回 `{ insert: { source: 'dbhub', ref: <句柄>, label: <别名>, appearance: 'file', clipboardText: '@'+别名 } }`**：`ref` 用**句柄**而不是别名，别名会随增删连接变化。
+- **`codec`**：`serialize(ref) → '@db:<句柄>'`（提交时**每个 chip 各调一次**，这就是一条消息多选能工作的机制）；`clipboardText(ref)` 用该句柄**当前**的别名（找不到就退回句柄本身）。
+- **`lexicon()` / `subscribeLexicon()`** 返回/跟随当前别名集合，供「手打 `@别名` 也变成引用」；订阅复用 face 已有的通知点（`face.subscribe`），**不新增定时器**。`warm()` 只触发一次既有 `face.refresh()`。
+- **空态语义**：插件停用、`/state` 读取失败、没有任何连接行 → `candidates()` 返回 `[]`（空分组自动关菜单）。**绝不抛错、绝不显示假数据**；`ctx` 没有该服务时整个注册不执行，插件其余部分照常。
+- **首个 `@` 不等空快照**：`/state` 尚未落地时 `candidates()` 先等一次有界的 `refresh()`（并发共用同一个 promise）。否则第一次按 `@` 会得到空分组、菜单立刻关闭，看起来像功能坏了。等完仍是失败/无行，才按上一条返回空。
+- Host 侧配套：`summarizeRows` 给每行写入 `alias`（`collect.mjs` 的 `assignConnectionAliases` 是唯一实现点），所以 `/state` 的 `workspaces` 天然带别名；策略段同时解释 `@db:<句柄>` 并附「别名 → 句柄」目录（见 [AGENTS.md](../AGENTS.md)）。
+
 ## 写失败与错误态（四条硬约定）
 
 浏览器半曾经把**所有写失败都当成功**：`httpFace().post` 的 rejection 分支是 `noop`，于是 `saveConfig().then(setSaved(true))` 对 401、`{ok:false,error}`、网络拒绝一律显示「已保存 ✓」，`configOp`（含带 DSN 的保存）、`setEnabled`、`remove` 全部静默丢掉。四条约定按此收口：
@@ -150,7 +165,7 @@
 
 ## 验收
 
-- 布局/交互改动的验收 = `npm run check:ui`（离屏渲染 + 点击交互；分段 `[1]`…`[46]`，涵盖模式判定、默认展开、全部展开/折叠、添加面板、复制、i18n 覆盖率、热重载幂等、覆盖门、HTTP 桥、只读/SSH 载荷、三面布局、过旧版本警告、**写失败/错误态/未知态/Hook 序列/间隔校验/删除确认/写读序号/form 受理语义/缺失 value/非 JSON/删除单飞/draft 回滚/tick 抑制/实测列宽**）全绿 + `node test/client-format.test.mjs`。
+- 布局/交互改动的验收 = `npm run check:ui`（离屏渲染 + 点击交互；分段 `[1]`…`[47]`，涵盖模式判定、默认展开、全部展开/折叠、添加面板、复制、i18n 覆盖率、热重载幂等、覆盖门、HTTP 桥、只读/SSH 载荷、三面布局、过旧版本警告、**写失败/错误态/未知态/Hook 序列/间隔校验/删除确认/写读序号/form 受理语义/缺失 value/非 JSON/删除单飞/draft 回滚/tick 抑制/实测列宽**、**`@` 输入源（形状/候选/多选序列化/空态/无服务部署）**）全绿 + `node test/client-format.test.mjs`。
 - 已知易错门：`[13]` 重复 locale 注册、`[16]` 复制字符串、`[17]` 桥接 / `configForms` 优先与回退 / 轮询可回收、`[18]` 启用∧开关 / 禁用一律隐藏 / 设置页始终在、`[19]`/`[20]`/`[21]` 只读与 SSH 载荷、`[22]` 残留 interval、`[24]` 升级链接 tooltip 与「复制」职责分离、`[26]` 弹窗设置折叠、`[27]` 手机布局、`[28]` 过旧版本只警告不拦功能、`[29]` 窄桌面窗口保持横向设置条、`[31]`–`[36]` 失败桩（401 / `{ok:false}` / fetch 拒绝 / 晚到的读响应）、`[37]` 假 react 的 effect 循环上限（否则 Hook 回归 = 挂死而不是红）、`[38]` 写/读两条水位线双向、`[39]` 表单只认 `true`、`[40]` 缺失 value、`[41]` 非 JSON、`[42]` 删除单飞、`[45]` 实测列宽驱动布局（宿主挂 ref + 自带 ResizeObserver 桩）。
 - **SSH 层测试的空字段在客户端拦下**：`connDraftOf` 在开关打开时恒返回对象，`if (!ssh)` 是死分支；现在 `host`/`user` 任一为空即用 `adv.testSshNeedFields` 就地回话（不派发、不白等一次宿主往返），填好后再点才发 `{op:'test', kind:'ssh'}`。
 - **失败路径必须有桩**：`mount()` 的 `fetchImpl` 是脚本化应答（`undefined` = 正常、`'reject'` = 网络断、`'html'` = 200 但响应体不是 JSON、`{status,payload}` = 指定应答、Promise = 由测试决定何时以及按什么顺序回），只有被接受的应答才记进 `setCalls`/`opCalls`（`posts` 记下发过的每一个写，含被拒的）——所以「写没被接受」「只发了一个 op」都是可断言的。假 react 还会**按组件身份校验 Hook 数**（同类型组件 Hook 数变化即抛，正是 React 的行为），否则条件 Hook 结构性不可见；`render()` 的重渲染循环有 100 轮上限，超限抛 `effect loop did not settle`。
