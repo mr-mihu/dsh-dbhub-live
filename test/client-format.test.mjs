@@ -146,7 +146,10 @@ test('client bundle owns a sidebar entry gated by enabled AND the user switch', 
   assert.match(source, /"row\.sidebar": "Sidebar entry"/)
   assert.match(source, /var toggleSidebar = function \(next\)/)
   assert.match(source, /props\.saveConfig\(\{ showSidebarEntry: next \}\);/)
-  assert.match(source, /showSidebarEntry: draft\.showSidebarEntry !== false,/)
+  // Every settings write carries ONE field: the form-wide 保存 button is gone, so
+  // there is no payload that could re-assert (and silently revert) the others.
+  assert.match(source, /var payload = \{\};\s*\n\s*payload\[field\] = value;/)
+  assert.doesNotMatch(source, /t\("btn\.save"\)/, 'the settings 保存 button is gone')
   // The settings section and the Plugins row never depend on either condition, so
   // no combination can lock the user out of the configuration.
   assert.match(source, /slots\.inject\("settings\.section"/)
@@ -195,7 +198,14 @@ test('client bundle folds workspaces per group, with click-to-expand groups', ()
   assert.match(source, /var toggleGroup = function \(g\)/)
   assert.match(source, /"aria-expanded": open/)
   assert.match(source, /className: "dbh-chev" \+ \(open \? " open" : ""\)/)
-  assert.match(source, /t\("grp\.envs", \{ n: String\(g\.envs\.length\), m: String\(g\.saved\) \}\)/)
+  // The group's meta line is a COUNT, plus the auto-discovered share only when
+  // there is one ("N 已保存" used to read as "so some are not saved?").
+  assert.match(source, /t\("grp\.envsAuto", \{ n: String\(g\.envs\.length\), k: String\(g\.envs\.length - g\.saved\) \}\)/)
+  assert.match(source, /: t\("grp\.envs", \{ n: String\(g\.envs\.length\) \}\)/)
+  assert.match(source, /"grp\.envs": "\{n\} 个数据源"/)
+  assert.match(source, /"grp\.envsAuto": "\{n\} 个数据源 · \{k\} 个自动发现"/)
+  assert.match(source, /"grp\.envs": "\{n\} sources"/)
+  assert.match(source, /"grp\.envsAuto": "\{n\} sources · \{k\} auto-discovered"/)
   // a lone workspace opens by itself; otherwise the most recently used one does
   assert.match(source, /if \(groups\.length === 1\) return true;/)
   assert.match(source, /function recentWorkspacePath\(snapshot\)/)
@@ -213,7 +223,7 @@ test('client bundle tiles single-environment workspaces instead of folding them'
   // add-form datalist and the collision check behind every write.
   assert.match(source, /visibleGroups\.map\(tileView\)/)
   // one row per connection: env chip + 🔒 metadata + actions
-  assert.match(source, /var envRow = function \(w\)/)
+  assert.match(source, /var envRow = function \(w, g\)/)
   assert.match(source, /className: "dbh-envrow"/)
   assert.match(source, /className: "dbh-conn", title: w\.conn/)
   // where a connection came from is identical on almost every row, so it is a
@@ -812,26 +822,120 @@ test('client bundle contributes the composer `@` source (one message, many refer
   assert.match(source, /clipboardText: function \(ref\) \{ return "@" \+ aliasOfHandle\(ref\); \},/)
   assert.match(source, /insert: \{\s*\n\s*source: "dbhub",/)
   assert.match(source, /appearance: "file",/)
-  // A menu row carries the DISPLAY name (env, plus a workspace suffix only for a
-  // cross-workspace duplicate), the metadata label and the handle — nothing else.
-  assert.match(source, /staged\.push\(\{/)
-  assert.match(source, /display: display,/)
-  assert.match(source, /description: bits\.join\(" · "\),/)
-  assert.match(source, /value: String\(item\.row\.srcId \|\| ""\),/)
-  // The current session's workspace is the pinned group, and it is read through
-  // the OPTIONAL sessions service (no session -> plain title order, never a guess).
+  // Two levels: the current workspace's rows under ONE plugin-named group, then
+  // one drillable "other workspaces" folder row (chevron + short Tab hint).
+  assert.match(source, /"at\.group": "dbhub 数据库"/)
+  assert.match(source, /"at\.group": "DBHub database"/)
+  assert.match(source, /"at\.others": "其他工作区"/)
+  assert.match(source, /"at\.others": "Other workspaces"/)
+  assert.match(source, /"at\.othersHint": "按 Tab 进入"/)
+  assert.match(source, /"at\.othersHint": "Tab to open"/)
+  assert.doesNotMatch(source, /at\.currentSection/)
+  assert.match(source, /drill: true,/)
+  assert.match(source, /icon: "folder",/)
+  // A drill is a TEXT edit with `continue`; the breadcrumb root writes a bare @.
+  assert.match(source, /return \{ text: "@" \+ othersLabel\(\), continue: true \};/)
+  assert.match(source, /if \(String\(cand\.value \|\| ""\) === "root"\) return \{ text: "@", continue: true \};/)
+  assert.match(source, /header: function \(projection, context\) \{/)
+  assert.match(source, /label: t\("at\.group"\), value: "root"/)
+  assert.match(source, /value: "others", current: true/)
+  // THE BUG gate: `drilled` is controller-wide (dsh's own file tree drills on
+  // the same controller), so the DRAFT TEXT decides whether the drill is ours.
+  assert.match(source, /var ownDrillRest = function \(query\) \{/)
+  assert.match(source, /if \(String\(query\)\.trim\(\) !== ""\) return \[\];/)
+  // The current workspace is read through the OPTIONAL sessions service; no
+  // session means a flat, deterministic list — never a guessed workspace.
   assert.match(source, /var currentWorkspacePath = function \(projection\) \{/)
   assert.match(source, /ctx\.get\("sessions"\)/)
-  assert.match(source, /t\("at\.currentSection", \{ title: wsTitle \}\)/)
-  assert.match(source, /return compareText\(a\.path, b\.path\);/)
+  assert.match(source, /var partitionRows = function \(groups, currentPath\) \{/)
+  assert.match(source, /var candidatesOf = function \(staged, section, fullName\) \{/)
   assert.match(source, /if \(v\.enabled !== true\) return \[\];/)
   // ... and the service stays out of the declared dependencies.
   assert.match(source, /var inject = \["slots"\];/)
   assert.doesNotMatch(source, /var inject = \[[^\]]*inputTriggers/)
 })
 
+test('the toolbar is text-first: a search box with a prefix, one plain sort control', () => {
+  // Search: a bordered WRAPPER holding the 搜索 prefix, the input and the ×, so
+  // the three read as one control. The placeholder is short because the prefix
+  // already says what the box is.
+  assert.match(source, /className: "dbh-search"/)
+  assert.match(source, /className: "dbh-searchlabel"/)
+  assert.match(source, /"search\.prefix": "搜索"/)
+  assert.match(source, /"search\.prefix": "Search"/)
+  assert.match(source, /"search\.ph": "输入关键字"/)
+  assert.match(source, /"search\.ph": "Type to filter"/)
+  assert.match(source, /className: "dbh-searchclear dbh-clearsearch"/)
+  assert.match(source, /\}, "×"\)/, 'the clear control is an × glyph')
+  // …and the × only exists while there is a query.
+  assert.match(source, /searchQuery\s*\n?\s*\? h\("button", \{/)
+  // Sort: ONE text control that cycles. No tabs, no dropdown, no button frame.
+  assert.match(source, /className: "dbh-sorttext" \+ \(sortMode \? " dbh-sorttext-on" : ""\)/)
+  assert.match(source, /var sortView = sortViewOf\(sortMode\);/)
+  assert.match(source, /var cycleSort = function \(\) \{ setSortMode\(nextSortMode\(sortMode\)\); \};/)
+  assert.doesNotMatch(source, /dbh-sortbtn/, 'the two fixed tabs are gone')
+  assert.doesNotMatch(source, /"sort\.nameHint"|"sort\.recentHint"/)
+  // The batch action stays the quiet secondary button, right of the sort text.
+  assert.match(source, /className: "dbh-btn dbh-batchbtn"/)
+})
+
+test('the export directory can be chosen through the platform, never through the plugin', () => {
+  // The dropdown service is reached through the OPTIONAL, waiting injection form —
+  // never through the exported `inject` (a missing service must not leave the whole
+  // browser half pending).
+  assert.match(source, /ctx\.inject\(\["remote\.directoryPicker"\], function \(scope\) \{/)
+  assert.match(source, /var svc = scope && scope\.remote \? scope\.remote\.directoryPicker : null;/)
+  assert.doesNotMatch(source, /var inject = \[[^\]]*directoryPicker/)
+  // The card consumes the platform's answer and nothing else: no fs API, no path
+  // guessing. A cancelled pick (null / no value) changes NOTHING.
+  assert.match(source, /pickerRegistry\.pick = service && typeof service\.pick === "function"/)
+  assert.match(source, /if \(!res \|\| typeof res !== "object"\) return;/)
+  assert.match(source, /if \(res\.ok !== true\) \{/)
+  assert.match(source, /if \(!dir\) return;/)
+  assert.match(source, /commitField\("exportDir", dir\);/)
+  // No button when the service is absent, and the error goes through the existing
+  // alert slot (`setWriteError`) — no second error surface.
+  assert.match(source, /if \(!pickerAvailable\) return null;/)
+  assert.match(source, /setWriteError\(String\(\(res\.error && res\.error\.message\) \|\| t\("error\.write"\)\)\);/)
+  assert.doesNotMatch(source, /\brequire\("node:fs"\)|\breaddirSync\b|\bstatSync\b/)
+  // Both dictionaries name the affordances.
+  assert.match(source, /"btn\.chooseDir": "选择"/)
+  assert.match(source, /"btn\.chooseDir": "Browse…"/)
+  assert.match(source, /"btn\.defaultDir": "默认"/)
+  assert.match(source, /"btn\.defaultDir": "Default"/)
+})
+
+test('row ordering follows the store; drag, copy and the phone arrows share one op', () => {
+  // The stored order decides when no sort is active, and the auto-discovered rows
+  // (which are not in `order`) follow by name.
+  assert.match(source, /var visibleRows = sortMode\s*\n?\s*\? sortRows\(filteredRows, sortMode, wsUpdatedAt\)\s*\n?\s*: sortByStoredOrder\(filteredRows\);/)
+  assert.match(source, /function sortByStoredOrder\(rows\) \{/)
+  assert.match(source, /function orderMapOf\(rows\) \{/)
+  // Dragging is OFF while an explicit sort is active (the two orders would fight).
+  assert.match(source, /var orderMode = sortMode === "";/)
+  assert.match(source, /var canDragRow = function \(w\) \{ return orderMode && !!w && w\.persisted === true; \};/)
+  // One `move` op shape, used by the drop handler AND the phone buttons.
+  assert.match(source, /op: "move", env: from\.env, workspace: from\.path, toWorkspace: String\(g\.path \|\| ""\), index: index/)
+  assert.match(source, /op: "copy", env: String\(w\.env \|\| ""\), workspace: String\(w\.path \|\| ""\)/)
+  // The local list is never reordered by hand: every op is followed by a re-read.
+  assert.match(source, /var runOrderOp = function \(payload\) \{/)
+  assert.match(source, /setWriteError\(failureTextOf\(e\)\);\s*\n\s*retrySnapshot\(\);/)
+  assert.match(source, /var startDragRow = function \(w, key, e\) \{/)
+  assert.match(source, /var moveIndexFor = function|function moveIndexFor\(envs, sourceEnv, overEnv, after\) \{/)
+  // Auto rows are refused on purpose, and say why (edit once to persist them).
+  assert.match(source, /"drag\.autoHint": "自动发现的行需要先保存（编辑一次即可）才能排序或复制"/)
+  assert.match(source, /"drag\.autoHint": "Auto-discovered rows must be saved first/)
+  assert.match(source, /"drag\.copy": "复制数据源"/)
+  assert.match(source, /"drag\.copy": "Duplicate source"/)
+  assert.match(source, /"drag\.up": "上移"/)
+  assert.match(source, /"drag\.up": "Move up"/)
+  assert.match(source, /"drag\.sortHint": "先切回「排序：默认」才能拖动排序"/)
+  assert.match(source, /"drag\.sortHint": "Switch the sort back to Default to drag rows"/)
+  // No drag grip on a phone (HTML5 DnD is a mouse API): the arrows take over.
+  assert.match(source, /isMobile \? null : h\("span", \{\s*\n\s*className: "dbh-grip"/)
+})
+
 // ── locale tables ───────────────────────────────────────────────────────────
-//
 // The bundle is hand-written and its dictionaries are plain object literals, so
 // a repeated key is SILENT: the later value wins and the earlier one becomes
 // dead text that a later edit can "fix" forever with no effect. The bundle also

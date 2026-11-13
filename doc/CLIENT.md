@@ -36,15 +36,22 @@
 - **HTTP 通道轮询是「按订阅」的**：只有渲染中页面用 `props.subscribe(fn, { live: true })` 起 1.5s 轮询（`document.hidden` 跳过）；插件作用域订阅（`face.subscribe(syncSidebar)`）只做一次性拉取。**空闲 GUI 不得持续轮询**，残留 interval 会让 `check:ui` 挂住不退出。
 - 组件不得接触 `ctx`：数据/回调一律通过注册时的 `inject: () => face` 传入 props。
 
-## `@` 输入源（输入框里多选数据源）
+## `@` 输入源（输入框里多选数据源，右侧可下钻）
 
 除三个页面入口外，`apply()` 还向 DSH 的 **input-trigger** 服务（`ctx.inputTriggers`，`@deepseek-ai/dsh-client-ui-input-trigger`）注册**一个** `@` 分组。契约（改动前先读 `lib/client.js` 的注释头）：
 
 - **可选注入，绝不写进导出的 `inject`**：`ctx.inject(["inputTriggers"], (scope) => scope.effect(() => scope.inputTriggers.registerSource(source), …))`。导出 `inject` 仍只有 `["slots"]`——把可选服务写进去，缺失时整个浏览器半区会永久 pending（与 `settingsScope` 同一个坑）。
 - **`name: 'dbhub'` 是稳定 ASCII**：它既是菜单分组标题，又是提交时 reference 的路由键（`insert.source` 必须与它逐字相同），不做本地化、不随 locale 变。
-- **`candidates()` 只读 `/state` 快照**：复用 `workspacesOf` / `groupRows`（不要新写一份 JSON 解析），每行映射为一个候选：`name`/`label` = Host 计算的**别名**（`alias`，菜单内唯一），`description` = `<工作区标题> · <conn>`（只读时追加 `ro.chip`），`section` = 工作区标题，`value` = 不可变 source 句柄（`srcId`）。**没有别名或句柄的行直接跳过**——客户端不另算一套别名，否则菜单名可能撞车。
-- **零知识**：候选里只允许别名 / 句柄 / `conn`（类型·主机·端口·库名）/ 工作区标题 / 「只读」。**不出现 DSN、账号、密码、本机路径**（`srcId` 只是句柄）。
-- **`onPick` 返回 `{ insert: { source: 'dbhub', ref: <句柄>, label: <别名>, appearance: 'file', clipboardText: '@'+别名 } }`**：`ref` 用**句柄**而不是别名，别名会随增删连接变化。
+- **两级菜单，层级由草稿文本判定**（`drilled` 是**控制器全局**的：DSH 自带的文件目录在同一个控制器上下钻时它同样是 `true`，**不能只看它**）：
+  1. **顶层**（`!drilled`，或面包屑刚把草稿改回裸 `@`）：只有**一个分组** `at.group`（「dbhub 数据库」）。组内先是**当前会话工作区**的连接（`name`/`label` = 环境名，按 env 排序），最后一行是**文件夹**「其他工作区」——`drill: true` + `icon: 'folder'`（chevron），`description` = `at.othersHint`（「按 Tab 进入」）。当前工作区没有连接时**跳过它**（不出现空分组）；没有其他工作区时**不出现**文件夹行。
+  2. **文件夹内**（`drilled` 且 `query` 以 `at.others` 开头）：列出**其他工作区**的连接，`name`/`label` = `工作区 · 环境`；`query` 去掉标记后的剩余文本按 `name` 子串过滤。
+  3. **别人下钻**（`drilled` 但 `query` 不以我们的标记开头）：返回 `[]`。空分组被平台丢弃，我们就不再出现在别人的文件目录里——**判据是我们自己插入的草稿文本，不是全局的 `drilled`**。
+- **下钻 = 改写草稿文本**：`onPick` 收到 `action: 'drill'` 时**不返回 `insert`**，而是 `{ text: '@' + t('at.others'), continue: true }`（`execute()` 只认 `text`；`continue` 让菜单保持打开）。文件夹行与面包屑都走这条；面包屑第一段（`value: 'root'`）返回 `{ text: '@', continue: true }`，回到顶层（菜单在裸 `@` 上重开并重新拉候选）。
+- **面包屑**：`header()` 只在状态 2 返回 `[{ label: t('at.group'), value: 'root' }, { label: t('at.others'), value: 'others', current: true }]`；其他状态返回 `undefined`（顶层与别人的下钻都没有我们的面包屑）。
+- **当前工作区只用会话信息**：`candidates(session, …)` 的 `sessionId` + 可选 `sessions` 服务（`list.getSnapshot().byId[id].cwd`），也接受自带 `cwd` 的 session 对象。拿不到时**不猜**：顶层退化为「环境名 + 工作区后缀去重」的扁平列表且没有文件夹行（宁可平铺，也不把别人的行标成"当前"）。
+- **名字唯一性**（`name` 是精确匹配键）：顶层用环境名（同一工作区内不会重复）；文件夹层用 `工作区 · 环境`；万一撞名（同名工作区 + 同名环境）退回 Host 的 `alias`（保证唯一）。降级平铺时跨区重名的环境先用 `环境 · 工作区`，再退回 `alias`。
+- **零知识**：候选里只允许环境名 / `工作区 · 环境` / 别名 / 句柄 / `conn`（**只给 `host:port/database`**，去掉 `scheme://`，给窄屏留空间）/ 只读标记 / 工作区标题。**不出现 DSN、账号、密码、本机路径**（`srcId` 只是句柄）。
+- **`onPick`（选择）返回 `{ insert: { source: 'dbhub', ref: <句柄>, label: <菜单名>, appearance: 'file', clipboardText: '@'+别名 } }`**：`ref` 用**句柄**而不是别名，别名会随增删连接变化。
 - **`codec`**：`serialize(ref) → '@db:<句柄>'`（提交时**每个 chip 各调一次**，这就是一条消息多选能工作的机制）；`clipboardText(ref)` 用该句柄**当前**的别名（找不到就退回句柄本身）。
 - **`lexicon()` / `subscribeLexicon()`** 返回/跟随当前别名集合，供「手打 `@别名` 也变成引用」；订阅复用 face 已有的通知点（`face.subscribe`），**不新增定时器**。`warm()` 只触发一次既有 `face.refresh()`。
 - **空态语义**：插件停用、`/state` 读取失败、没有任何连接行 → `candidates()` 返回 `[]`（空分组自动关菜单）。**绝不抛错、绝不显示假数据**；`ctx` 没有该服务时整个注册不执行，插件其余部分照常。
@@ -126,18 +133,20 @@
 
 ## 连接列表的搜索 / 排序 / 批量测试
 
-连接列表上方是**一行**控件（`.dbh-searchbar`，empty / tiled / grouped 三种布局都渲染）：搜索框、过滤计数、清除、排序切换、「测试全部（N）」；运行中出现一条 `.dbh-batchsum` 汇总。三者全是**组件本地视图状态**（`useState`）：不持久化、不写 `uiMemory`、不新增协议。
+连接列表上方是**一行**控件（`.dbh-searchbar`，empty / tiled / grouped 三种布局都渲染）：搜索框（带「搜索」文字前缀与内嵌 `×`）、过滤计数、排序**文字**控件、「测试全部」；运行中出现一条 `.dbh-batchsum` 汇总。三者全是**组件本地视图状态**（`useState`）：不持久化、不写 `uiMemory`、不新增协议。**桌面与窄桌面（≥700px）这一行不换行**（`flex-wrap:nowrap`），只有手机才让搜索框独占一行；搜索框 `flex:1` 且上限 360px，排序与批量靠 `.dbh-grow` 撑到右边缘。
 
 ### 搜索（只影响显示）
 
 - 纯函数 `filterRows(rows, query)`：**大小写不敏感子串**，字段固定为 `title` / `env` / `alias` / `conn`（`conn` 是宿主已发布的元数据 `type://host:port/db`，**没有任何 DSN 可达路径**）。空查询返回原数组（不算过滤）。
-- 过滤生效时显示 `search.count`（「N / M」）与「清除搜索」（`.dbh-clearsearch`）；**无匹配**渲染 `.dbh-empty.dbh-nomatch`（「没有匹配的连接」+ 清除搜索），**不能**落到「还没有配置连接」——那是"一条连接都没配"，是不同事实（`page([])` 仍走 `ws.empty`）。
+- 外观是**一个盒子**（`.dbh-search`）：左边 `搜索` 文字前缀（`.dbh-searchlabel`，**不是按钮**）、中间无边框的 input、右边 `×`（`.dbh-searchclear`，**只有有内容时才出现**）。占位文案因此可以很短（`search.ph`「输入关键字」）。
+- 过滤生效时显示 `search.count`（「N / M」）；**无匹配**渲染 `.dbh-empty.dbh-nomatch`（「没有匹配的连接」+ 独立的「清除搜索」按钮——手机上看不到 `×` 时这是唯一出口），**不能**落到「还没有配置连接」——那是"一条连接都没配"，是不同事实（`page([])` 仍走 `ws.empty`）。
 - 过滤**只影响显示**：`envCollision` 的冲突判定、行内保存/测试/删除、`@` 候选与标题计数全部仍用**未过滤**的 `groups` / `workspaces`。
 - 过滤期间分组**自动展开**（`groupOpen` 里 `filtering` → true），但用户显式点过折叠的组仍尊重其选择：匹配项藏在折叠组里，会让搜索框看起来是坏的。
 
 ### 排序（分组跟着排）
 
-- 纯函数 `sortRows(rows, mode, recentAtOf)`：`name`（默认，标题 → 环境 → 路径，**大小写不敏感 + 原串兜底**，刻意不用 `localeCompare`——同一份列表在每台机器上必须排得一样）与 `recent`（`updatedAt` 倒序，同值回落名称；缺失/空串沉底；数字戳按数值比，ISO 串按字典序比）。
+- 纯函数 `sortRows(rows, mode, recentAtOf)`，四个状态：`''`（默认，**保持宿主顺序、完全不排**）、`name-asc`、`name-desc`（标题 → 环境 → 路径，**大小写不敏感 + 原串兜底**，刻意不用 `localeCompare`——同一份列表在每台机器上必须排得一样）与 `recent`（`updatedAt` 倒序，同值回落名称；缺失/空串沉底；数字戳按数值比，ISO 串按字典序比）。`'name'` 是旧写法，等同 `name-asc`。降序把**整条比较链**反过来，相等行仍保持输入顺序（稳定）。
+- **一个文字控件，不是标签页也不是下拉**：`sortViewOf(mode)` 给出「标签键 + 箭头」，`nextSortMode(mode)` 给出下一态——默认 → 名称 ↑ → 名称 ↓ → 最近更新 → 默认。CSS 上无边框、无背景、次级色，只有 `:hover` 才加下划线（`.dbh-sorttext`）。
 - **分组的顺序免费跟着排**：`groupRows` 保留首次出现顺序，所以先 `sortRows` 再 `groupRows` 就是"组也排好了"。列表渲染 `visibleGroups`；`groups`（未过滤）只用于页头总数、`datalist` 与冲突判定。
 - `最近更新` 的戳来自**工作区快照**（`props.useWorkspaces` 的 `items[].updatedAt`）；行自身有 `updatedAt` 时优先用它。没有快照的挂载（插件页 / 侧边栏）里该模式退化为名称顺序——**不发明时间戳**。
 - **布局不从过滤结果推**：`layoutModeOf` 用的是**未过滤**的 `groups`。否则"筛到一条"会把卡片在平铺与折叠之间来回切，输入时整行在光标下跳。
@@ -156,7 +165,34 @@
 
 ### 验收
 
-- `check:ui` `[49]`：搜索框在三种布局都在、大小写/别名/`conn`/中文命中、「N / M」、无匹配空态与清除、默认名称顺序、`最近更新` 顺序、**组顺序**跟随排序、并发上限 2、四态渲染、汇总、停止（未开始的不再派发、在途仍落地、按钮复原）、N=可见行数、op 形状无新增字段、卸载无残留计时器。
+- `check:ui` `[49]`：搜索框在三种布局都在、大小写/别名/`conn`/中文命中、「N / M」、无匹配空态与独立的清除按钮、**四个排序状态**（默认保持宿主顺序、名称 ↑、名称 ↓、最近更新）与**组顺序**跟随排序、并发上限 2、四态渲染、汇总、停止（未开始的不再派发、在途仍落地、按钮复原）、N=可见行数、op 形状无新增字段、卸载无残留计时器；`[50]` 再钉工具栏结构与几何（一行不换行、搜索前缀不可点、无 `<select>`、三个控件同 28px）。
+
+## 设置项：改完即生效（没有 保存 按钮）
+
+设置区的四个输入（更新间隔、测试并发数、默认返回行数、导出目录）**没有「保存」按钮**：`onBlur` 与 `Enter` 各提交**该字段**（`commitField(field, raw)`），提交中显示「保存中…」、成功后短暂显示「已保存 ✓」（1.6s 后自行消失，下一次编辑也会清掉）。这是被用户逼出来的设计——改完以为已生效、找保存按钮找到放弃。
+
+- **一次只写一个键**：`payload[field] = value` 走既有 `props.saveConfig`（`POST /options`）。旧的整表提交会把其它字段一并重发，反而可能把别处刚改的值写回去。
+- **本地预校验只在浏览器能做的地方做**：间隔 0–365、并发 1–8、行数 ≥0，非法则**零请求** + 就地 `.dbh-invalid`（`cfg.badInterval` / `cfg.badConcurrency` / `cfg.badRows`）。**`exportDir` 不预判**——目录可写与否只有宿主能证明（`prepareExportDir` 的探针），所以它直接发，拒绝原因由宿主回。
+- **失败即回退**：写失败走统一的 `onWriteFail`（draft 回到宿主值、`saved` 取消、清掉任何旧的「已保存 ✓」、`.dbh-writefail[role=alert]` 显示原因）。旧的勾不能与新错误并存，这条由 `[44]` 钉住。
+- **导出目录**一行另有两个按钮：`?`（`title` 悬停 + 点击就地展开同一段说明，`cfg.exportDirHint`）与「默认」（把输入框写成空串并立即提交 = 默认位置）。
+- **「选择」按钮只在平台真的提供目录选择时出现**：宿主服务 `remote.directoryPicker` 经 `ctx.inject(["remote.directoryPicker"], …)`（**可选、等待形式，绝不进导出的 `inject`**，否则缺服务会让整个浏览器半区永久 pending）注册进模块级 `pickerRegistry`；存在时按钮渲染，点击 `pick()` → `{ok:true,value}` 填进输入框并**立即走同一条提交路径**，`{ok:false}` 用既有 `.dbh-writefail` 显示 `error.message`，取消（`null` / 无 value）**什么都不做**——不清空用户已填的内容。桌面端这是系统目录框，网页端是 DSH 自己的目录浏览；路径只由平台产生，插件不读本机目录。
+- 窄屏（弹窗 / 手机）是同一批控件的竖排版本（`.dbh-srow`，导出目录那行是 `.dbh-srow-export`，输入框 `flex:1` 撑满控件区）——**同一个 `cfgField()` 工厂**，所以两面的校验、提交、回退完全一致。
+- 导出目录输入框 `min-width:280px`（`.dbh-input-dir`，monospace、左对齐）：占位「留空 = 默认位置（数据目录/exports）」必须能整句看见，1440px 与 720px 都是；窄了就换行，不裁字。
+- `check:ui` `[48]`：blur/Enter 各写一个键、非法值零请求、导出框宽度与占位完整（1440/720）、`?` 展开、`默认` 写空串、picker 三态（存在→填值并提交 / 拒绝→显示且不改输入 / 不存在→无按钮）。
+
+## 行的顺序 / 拖拽 / 复制（与后端 `move` / `copy` / `order` 对接）
+
+**顺序是宿主的**：`/state` 的每一行都带该工作区的 `order: string[]`（只含**已持久化**的环境名）。客户端从不自己改顺序：
+
+- `orderMapOf(rows)` 取每个工作区**第一行**的数组（线上没有分组对象）；`sortByStoredOrder(rows)` 按它排出平铺行序列——`order` 里的名字按数组顺序，**不在里面的一律按名称追加**（就是自动发现的行），组与组之间保持它们在 `/state` 里的先后（拖一行到别的组不该让工作区本身跳位）。没有 `order` 的工作区（无持久化行 / 老宿主）退化为名称序。
+- **显式排序优先于存储顺序**：`sortMode` 非空（名称 ↑ / 名称 ↓ / 最近更新）时按排序排，同时**禁用拖拽**（手柄 `aria-disabled` + 行 `draggable=false`，tooltip 说「先切回默认」）；回到「默认」才用 `order`。
+- 拖拽：行左侧 `.dbh-grip`（`⋮⋮`，仅 hover 显示，`cursor:grab`），`draggable` 挂在**行**上。拖动中的行加 `.dbh-dragging`（半透明）；经过目标行时按上半/下半给出 `.dbh-drop-before` / `.dbh-drop-after`（inset 阴影，不产生布局位移）；组尾还有一条 `.dbh-dropend` 落到「末尾」。瓦片布局里 tile 自身既是拖动源也是放置目标（拖到 tile = 追加到该工作区）。
+- **落点索引**：`moveIndexFor(envs, sourceEnv, overEnv, after)` 是纯函数，按宿主的语义算——`index` measured **在源被移除之后**，所以同组向下拖要减 1，落在自己下一格是 no-op 而不是越界；跨组时源不在目标列表里，不偏移；尾部/空投 = 目标持久化行数。结果一律夹取到合法区间。
+- 落手只发 `{op:'move', env, workspace, toWorkspace, index}`（五个键，无 DSN），成功后**重读 `/state`**（不本地改序）；失败显示宿主原因（`.dbh-writefail`）并**再读一次**——列表本来就没被改过，重读即回滚。
+- 复制：持久化行有 `.dbh-copybtn`（与其它图标按钮同款）→ `{op:'copy', env, workspace}` → 重读；新行出现在源行下面，宿主给的名字是 `-copy-1/2…`，用户可再改。
+- **自动发现的行**（`persisted !== true`）不可拖、没有复制按钮、也不在 `order` 里；它们的行仍然渲染一个置灰的手柄，tooltip 说明「需要先保存（编辑一次即可）」。对它们发 op 宿主会回 `unknownEnv`。
+- **触屏**：HTML5 拖拽在手指上不触发，所以 `isMobile` 下**不渲染手柄**，行内改为「上移 / 下移」两个极小图标按钮（`.dbh-movebtn`，边界按钮 disabled），发同一个 `move` op：上移 `index = at-1`、下移 `index = min(len-1, at+1)`（同样是移除后的坐标）。
+- `check:ui` `[51]` 钉住：行按 `order` 排（自动行附在末尾）、排序控件优先且禁用拖拽、组内下拖 index 1 / 上拖 index 0、跨组 `toWorkspace + index`、组尾追加 index=len、op 只有五个键、复制 op + 重读、失败原因 + 重读回滚、触屏无手柄且有上移/下移（首个 up 禁用、末个 down 禁用，点击发 index 1）。
 
 ## 环境选项的落点（只读 / SSH / 结果行数上限）
 
@@ -188,7 +224,7 @@
 - 现代面硬约定：
   1. 页头 = 标题 + 灰色版本号 + 一行「↑ 可升级到 x」文字链接（点击才展开中性说明面板；**禁止红底/红框/error 色**）+ 图标式 ↻；**链接的 tooltip 描述它真正做的事（`ver.linkHint`「展开升级说明与安装命令」），不得写成 `ver.copySpec`（「点击复制 …」）**——复制按钮在面板内，tooltip 与动作不一致时用户会为了复制而点开面板；
   2. 状态行只显示「运行中/已停用 · N 个连接」；工具数 / 一次性模式 / dbhub 版本进页面底部「ⓘ 说明与技术详情」折叠区（默认收起）；
-  3. 设置 = **所有非弹窗、非手机页面（宽屏页 / 插件页 / 窄桌面列）一律一行紧凑设置条**（窄列自动加 `.dbh-barnarrow` 隐藏标题与状态词、收窄间距，**不得退回竖排设置行**；弹窗与手机才用竖排）。宽屏条 `.dbh-settingsbar`：标签 + 状态词 + `primitives.Switch` + 更新输入/保存同排，开关 `scale(.85)`；弹窗/手机为紧凑设置行（13px 标题、8px padding、开关 `scale(.8–.9)`）——**字号与控件刻意弱化，连接列表才是主体**。状态词统一为 `启用/停用`、`显示/隐藏`、`开启/关闭`；更新间隔输入 + 天 + 保存必须在同一行不换行；
+  3. 设置 = **所有非弹窗、非手机页面（宽屏页 / 插件页 / 窄桌面列）一律一行紧凑设置条**（窄列自动加 `.dbh-barnarrow` 隐藏标题与状态词、收窄间距，**不得退回竖排设置行**；弹窗与手机才用竖排）。宽屏条 `.dbh-settingsbar` 两行：第一行标签 + 状态词 + `primitives.Switch` + 更新间隔输入 + 天，第二行并发数 / 默认行数 / 导出目录；开关 `scale(.85)`；弹窗/手机为紧凑设置行（13px 标题、8px padding、开关 `scale(.8–.9)`）——**字号与控件刻意弱化，连接列表才是主体**。状态词统一为 `启用/停用`、`显示/隐藏`、`开启/关闭`；**没有保存按钮**（见上节「改完即生效」），导出目录那一行收起时永远不换行。
   4. 行内只读 chip 在三种布局都出现（见上表）；
   5. 弹窗面的设置收进状态行「设置」折叠，宽屏面直接展开。
 - **设置区新增的字段（`defaultMaxRows` / `batchConcurrency` / `exportDir`）与写通道**：三个字段都走既有 `saveConfig`（同一个设置条/设置行、同一份 `.dbh-writefail`），但**`exportDir` 必须绕开 `configForms.set` 快路径、强制 `POST /options`**：它是唯一在宿主侧做「目录真能写」探针的选项（`badExportDir`），而官方表单只有 `true/undefined` 两种回答、没有错误通道，走表单会让拒绝原因丢失、甚至显示「已保存」。`/options` 对这类**业务性拒绝**回 200 `{ok:false,error:'<本地化原因>'}`（客户端 `request()` 对非 2xx 只显示通用「写入失败」），因此 saveOptions 里应把含 `exportDir` 的 patch 直接交给桥。输入框占位「留空 = 默认位置（数据目录/exports）」，值从 `/state` 的 `exportDir` 回填（空串 = 默认）。

@@ -375,6 +375,11 @@ function mount(snapshot, opts = {}) {
       }
     },
   }
+  // The optional directory picker (`remote.directoryPicker`), reached by the
+  // bundle through `ctx.inject(["remote.directoryPicker"])`. Absent unless the
+  // scenario supplies one — that is exactly what a host without the service looks
+  // like (the card must then hide the 选择 button).
+  const directoryPicker = opts.directoryPicker || null
   // The optional `sessions` service (a real client service: `ctx.get('sessions')`
   // whose `list.getSnapshot()` carries `byId[sessionId].cwd`). The `@` menu uses it
   // to pin the CURRENT workspace's group on top; without the service the menu still
@@ -431,22 +436,25 @@ function mount(snapshot, opts = {}) {
       if (event === 'dispose') disposeHandlers.push(fn)
       return () => {}
     },
-    // The core Cordis injector. `slots` is satisfied for every mount (the fake
-    // slot registry below); `inputTriggers` only when the option allows it.
-    // The callback receives a scope whose `effect` runs IMMEDIATELY and owns the
-    // returned disposer, which is what makes the source live for the mount and
-    // released by a simulated hot reload.
+    // The core Cordis injector. Every requested dependency must be satisfied, or
+    // the callback never runs — that is how an optional, waiting dependency
+    // behaves on a host that does not provide it (the plugin half still loads;
+    // only the feature that needs the service stays away).
     inject(names, cb) {
       const wanted = Array.isArray(names) ? names : [names]
-      if (wanted.indexOf('inputTriggers') < 0 || !inputTriggers) return () => {}
+      const wantsTriggers = wanted.indexOf('inputTriggers') >= 0
+      const wantsPicker = wanted.indexOf('remote.directoryPicker') >= 0
+      const satisfied = (wantsTriggers ? !!inputTriggers : true) && (wantsPicker ? !!directoryPicker : true)
+      if (!satisfied) return () => {}
       const scope = {
-        inputTriggers,
         effect(fn) {
           const cleanup = fn()
           ctx.effect(() => cleanup)
           return () => {}
         },
       }
+      if (wantsTriggers) scope.inputTriggers = inputTriggers
+      if (wantsPicker) scope.remote = { directoryPicker }
       cb(scope)
       return () => {}
     },
@@ -608,6 +616,66 @@ function typeWithin(node, cls, index, value) {
   const input = classed(scope, 'dbh-input')[index]
   if (!input || typeof input.props.onChange !== 'function') throw new Error(`no input ${index} inside .${cls}`)
   input.props.onChange({ target: { value } })
+}
+
+/**
+ * Commit a settings field the way a person does now: there is no 保存 button any
+ * more, so the write happens on BLUR (or Enter). `index` picks the field among the
+ * `.dbh-srow-input` boxes (0 = interval, 1 = concurrency, 2 = row limit) and
+ * `dbh-input-dir` is the export directory.
+ */
+function commitFieldAt(node, index = 0, via = 'blur') {
+  const input = classed(node, 'dbh-srow-input')[index]
+  // Prefer the real gesture, whichever one this build implements.
+  if (input && via === 'enter' && typeof input.props.onKeyDown === 'function') {
+    input.props.onKeyDown({ key: 'Enter', preventDefault() {} })
+    return
+  }
+  if (input && typeof input.props.onBlur === 'function') {
+    input.props.onBlur()
+    return
+  }
+  // Before 6.0 the only commit was the form-wide 保存 button. Falling back to it
+  // keeps an old build running so every rewritten assertion reports its own
+  // failure instead of the gate aborting on the first missing handler.
+  const save = elements(node, (el) => typeof el.props.onClick === 'function'
+    && (el.children || []).map(toHtml).join('').includes('保存配置'))[0]
+  if (save) {
+    save.props.onClick({ stopPropagation() {}, preventDefault() {} })
+    return
+  }
+  throw new Error(`no committable .dbh-srow-input[${index}] in the tree`)
+}
+
+/** Commit the export-directory field (`.dbh-input-dir`). */
+function commitDir(node, via = 'blur') {
+  const input = classed(node, 'dbh-input-dir')[0]
+  if (input && via === 'enter' && typeof input.props.onKeyDown === 'function') {
+    input.props.onKeyDown({ key: 'Enter', preventDefault() {} })
+    return
+  }
+  if (input && typeof input.props.onBlur === 'function') {
+    input.props.onBlur()
+    return
+  }
+  const save = elements(node, (el) => typeof el.props.onClick === 'function'
+    && (el.children || []).map(toHtml).join('').includes('保存配置'))[0]
+  if (save) {
+    save.props.onClick({ stopPropagation() {}, preventDefault() {} })
+    return
+  }
+  throw new Error('no committable .dbh-input-dir in the tree')
+}
+
+/** Expand every group of a mounted page (the UI memory outlives mounts). */
+function expandAll(mount) {
+  const heads = () => classed(mount.tree, 'dbh-grouphead')
+  for (let i = 0; i < heads().length; i++) {
+    const head = heads()[i]
+    if (!head || head.props['aria-expanded'] === true) continue
+    head.props.onClick({ stopPropagation() {}, preventDefault() {} })
+    mount.tree = mount.renderAgain()
+  }
 }
 
 function click(node, text) {
@@ -807,7 +875,9 @@ console.log('\n[1] tiled layout (every workspace has exactly one environment)')
   check('no inline source handle line', !html.includes('source:') && !html.includes('dsh-plugin_1a2b3c'))
   check('one source chip per connection', classed(p.tree, 'dbh-src').length === 3, `got ${classed(p.tree, 'dbh-src').length}`)
   // auto-discovered rows have no delete action, so 3 + 3 + 2 icon buttons
-  check('actions are icon-only', classed(p.tree, 'dbh-iconbtn').length === 8, `got ${classed(p.tree, 'dbh-iconbtn').length}`)
+  // 3 rows: two persisted (test + edit + copy + delete) and one auto-discovered
+  // (test + edit only — copy and drag are refused for it).
+  check('actions are icon-only', classed(p.tree, 'dbh-iconbtn').length === 10, `got ${classed(p.tree, 'dbh-iconbtn').length}`)
   const handles = classed(p.tree, 'dbh-srcid').map((el) => toHtml(el))
   check('short handles are shown whole', handles.some((h) => h.includes('app_1a2b3c')) && handles.some((h) => h.includes('docs_1a2b3c')), JSON.stringify(handles))
   check('long handles keep their distinguishing tail', handles.some((h) => h.includes('…1a2b3c')), JSON.stringify(handles))
@@ -827,7 +897,17 @@ console.log('\n[2] grouped layout (one workspace owns several environments)')
   check('folded group hides its rows', count(p.tree, 'dbh-envrow') === 3, `got ${count(p.tree, 'dbh-envrow')}`)
   check('expand-all control present', html.includes('全部展开'))
   check('per-group add button present', html.includes('＋ 环境'))
-  check('group head shows env/saved counts', html.includes('3 环境 · 2 已保存'))
+  // The count names the total, and the second number appears ONLY when an
+  // auto-discovered (never stored) row exists — "N 已保存" raised "so some are
+  // not saved?", which is a question the UI then had to answer in a tooltip.
+  const meta = classed(p.tree, 'dbh-groupmeta').map(toHtml).join(' | ')
+  check('group head shows the source count, plus auto-discovered when there is any',
+    meta.includes('3 个数据源') && meta.includes('1 个自动发现'), meta)
+  const onlySaved = await page(SINGLE_MULTI, {})
+  const metaSaved = classed(onlySaved.tree, 'dbh-groupmeta').map(toHtml).join(' | ')
+  check('…and a fully persisted workspace says only the count (no "saved" ledger)',
+    metaSaved.includes('2 个数据源') && !metaSaved.includes('自动发现') && !metaSaved.includes('已保存'), metaSaved)
+  onlySaved.dispose()
   check('status line present', html.includes('运行中') && html.includes('4 个连接'))
 }
 
@@ -1459,7 +1539,7 @@ console.log('\n[23] modern wide page: quiet header, DSH-style settings rows, inl
   check('no stretched settings rows in wide mode', count(p.tree, 'dbh-srow') === 0)
   check('no old four-cell grid / gear strip', count(p.tree, 'dbh-config') === 0 && count(p.tree, 'dbh-strip') === 0)
   check('a read-only chip per row (outside the edit form)', classed(p.tree, 'dbh-rochip').length === 3, `got ${classed(p.tree, 'dbh-rochip').length}`)
-  check('row actions stay icon-only (source + test + edit + delete)', classed(p.tree, 'dbh-iconbtn').length === 8, `got ${classed(p.tree, 'dbh-iconbtn').length}`)
+  check('row actions stay icon-only (source + test + edit + copy + delete)', classed(p.tree, 'dbh-iconbtn').length === 10, `got ${classed(p.tree, 'dbh-iconbtn').length}`)
   // Notes are collapsed: the page acts first; the "why" is one click away.
   check('technical details start collapsed', count(p.tree, 'dbh-notes') === 0)
   clickClass(p.tree, 'dbh-linkbtn') // ⓘ 说明与技术详情
@@ -1605,7 +1685,7 @@ console.log('\n[27] modern phone browser: stacked layout, chips and settings sti
   check('mobile surface class applied', classed(p.tree, 'dbh-mobile').length === 1, html.slice(0, 200))
   check('phone layout is not the wide page', classed(p.tree, 'dbh-wide').length === 0)
   check('phone shows the title + version', count(p.tree, 'dbh-titlebar') === 1 && html.includes('v5.2.0-dev.1'))
-  check('phone keeps the icon-only row actions', classed(p.tree, 'dbh-iconbtn').length === 8)
+  check('phone keeps the icon-only row actions', classed(p.tree, 'dbh-iconbtn').length === 10)
   check('read-only chips remain available on the phone', classed(p.tree, 'dbh-rochip').length === 3)
   if (count(p.tree, 'dbh-settings') === 0) {
     clickClass(p.tree, 'dbh-linkbtn')
@@ -1682,7 +1762,7 @@ console.log('\n[31] a refused write is VISIBLE and never claims "已保存" (P1-
   await flush()
   p.tree = p.renderAgain()
   const beforeFail = p.setCalls.length
-  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  commitFieldAt(p.tree)
   await flush()
   p.tree = p.renderAgain()
   let html = toHtml(p.tree)
@@ -1697,7 +1777,7 @@ console.log('\n[31] a refused write is VISIBLE and never claims "已保存" (P1-
     p.setCalls.length === beforeFail, JSON.stringify(p.setCalls.slice(beforeFail)))
   // Retry is just another click: no lock, no "already failed" state.
   refuseWrites = false
-  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  commitFieldAt(p.tree)
   await flush()
   p.tree = p.renderAgain()
   html = toHtml(p.tree)
@@ -1910,7 +1990,7 @@ console.log('\n[35] an invalid update interval sends nothing (P2-5)')
   // `Number("") === 0`: an emptied box used to save "never update" and print 已保存.
   const emptyBefore = p.setCalls.length
   typeInterval('')
-  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  commitFieldAt(p.tree)
   await flush()
   p.tree = p.renderAgain()
   check('an empty interval sends no request at all', p.setCalls.length === emptyBefore,
@@ -1922,7 +2002,7 @@ console.log('\n[35] an invalid update interval sends nothing (P2-5)')
   for (const bad of ['1.5', '400', '-1']) {
     const before = p.setCalls.length
     typeInterval(bad)
-    clickWithin(p.tree, 'dbh-settingsbar', '保存')
+    commitFieldAt(p.tree)
     await flush()
     p.tree = p.renderAgain()
     check(`interval ${bad} is refused before the request`,
@@ -1933,7 +2013,7 @@ console.log('\n[35] an invalid update interval sends nothing (P2-5)')
   typeInterval('30')
   check('editing clears the validation line', count(p.tree, 'dbh-invalid') === 0)
   const good = p.setCalls.length
-  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  commitFieldAt(p.tree)
   await flush()
   p.tree = p.renderAgain()
   check('a legal interval is written',
@@ -2044,7 +2124,7 @@ console.log('\n[38] a write answer outranks a read that answered first (R1)')
   // sets `saved`, and "已保存 ✓ beside the pre-write value" is the symptom.
   typeWithin(p.tree, 'dbh-settingsbar', 0, '5')
   p.tree = p.renderAgain()
-  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  commitFieldAt(p.tree)
   check('the write was dispatched', hold.length === 2 && hold[1].write === true,
     JSON.stringify(hold.map((h) => h.write)))
   const read = p.props.refresh()
@@ -2183,7 +2263,7 @@ console.log('\n[40] a mangled host value keeps the view and reports an error (R3
   check('the layout flags survive (still modern)', count(p.tree, 'dbh-modern') === 1)
   badRead = false
   badWrite = true
-  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  commitFieldAt(p.tree)
   await flush()
   p.tree = p.renderAgain()
   const html = toHtml(p.tree)
@@ -2218,7 +2298,7 @@ console.log('\n[41] a non-JSON answer is localized, never a parser trace (R4)')
   check('the read error quotes no parser text',
     !html.includes('Unexpected token') && !html.includes('SyntaxError') && !html.includes('DOCTYPE'),
     html.slice(0, 300))
-  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  commitFieldAt(p.tree)
   await flush()
   p.tree = p.renderAgain()
   html = toHtml(p.tree)
@@ -2278,7 +2358,7 @@ console.log('\n[43] a failed write rolls the draft back to the host value (R7-2)
   typeWithin(p.tree, 'dbh-settingsbar', 0, '30')
   p.tree = p.renderAgain()
   check('the edit is visible before the write', interval() === '30', interval())
-  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  commitFieldAt(p.tree)
   await flush()
   p.tree = p.renderAgain()
   check('the failure is visible', count(p.tree, 'dbh-writefail') === 1, toHtml(p.tree).slice(0, 240))
@@ -2307,7 +2387,7 @@ console.log('\n[44] a later failure suppresses the older 已保存 tick (R7-3)')
   })
   await flush()
   p.tree = p.renderAgain()
-  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  commitFieldAt(p.tree)
   await flush()
   p.tree = p.renderAgain()
   check('the successful save shows the tick', toHtml(p.tree).includes('已保存'), toHtml(p.tree).slice(0, 300))
@@ -2442,88 +2522,131 @@ console.log('\n[46] a FAILED update check re-arms the button and shows the error
   viewport(1440)
 }
 
-console.log('\n[47] the composer `@` source names connections without leaking them')
+console.log('\n[47] the composer `@` menu: current workspace first, the others behind ONE folder')
+
+// The current workspace has NO connections: the top level must skip it (no empty
+// section — only the "other workspaces" folder remains).
+const AT_OTHERS_ONLY = [
+  row('billing', 'D:/work/billing', 'prod', 'postgres://127.0.0.1:5432/bill', { alias: 'billing_prod' }),
+]
+// A single workspace: no folder row at all.
+const AT_SOLO = [
+  row('app', 'D:/work/app', 'prod', 'mysql://127.0.0.1:3307/app', { alias: 'app_prod', ro: true }),
+  row('app', 'D:/work/app', 'default', 'mysql://127.0.0.1:3306/app', { alias: 'default' }),
+]
 
 // ① The source shape: the optional input-trigger service is stubbed by the fake
-// host, so what is asserted here is the contract the bundle uses (trigger, group
-// name, hooks) — not another plugin's implementation.
-const at1 = await page(AT_MENU, { sessions: { byId: { 's-at': { cwd: 'D:/work/app' } } } })
+// host, so what is asserted here is the contract the bundle uses (trigger, hooks,
+// drill + breadcrumb) — not another plugin's implementation.
+const AT_SESSION = { sessionId: 's-at' }
+const AT_SESSIONS = { byId: { 's-at': { cwd: 'D:/work/app' } } }
+const at1 = await page(AT_MENU, { sessions: AT_SESSIONS })
 const atSources = at1.inputTriggers ? at1.inputTriggers.sources : []
 check('exactly one dbhub @ source is registered', atSources.length === 1, JSON.stringify(atSources.map((s) => s && s.name)))
 const atSrc = atSources[0] || {}
 check('the source is the stable @ group "dbhub"', atSrc.trigger === '@' && atSrc.name === 'dbhub',
   JSON.stringify({ trigger: atSrc.trigger, name: atSrc.name }))
-check('the source exposes candidates/onPick/codec/lexicon/subscribeLexicon/warm',
-  typeof atSrc.candidates === 'function' && typeof atSrc.onPick === 'function'
+check('the source exposes candidates/onPick/header/codec/lexicon/subscribeLexicon/warm',
+  typeof atSrc.candidates === 'function' && typeof atSrc.onPick === 'function' && typeof atSrc.header === 'function'
   && !!atSrc.codec && typeof atSrc.codec.serialize === 'function' && typeof atSrc.codec.clipboardText === 'function'
   && typeof atSrc.lexicon === 'function' && typeof atSrc.subscribeLexicon === 'function' && typeof atSrc.warm === 'function')
 
-// ② Candidates come from the SAME /state rows the card renders, grouped by
-// WORKSPACE with the current session's workspace pinned first.
-const atCandidates = typeof atSrc.candidates === 'function'
-  ? await atSrc.candidates({ sessionId: 's-at' }, { query: '', position: 0, drilled: false })
+// ② The TOP level: ONE group named after the plugin, the current session
+// workspace's rows, then one drillable "other workspaces" folder.
+const atTop = typeof atSrc.candidates === 'function'
+  ? await atSrc.candidates(AT_SESSION, { query: '', drilled: false })
   : []
-check('one candidate per connection row', atCandidates.length === 3, JSON.stringify(atCandidates.map((c) => c && c.name)))
-const atNames = atCandidates.map((c) => c && c.name)
-const atSections = atCandidates.map((c) => c && c.section)
-check('candidate names stay unique inside the source (exact matching needs it)',
-  new Set(atNames).size === 3, JSON.stringify(atNames))
-check('the current session workspace is the FIRST group, and it says so',
-  atSections[0] === '当前工作区 · app' && atSections.filter((s) => s === '当前工作区 · app').length === 2,
-  JSON.stringify(atSections))
-check('the other workspaces follow, in title order', atSections[2] === 'billing', JSON.stringify(atSections))
-check('an item shows ONLY its environment name when that name is unique',
-  atNames.indexOf('default') >= 0 && atNames.indexOf('app_default') < 0, JSON.stringify(atNames))
-check('…and only the CROSS-workspace duplicates get the short workspace suffix',
-  atNames.indexOf('prod · app') >= 0 && atNames.indexOf('prod · billing') >= 0, JSON.stringify(atNames))
-const atByName = (name) => atCandidates.find((c) => c && c.name === name) || {}
-const atProd = atByName('prod · app')
-const atBill = atByName('prod · billing')
-check('a candidate describes its metadata label and the read-only flag (the section owns the workspace name)',
-  atProd.label === 'prod · app'
-  && String(atProd.description) === 'mysql://127.0.0.1:3307/app · 只读'
-  && String(atBill.description) === 'postgres://127.0.0.1:5432/bill',
-  JSON.stringify([atProd, atBill]))
+const atTopNames = atTop.map((c) => c && c.name)
+check('the top level is ONE group named after the plugin',
+  atTop.length > 0 && atTop.every((c) => c.section === 'dbhub 数据库'),
+  JSON.stringify(atTop.map((c) => c.section)))
+check('the current workspace is listed first and ONLY it (its env names, sorted)',
+  atTopNames.join('|') === 'default|prod|其他工作区', JSON.stringify(atTopNames))
+const atFolder = atTop.find((c) => c.name === '其他工作区') || {}
+check('the other-workspaces row is a drillable folder with a short Tab hint',
+  atFolder.drill === true && atFolder.icon === 'folder' && atFolder.description === '按 Tab 进入',
+  JSON.stringify(atFolder))
+const atProd = atTop.find((c) => c.name === 'prod') || {}
+check('a row describes host:port/database only, plus the read-only marker (small screens)',
+  atProd.description === '127.0.0.1:3307/app · 只读', JSON.stringify(atProd))
+const atTopLeak = JSON.stringify(atTop)
+check('the top level leaks no scheme, DSN, credential or local path',
+  atTopLeak.indexOf('://') < 0 && atTopLeak.indexOf('D:/work') < 0 && !/password|passwd|secret|token/i.test(atTopLeak),
+  atTopLeak)
 check('the candidate VALUE is the immutable source handle', atProd.value === 'app_1a2b3c_prod', JSON.stringify(atProd.value))
-const atLeak = JSON.stringify(atCandidates)
-check('no DSN, credential or local path reaches a candidate',
-  !/:\/\/[^/\s]*:[^@\s]+@/.test(atLeak) && !atLeak.includes('D:/work') && !/password|passwd|secret|token/i.test(atLeak),
-  atLeak)
 
-// ②b A host WITHOUT the sessions service cannot know the current workspace: the
-// menu must degrade to plain title order instead of guessing or throwing.
-const atNoSessions = await page(AT_MENU, { sessions: false })
-const atNoSessionsSrc = (atNoSessions.inputTriggers.sources || [])[0] || {}
-const atPlain = await atNoSessionsSrc.candidates({ sessionId: 's-at' }, { query: '', position: 0, drilled: false })
-check('without the sessions service the menu keeps a stable title order',
-  atPlain.map((c) => c.section).join('|') === 'app|app|billing', JSON.stringify(atPlain.map((c) => c.section)))
+// ③ Drilling: the folder row rewrites the DRAFT to our marker and keeps the menu
+// open (`execute()` only honours `text`, so a drill must not return `insert`).
+const atDrill = atSrc.onPick({
+  action: 'drill', candidate: atFolder, session: AT_SESSION, position: 0, via: 'menu', span: { start: 0, end: 0 },
+})
+check('picking the folder writes @其他工作区 into the draft and keeps the menu open',
+  !!atDrill && atDrill.text === '@其他工作区' && atDrill.continue === true, JSON.stringify(atDrill))
 
-// ②c Scan order must not move the menu: reversed rows produce the same order.
-const AT_MENU_REVERSED = AT_MENU.slice().reverse()
-const atRev = await page(AT_MENU_REVERSED, { sessions: { byId: { 's-at': { cwd: 'D:/work/app' } } } })
-const atRevSrc = (atRev.inputTriggers.sources || [])[0] || {}
-const atRevCand = await atRevSrc.candidates({ sessionId: 's-at' }, { query: '', position: 0, drilled: false })
-check('the menu order does not follow the scan order',
-  JSON.stringify(atRevCand.map((c) => [c.section, c.name]))
-  === JSON.stringify(atCandidates.map((c) => [c.section, c.name])),
-  JSON.stringify(atRevCand.map((c) => [c.section, c.name])))
-const atBack = await page(AT_MENU, { sessions: { byId: { 's-at': { cwd: 'D:/work/app' } } } })
-const atBackSrc = (atBack.inputTriggers.sources || [])[0] || {}
-const atBackCand = await atBackSrc.candidates({ sessionId: 's-at' }, { query: '', position: 0, drilled: false })
-const atProd2 = atBackCand.find((c) => c && c.name === 'prod · app') || {}
+// ④ Level ②: only the OTHER workspaces, named "workspace · env", same metadata.
+const atOthers = await atSrc.candidates(AT_SESSION, { query: '其他工作区', drilled: true })
+check('the second level lists only the other workspaces, as "workspace · env"',
+  atOthers.length === 1 && atOthers[0].name === 'billing · prod'
+  && atOthers[0].description === '127.0.0.1:5432/bill'
+  && atOthers[0].section === '其他工作区',
+  JSON.stringify(atOthers))
+check('the second level keeps the immutable handle as the value',
+  atOthers[0].value === 'billing_1a2b3c_prod', JSON.stringify(atOthers[0].value))
+const atFilteredOut = await atSrc.candidates(AT_SESSION, { query: '其他工作区 app', drilled: true })
+check('the text typed after the marker filters the second level', atFilteredOut.length === 0, JSON.stringify(atFilteredOut))
+const atFilteredIn = await atSrc.candidates(AT_SESSION, { query: '其他工作区 bill', drilled: true })
+check('… and a matching remainder keeps its row', atFilteredIn.length === 1 && atFilteredIn[0].name === 'billing · prod',
+  JSON.stringify(atFilteredIn))
 
-// ③ Pick → insert: the routing key is the source name, the payload is the handle.
+// ⑤ THE BUG: `drilled` is controller-wide, so a drill inside ANOTHER source's
+// folder (dsh's own file tree — its query is a path like `src/`) must make our
+// rows disappear. Only OUR marker in the draft proves the drill is ours.
+const atForeign = await atSrc.candidates(AT_SESSION, { query: 'src/', drilled: true })
+check('a drill inside another source\'s folder yields NO rows (we disappear)',
+  Array.isArray(atForeign) && atForeign.length === 0, JSON.stringify(atForeign))
+const atForeignEmpty = await atSrc.candidates(AT_SESSION, { query: 'app/main.ts', drilled: true })
+check('… for any foreign drill text, not just one spelling',
+  Array.isArray(atForeignEmpty) && atForeignEmpty.length === 0, JSON.stringify(atForeignEmpty))
+
+// ⑥ Breadcrumb while inside our folder; nothing outside it.
+const atHeader = typeof atSrc.header === 'function' ? atSrc.header(AT_SESSION, { query: '其他工作区', drilled: true }) : null
+check('inside our folder the breadcrumb has two levels, root first',
+  Array.isArray(atHeader) && atHeader.length === 2
+  && atHeader[0].label === 'dbhub 数据库' && atHeader[0].value === 'root'
+  && atHeader[1].label === '其他工作区' && atHeader[1].current === true,
+  JSON.stringify(atHeader))
+check('no breadcrumb outside our folder (top level or a foreign drill)',
+  atSrc.header(AT_SESSION, { query: '', drilled: true }) === undefined
+  && atSrc.header(AT_SESSION, { query: 'src/', drilled: true }) === undefined
+  && atSrc.header(AT_SESSION, { query: '', drilled: false }) === undefined)
+const atBackPick = atSrc.onPick({
+  action: 'drill', candidate: atHeader[0], session: AT_SESSION, position: 0, via: 'menu', span: { start: 0, end: 0 },
+})
+check('clicking the root crumb rewrites the draft to a bare @ and keeps the menu open',
+  !!atBackPick && atBackPick.text === '@' && atBackPick.continue === true, JSON.stringify(atBackPick))
+const atBackTop = await atSrc.candidates(AT_SESSION, { query: '', drilled: true })
+check('… and the reopened menu is the top level again (bare trigger, still drilled)',
+  JSON.stringify(atBackTop.map((c) => c.name)) === JSON.stringify(atTopNames),
+  JSON.stringify(atBackTop.map((c) => c.name)))
+
+// ⑦ Pick → insert (unchanged contract): the routing key is the source name, the
+// payload the handle, and the visible text the menu name.
 const atPicked = typeof atSrc.onPick === 'function'
-  ? atSrc.onPick({ candidate: atProd, session: null, position: 0, via: 'menu', action: 'pick', span: { start: 0, end: 0 } })
+  ? atSrc.onPick({ candidate: atProd, session: AT_SESSION, position: 0, via: 'menu', action: 'pick', span: { start: 0, end: 0 } })
   : null
 const atInsert = atPicked && atPicked.insert
 check('pick inserts a reference routed back to this source',
   !!atInsert && atInsert.source === 'dbhub' && atInsert.appearance === 'file', JSON.stringify(atPicked))
 check('the insert carries the HANDLE and shows the menu name (the alias stays the copy spelling)',
-  !!atInsert && atInsert.ref === 'app_1a2b3c_prod' && atInsert.label === 'prod · app' && atInsert.clipboardText === '@app_prod',
+  !!atInsert && atInsert.ref === 'app_1a2b3c_prod' && atInsert.label === 'prod' && atInsert.clipboardText === '@app_prod',
   JSON.stringify(atInsert))
 
-// ④ Codec: each chip serializes on its own — that is what makes SEVERAL
+// ⑧ A kitchen-sink check on the whole second level too: no scheme/path/credential.
+const atOthersLeak = JSON.stringify(atOthers)
+check('the second level leaks nothing either',
+  atOthersLeak.indexOf('://') < 0 && atOthersLeak.indexOf('D:/work') < 0, atOthersLeak)
+
+// ⑨ Codec: each chip serializes on its own — that is what makes SEVERAL
 // references in one message work.
 check('serialize turns a reference into the model marker @db:<handle>',
   atSrc.codec.serialize('app_1a2b3c_prod') === '@db:app_1a2b3c_prod', atSrc.codec.serialize('app_1a2b3c_prod'))
@@ -2531,14 +2654,54 @@ check('clipboardText resolves the CURRENT alias of the handle',
   atSrc.codec.clipboardText('app_1a2b3c_prod') === '@app_prod', atSrc.codec.clipboardText('app_1a2b3c_prod'))
 check('an UNKNOWN handle falls back to the handle, never to a guess',
   atSrc.codec.clipboardText('gone_zzzz') === '@gone_zzzz', atSrc.codec.clipboardText('gone_zzzz'))
-const atTwoRefs = [atProd2.value, atBill.value].map((r) => atSrc.codec.serialize(r))
+const atTwoRefs = [atProd.value, atOthers[0].value].map((r) => atSrc.codec.serialize(r))
 check('one message can carry several references, each serialized on its own',
   atTwoRefs.join(' ') === '@db:app_1a2b3c_prod @db:billing_1a2b3c_prod', JSON.stringify(atTwoRefs))
 check('the lexicon lists every alias',
   JSON.stringify(atSrc.lexicon(null).slice().sort()) === JSON.stringify(['app_prod', 'billing_prod', 'default']),
   JSON.stringify(atSrc.lexicon(null)))
 
-// ⑤ The lexicon follows the published snapshot (the card's own notification
+// ⑩ Empty / missing current workspace. A current workspace with no connections
+// is SKIPPED (only the folder remains); with no OTHER workspaces the folder row
+// is not offered at all.
+const atOnlyOthers = await page(AT_OTHERS_ONLY, { sessions: AT_SESSIONS })
+const atOnlyOthersSrc = (atOnlyOthers.inputTriggers.sources || [])[0] || {}
+const atSkipped = await atOnlyOthersSrc.candidates(AT_SESSION, { query: '', drilled: false })
+check('a current workspace without connections is skipped — only the folder is left',
+  atSkipped.length === 1 && atSkipped[0].name === '其他工作区' && atSkipped[0].drill === true,
+  JSON.stringify(atSkipped))
+
+const atSolo = await page(AT_SOLO, { sessions: AT_SESSIONS })
+const atSoloSrc = (atSolo.inputTriggers.sources || [])[0] || {}
+const atSoloCand = await atSoloSrc.candidates(AT_SESSION, { query: '', drilled: false })
+check('with no other workspaces there is no folder row',
+  atSoloCand.length === 2 && atSoloCand.every((c) => c.drill !== true), JSON.stringify(atSoloCand.map((c) => c.name)))
+
+// Without the sessions service the current workspace is UNKNOWN: the menu keeps
+// a flat, deterministic list (a guess would target another workspace's row).
+const atNoSessions = await page(AT_MENU, { sessions: false })
+const atNoSessionsSrc = (atNoSessions.inputTriggers.sources || [])[0] || {}
+const atPlain = await atNoSessionsSrc.candidates(AT_SESSION, { query: '', drilled: false })
+check('without the sessions service the top level degrades to a flat list (no guessed grouping)',
+  atPlain.length === 3 && atPlain.every((c) => c.drill !== true)
+  && new Set(atPlain.map((c) => c.name)).size === 3,
+  JSON.stringify(atPlain.map((c) => [c.name, c.section])))
+
+// A session object that carries the cwd itself is accepted too (newer dsh).
+const atDirect = await atSrc.candidates({ cwd: 'D:/work/app' }, { query: '', drilled: false })
+check('a session carrying its own cwd resolves the current workspace',
+  JSON.stringify(atDirect.map((c) => c.name)) === JSON.stringify(atTopNames),
+  JSON.stringify(atDirect.map((c) => c.name)))
+
+// Scan order must never move the menu.
+const atRev = await page(AT_MENU.slice().reverse(), { sessions: AT_SESSIONS })
+const atRevSrc = (atRev.inputTriggers.sources || [])[0] || {}
+const atRevTop = await atRevSrc.candidates(AT_SESSION, { query: '', drilled: false })
+check('the menu order does not follow the scan order',
+  JSON.stringify(atRevTop.map((c) => c.name)) === JSON.stringify(atTopNames),
+  JSON.stringify(atRevTop.map((c) => c.name)))
+
+// ⑪ The lexicon follows the published snapshot (the card's own notification
 // point — no second timer, no polling).
 let atLexiconUpdates = 0
 const atUnsubscribe = atSrc.subscribeLexicon(null, () => { atLexiconUpdates += 1 })
@@ -2547,7 +2710,7 @@ await flush()
 atUnsubscribe()
 check('the lexicon follows the published snapshot', atLexiconUpdates > 0, String(atLexiconUpdates))
 
-// ⑥ No data = no candidates. A disabled plugin, an unreadable state and an
+// ⑫ No data = no candidates. A disabled plugin, an unreadable state and an
 // empty row set are all "empty group" (which closes the menu), never a throw.
 const atEmpty = await page([], {})
 check('a hot reload releases the previous @ group', at1.inputTriggers.sources.length === 0,
@@ -2564,7 +2727,7 @@ const atDisabled = await page(AT_MENU, { snapshot: { enabled: false } })
 const atDisabledSrc = (atDisabled.inputTriggers.sources || [])[0] || {}
 check('a disabled plugin offers no references', (await atDisabledSrc.candidates(null, {})).length === 0)
 
-// ⑦ A host WITHOUT the service must still mount the whole plugin half (that is
+// ⑬ A host WITHOUT the service must still mount the whole plugin half (that is
 // why the service is injected optionally, not declared in `inject`).
 const atNoService = await page(AT_MENU, { inputTriggers: false })
 check('a host without inputTriggers still mounts and registers nothing',
@@ -2592,37 +2755,171 @@ console.log('\n[48] global settings: test concurrency / row limit / export direc
     String((inputs[2] || { props: {} }).props.placeholder || '').includes('默认位置'),
     JSON.stringify((inputs[2] || {}).props))
 
-  // ① An out-of-range concurrency is refused LOCALLY: one reason, zero requests.
+  // ① A field commits on BLUR: there is no 保存 button any more, so the write has
+  // to happen where the edit ended. One field, one request — the old form-wide
+  // button re-sent every setting on every click.
   const postsBefore = p.posts.length
+  typeWithin(p.tree, 'dbh-barline2', 0, '5')
+  p.tree = p.renderAgain()
+  commitFieldAt(p.tree, 1)
+  await flush()
+  p.tree = p.renderAgain()
+  const blurPost = (p.posts[postsBefore] || {}).body || {}
+  check('blurring the concurrency box writes THAT field only',
+    blurPost.batchConcurrency === 5 && blurPost.updateIntervalDays === undefined
+    && blurPost.defaultMaxRows === undefined && blurPost.exportDir === undefined, JSON.stringify(blurPost))
+  check('…and the field shows 已保存 afterwards',
+    classed(p.tree, 'dbh-saved').length >= 1, toHtml(p.tree).slice(0, 400))
+  check('no 保存 button is left in the settings bar',
+    !toHtml(classed(p.tree, 'dbh-settingsbar')[0] || { children: [] }).includes('保存配置'),
+    toHtml(classed(p.tree, 'dbh-settingsbar')[0] || { children: [] }).slice(0, 400))
+
+  // ② Enter commits the same way (the keyboard path, not only the mouse).
+  const postsAfterBlur = p.posts.length
+  typeWithin(p.tree, 'dbh-barline2', 1, '100')
+  p.tree = p.renderAgain()
+  commitFieldAt(p.tree, 2, 'enter')
+  await flush()
+  const enterPost = (p.posts[postsAfterBlur] || {}).body || {}
+  check('Enter commits the row-limit field as well',
+    enterPost.defaultMaxRows === 100 && enterPost.batchConcurrency === undefined, JSON.stringify(enterPost))
+
+  // ③ An out-of-range concurrency is refused LOCALLY: one reason, zero requests.
+  const postsBad = p.posts.length
   typeWithin(p.tree, 'dbh-barline2', 0, '9')
   p.tree = p.renderAgain()
-  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  commitFieldAt(p.tree, 1)
   p.tree = p.renderAgain()
   check('an out-of-range concurrency sends no request',
-    p.posts.length === postsBefore, JSON.stringify(p.posts.slice(postsBefore)))
-  check('…and names the accepted range',
+    p.posts.length === postsBad, JSON.stringify(p.posts.slice(postsBad)))
+  check('…and names the accepted range next to that field',
     classed(p.tree, 'dbh-invalid').length === 1
     && toHtml(classed(p.tree, 'dbh-invalid')[0]).includes('1–8'),
     toHtml(p.tree).slice(0, 400))
 
-  // ② Valid values ride ONE options write that still carries the older keys.
-  typeWithin(p.tree, 'dbh-barline2', 0, '5')
-  p.tree = p.renderAgain()
-  typeWithin(p.tree, 'dbh-barline2', 1, '100')
-  p.tree = p.renderAgain()
+  // ④ The export directory is a long value: blur on it commits `exportDir` (and
+  // the client does NOT pre-judge the path — the Host probes it).
   typeWithin(p.tree, 'dbh-barline2', 2, 'D:/tmp/exports')
   p.tree = p.renderAgain()
-  const before = p.posts.length
-  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  const postsDir = p.posts.length
+  commitDir(p.tree)
   await flush()
-  const sent = (p.posts[before] || {}).body || {}
-  check('saving posts one options write carrying all three settings',
-    sent.batchConcurrency === 5 && sent.defaultMaxRows === 100 && sent.exportDir === 'D:/tmp/exports',
-    JSON.stringify(sent))
-  check('the write keeps the interval and the switches too',
-    sent.updateIntervalDays !== undefined && sent.showSidebarEntry !== undefined
-    && sent.announceAccessPolicy !== undefined, JSON.stringify(sent))
+  const dirPost = (p.posts[postsDir] || {}).body || {}
+  check('blurring the directory posts only exportDir', dirPost.exportDir === 'D:/tmp/exports'
+    && dirPost.batchConcurrency === undefined, JSON.stringify(dirPost))
+
+  // ⑤ The directory is wide enough to show its own placeholder at 1440px AND at
+  // 720px (the placeholder is the only explanation of what blank means).
+  const dirCss = cssRule('.dbh-input-dir')
+  check('the export box has a 280px floor and grows with the line',
+    /min-width:280px/.test(dirCss) && /flex:1 1 280px/.test(dirCss), dirCss)
+  check('…its group is the one that takes the free width of the bar',
+    /flex:1 1 320px/.test(cssRule('.dbh-barline .dbh-bargroup-dir')), cssRule('.dbh-barline .dbh-bargroup-dir'))
+  check('…and it is monospace + explicitly left aligned (a path, not a number)',
+    /ui-monospace/.test(dirCss) && /text-align:left/.test(dirCss), dirCss)
+  const dirPlaceholder = String((classed(p.tree, 'dbh-input-dir')[0] || { props: {} }).props.placeholder || '')
+  check('the placeholder is the full "blank = default" sentence',
+    dirPlaceholder === '留空 = 默认位置（数据目录/exports）', JSON.stringify(dirPlaceholder))
+
+  // ⑥ `?` opens the same explanation the title shows, and 默认 clears the box.
+  const helpBtn = classed(p.tree, 'dbh-helpbtn')[0]
+  check('the export row carries a clickable ?', !!helpBtn, toHtml(p.tree).slice(0, 500))
+  if (helpBtn && typeof helpBtn.props.onClick === 'function') helpBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  p.tree = p.renderAgain()
+  check('clicking ? shows the explanation inline (title = same text)',
+    classed(p.tree, 'dbh-cfghint').length === 1
+    && String((classed(p.tree, 'dbh-helpbtn')[0] || { props: {} }).props.title || '').includes('默认位置'),
+    toHtml(p.tree).slice(0, 600))
+  const postsDefault = p.posts.length
+  const defaultBtn = elements(p.tree, (el) => typeof el.props.onClick === 'function'
+    && (el.children || []).map(toHtml).join('') === '默认')[0]
+  check('the export row offers a 默认 button', !!defaultBtn)
+  if (defaultBtn) defaultBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  await flush()
+  p.tree = p.renderAgain()
+  check('…which writes exportDir: "" (the default location)',
+    ((p.posts[postsDefault] || {}).body || {}).exportDir === '',
+    JSON.stringify((p.posts[postsDefault] || {}).body || {}))
+  check('…and the box is blank again', String((classed(p.tree, 'dbh-input-dir')[0] || { props: {} }).props.value || '') === '')
+
+  // ⑦ The directory PICKER: absent here (no host service) → no button at all.
+  check('without the platform picker the 选择 button is not rendered',
+    classed(p.tree, 'dbh-pickbtn').length === 0, toHtml(p.tree).slice(0, 400))
   p.dispose()
+
+  // ⑧ A host WITH the picker: the button appears, fills the box, commits at once.
+  let picks = 0
+  const picker = { pick: () => { picks += 1; return Promise.resolve({ ok: true, value: 'D:/picked/exports' }) } }
+  const q = await page(TILED, { slot: 'main', directoryPicker: picker, props: { useWorkspaces: wsSnap('D:/work/app') } })
+  await flush()
+  q.tree = q.renderAgain()
+  const pickBtn = classed(q.tree, 'dbh-pickbtn')[0]
+  check('a host that provides remote.directoryPicker shows the 选择 button', !!pickBtn,
+    toHtml(q.tree).slice(0, 400))
+  const qPosts = q.posts.length
+  if (pickBtn && typeof pickBtn.props.onClick === 'function') pickBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  await flush()
+  await flush()
+  q.tree = q.renderAgain()
+  check('clicking it calls the platform picker', picks === 1, String(picks))
+  check('…fills the box with the returned absolute path',
+    String((classed(q.tree, 'dbh-input-dir')[0] || { props: {} }).props.value || '') === 'D:/picked/exports',
+    String((classed(q.tree, 'dbh-input-dir')[0] || { props: {} }).props.value || ''))
+  check('…and commits it through the same write path',
+    ((q.posts[qPosts] || {}).body || {}).exportDir === 'D:/picked/exports',
+    JSON.stringify((q.posts[qPosts] || {}).body || {}))
+  q.dispose()
+
+  // ⑨ A refused pick shows the Host's message and leaves the field alone.
+  const failing = { pick: () => Promise.resolve({ ok: false, error: { code: 'EACCES', message: '平台拒绝：没有目录访问权限' } }) }
+  const r = await page(TILED, { slot: 'main', directoryPicker: failing, props: { useWorkspaces: wsSnap('D:/work/app') } })
+  await flush()
+  r.tree = r.renderAgain()
+  typeWithin(r.tree, 'dbh-barline2', 2, 'D:/kept/exports')
+  r.tree = r.renderAgain()
+  const failBtn = classed(r.tree, 'dbh-pickbtn')[0]
+  if (failBtn && typeof failBtn.props.onClick === 'function') failBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  await flush()
+  await flush()
+  r.tree = r.renderAgain()
+  check('a refused pick surfaces the Host message in the existing alert slot',
+    textMatching(r.tree, 'dbh-writefail').includes('平台拒绝：没有目录访问权限'),
+    textMatching(r.tree, 'dbh-writefail'))
+  check('…and the typed path is NOT replaced',
+    String((classed(r.tree, 'dbh-input-dir')[0] || { props: {} }).props.value || '') === 'D:/kept/exports',
+    String((classed(r.tree, 'dbh-input-dir')[0] || { props: {} }).props.value || ''))
+  r.dispose()
+
+  // ⑩ A picker that reports "cancelled" changes nothing at all.
+  const cancelling = { pick: () => Promise.resolve(null) }
+  const c = await page(TILED, { slot: 'main', directoryPicker: cancelling, props: { useWorkspaces: wsSnap('D:/work/app') } })
+  await flush()
+  c.tree = c.renderAgain()
+  typeWithin(c.tree, 'dbh-barline2', 2, 'D:/mine/exports')
+  c.tree = c.renderAgain()
+  const cancelBtn = classed(c.tree, 'dbh-pickbtn')[0]
+  const cPosts = c.posts.length
+  if (cancelBtn && typeof cancelBtn.props.onClick === 'function') cancelBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  await flush()
+  await flush()
+  c.tree = c.renderAgain()
+  check('a cancelled pick leaves the typed path and sends nothing',
+    String((classed(c.tree, 'dbh-input-dir')[0] || { props: {} }).props.value || '') === 'D:/mine/exports'
+    && c.posts.length === cPosts, `${c.posts.length - cPosts} post(s)`)
+  c.dispose()
+
+  // ⑪ 720px: the settings bar re-flows (barnarrow) and the box keeps its floor,
+  // so the explanation under the value is never the thing that gets cut off.
+  viewport(720)
+  const narrow = await page(TILED, { slot: 'main', props: { useWorkspaces: wsSnap('D:/work/app') } })
+  narrow.tree = narrow.renderAgain()
+  const narrowDir = classed(classed(narrow.tree, 'dbh-barline2')[0], 'dbh-input-dir')[0] || { props: {} }
+  check('at 720px the same field still carries the whole placeholder',
+    String(narrowDir.props.placeholder || '') === '留空 = 默认位置（数据目录/exports）',
+    JSON.stringify(narrowDir.props.placeholder))
+  check('…and the same 280px floor is what keeps it readable there',
+    /min-width:280px/.test(cssRule('.dbh-input-dir')), cssRule('.dbh-input-dir'))
+  narrow.dispose()
   viewport(1440)
 }
 
@@ -2660,14 +2957,29 @@ console.log('\n[49] connection search / sort / batch test (display-only, local s
   const p = await page(LS_TILED, { snapshot: Object.assign({}, MODERN_DEFAULTS), props: { useWorkspaces: wsRecent(sortMap) } })
   check('the list offers a search box above the rows (tiled layout)',
     count(p.tree, 'dbh-search-input') === 1, `got ${count(p.tree, 'dbh-search-input')}`)
-  check('…with a placeholder that names what it searches', String((searchInputOf(p.tree) || { props: {} }).props.placeholder || '') === '搜索连接 / 别名 / 库',
+  check('…with a short placeholder (the label already says 搜索)',
+    String((searchInputOf(p.tree) || { props: {} }).props.placeholder || '') === '输入关键字',
     JSON.stringify((searchInputOf(p.tree) || { props: {} }).props.placeholder))
+  // The prefix is TEXT, not a button: a button-looking "search" would imply a
+  // second action beside a box that already filters as you type.
+  const searchBox = classed(p.tree, 'dbh-search')[0] || { props: {}, children: [] }
+  const searchLabel = classed(searchBox, 'dbh-searchlabel')[0]
+  check('the box carries a 搜索 prefix that is not clickable',
+    !!searchLabel && toHtml(searchLabel).includes('搜索')
+    && typeof searchLabel.props.onClick !== 'function', toHtml(searchBox).slice(0, 200))
+  check('…and no × before there is anything to clear',
+    classed(searchBox, 'dbh-searchclear').length === 0, toHtml(searchBox).slice(0, 200))
   check('every row is listed before filtering', count(p.tree, 'dbh-tile') === 3, `got ${count(p.tree, 'dbh-tile')}`)
 
   typeSearch(p, 'BETA')
   check('the filter is case-insensitive', count(p.tree, 'dbh-tile') === 1, `got ${count(p.tree, 'dbh-tile')}`)
   check('an active filter shows "N / M" beside the box',
     textMatching(p.tree, 'dbh-searchcount').includes('1 / 3'), textMatching(p.tree, 'dbh-searchcount'))
+  // The × lives INSIDE the box and appears only with a query.
+  const boxClear = classed(classed(p.tree, 'dbh-search')[0] || { children: [] }, 'dbh-searchclear')[0]
+  check('a non-empty query shows the × inside the box',
+    !!boxClear && toHtml(boxClear).includes('×'),
+    boxClear ? toHtml(boxClear) : 'no .dbh-searchclear')
   typeSearch(p, 'ls_zeta_prod')
   check('the alias is searchable', count(p.tree, 'dbh-tile') === 1
     && toHtml(p.tree).includes('zeta'), `got ${count(p.tree, 'dbh-tile')}`)
@@ -2683,9 +2995,12 @@ console.log('\n[49] connection search / sort / batch test (display-only, local s
     count(p.tree, 'dbh-nomatch') === 1 && noMatchHtml.includes('没有匹配的连接'), noMatchHtml.slice(0, 400))
   check('…and never pretends the plugin has no connections',
     !noMatchHtml.includes('还没有配置连接'), noMatchHtml.slice(0, 400))
-  const clearBtn = classed(p.tree, 'dbh-clearsearch')[0]
-  check('the empty state offers 清除搜索', !!clearBtn && toHtml(clearBtn).includes('清除搜索'))
-  if (clearBtn && typeof clearBtn.props.onClick === 'function') clearBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  // The empty state keeps its own labelled clear action (the × may be off-screen
+  // on a phone), so the two are separate controls with the same effect.
+  const emptyClear = classed(classed(p.tree, 'dbh-nomatch')[0], 'dbh-clearsearch')[0]
+  check('the empty state offers its own 清除搜索 button',
+    !!emptyClear && toHtml(emptyClear).includes('清除搜索'), toHtml(classed(p.tree, 'dbh-nomatch')[0]).slice(0, 200))
+  if (emptyClear && typeof emptyClear.props.onClick === 'function') emptyClear.props.onClick({ stopPropagation() {}, preventDefault() {} })
   p.tree = p.renderAgain()
   check('clearing the search restores every row', count(p.tree, 'dbh-tile') === 3, `got ${count(p.tree, 'dbh-tile')}`)
   check('clearing the search empties the box', String((searchInputOf(p.tree) || { props: {} }).props.value || '') === '')
@@ -2709,28 +3024,11 @@ console.log('\n[49] connection search / sort / batch test (display-only, local s
   check('no connections at all keeps the real empty state (not the no-match one)',
     toHtml(gEmpty.tree).includes('暂无连接') && count(gEmpty.tree, 'dbh-nomatch') === 0, toHtml(gEmpty.tree).slice(0, 300))
 
-  // ── sort ───────────────────────────────────────────────────────────────
-  const s = await page(LS_TILED, { snapshot: Object.assign({}, MODERN_DEFAULTS), props: { useWorkspaces: wsRecent(sortMap) } })
-  const tileNames = (tree) => classed(tree, 'dbh-tiletitle').map(textOf)
-  check('the default order is by name (workspace title)', JSON.stringify(tileNames(s.tree)) === JSON.stringify(['alpha', 'beta', 'zeta']),
-    JSON.stringify(tileNames(s.tree)))
-  const sortBtns = () => classed(s.tree, 'dbh-sortbtn')
-  check('two sort options are offered', sortBtns().length === 2, `got ${sortBtns().length}`)
-  const recentBtn = sortBtns().filter((el) => toHtml(el).includes('最近更新'))[0]
-  if (recentBtn && typeof recentBtn.props.onClick === 'function') recentBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
-  s.tree = s.renderAgain()
-  check('recently-updated reorders by updatedAt, newest first',
-    JSON.stringify(tileNames(s.tree)) === JSON.stringify(['zeta', 'beta', 'alpha']), JSON.stringify(tileNames(s.tree)))
-  check('the active sort option is marked',
-    String((sortBtns().filter((el) => el.props['aria-pressed'] === true)[0] || { props: {} }).props['aria-pressed']) === 'true')
-  const nameBtn = sortBtns().filter((el) => toHtml(el).includes('名称'))[0]
-  if (nameBtn && typeof nameBtn.props.onClick === 'function') nameBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
-  s.tree = s.renderAgain()
-  check('switching back restores the name order',
-    JSON.stringify(tileNames(s.tree)) === JSON.stringify(['alpha', 'beta', 'zeta']), JSON.stringify(tileNames(s.tree)))
-
-  // Groups must follow the same order — sorting only the rows inside a fixed
-  // group order would leave the list looking unsorted.
+  // ── sort: ONE text control, four states, no frame ──────────────────────
+  //
+  // 默认（不排序，保持宿主顺序）→ 名称 ↑ → 名称 ↓ → 最近更新 → 默认. The fixture
+  // deliberately arrives in a NON-name order (zzz, aaa), so "default" and
+  // "ascending" are distinguishable states rather than the same list twice.
   const LS_GROUPSORT = [
     row('zzz', 'D:/qa/ls-zzz', 'default', 'mysql://127.0.0.1:3306/z1'),
     row('zzz', 'D:/qa/ls-zzz', 'prod', 'mysql://127.0.0.1:3307/z2'),
@@ -2742,17 +3040,43 @@ console.log('\n[49] connection search / sort / batch test (display-only, local s
     props: { useWorkspaces: wsRecent({ 'D:/qa/ls-aaa': '2026-01-01T00:00:00Z', 'D:/qa/ls-zzz': '2026-05-01T00:00:00Z' }) },
   })
   const groupTitles = (tree) => classed(tree, 'dbh-grouptitle').map(textOf)
-  check('groups start in name order', JSON.stringify(groupTitles(gs.tree)) === JSON.stringify(['aaa', 'zzz']), JSON.stringify(groupTitles(gs.tree)))
-  const gsRecent = classed(gs.tree, 'dbh-sortbtn').filter((el) => toHtml(el).includes('最近更新'))[0]
-  if (gsRecent && typeof gsRecent.props.onClick === 'function') gsRecent.props.onClick({ stopPropagation() {}, preventDefault() {} })
-  gs.tree = gs.renderAgain()
-  check('the GROUP order follows the sort, not only the rows',
-    JSON.stringify(groupTitles(gs.tree)) === JSON.stringify(['zzz', 'aaa']), JSON.stringify(groupTitles(gs.tree)))
-  const gsName = classed(gs.tree, 'dbh-sortbtn').filter((el) => toHtml(el).includes('名称'))[0]
-  if (gsName && typeof gsName.props.onClick === 'function') gsName.props.onClick({ stopPropagation() {}, preventDefault() {} })
-  gs.tree = gs.renderAgain()
-  check('…and switching back re-orders the groups as well',
-    JSON.stringify(groupTitles(gs.tree)) === JSON.stringify(['aaa', 'zzz']), JSON.stringify(groupTitles(gs.tree)))
+  const sortText = (tree) => textMatching(tree, 'dbh-sorttext')
+  const sortBtnOf = (tree) => classed(tree, 'dbh-sorttext')[0] || { props: {} }
+  const sortClicks = () => {
+    if (typeof sortBtnOf(gs.tree).props.onClick === 'function') {
+      sortBtnOf(gs.tree).props.onClick({ stopPropagation() {}, preventDefault() {} })
+    }
+    gs.tree = gs.renderAgain()
+  }
+  check('the default state says 排序：默认 and keeps the host order',
+    sortText(gs.tree).includes('排序：默认') && JSON.stringify(groupTitles(gs.tree)) === JSON.stringify(['zzz', 'aaa']),
+    `${sortText(gs.tree)} / ${JSON.stringify(groupTitles(gs.tree))}`)
+  check('the sort control is TEXT: no button frame class',
+    !classed(gs.tree, 'dbh-sortbtn').length && /dbh-sorttext/.test(String(sortBtnOf(gs.tree).props.className)),
+    String(sortBtnOf(gs.tree).props.className))
+  check('…with secondary colour + hover underline, no box (CSS contract)',
+    /color:var\(--dsw-alias-label-secondary\)/.test(cssRule('.dbh-sorttext'))
+    && /border:0/.test(cssRule('.dbh-sorttext')) && /background:transparent/.test(cssRule('.dbh-sorttext'))
+    && /text-decoration:underline/.test(cssRule('.dbh-sorttext:hover')), cssRule('.dbh-sorttext'))
+  sortClicks()
+  check('click 1 → 名称 ↑ and the groups sort A→Z',
+    sortText(gs.tree).includes('名称') && sortText(gs.tree).includes('↑')
+    && JSON.stringify(groupTitles(gs.tree)) === JSON.stringify(['aaa', 'zzz']),
+    `${sortText(gs.tree)} / ${JSON.stringify(groupTitles(gs.tree))}`)
+  sortClicks()
+  check('click 2 → 名称 ↓ and the groups reverse',
+    sortText(gs.tree).includes('↓') && JSON.stringify(groupTitles(gs.tree)) === JSON.stringify(['zzz', 'aaa']),
+    `${sortText(gs.tree)} / ${JSON.stringify(groupTitles(gs.tree))}`)
+  sortClicks()
+  check('click 3 → 最近更新 (no arrow: there is no direction)',
+    sortText(gs.tree).includes('最近更新') && !sortText(gs.tree).includes('↑') && !sortText(gs.tree).includes('↓'),
+    sortText(gs.tree))
+  sortClicks()
+  check('click 4 → back to 默认, host order again (no sorting)',
+    sortText(gs.tree).includes('默认') && JSON.stringify(groupTitles(gs.tree)) === JSON.stringify(['zzz', 'aaa']),
+    `${sortText(gs.tree)} / ${JSON.stringify(groupTitles(gs.tree))}`)
+  const cycleTitle = String(sortBtnOf(gs.tree).props.title || '')
+  check('the control explains the cycle on hover', cycleTitle.includes('名称') && cycleTitle.includes('默认'), cycleTitle)
 
   // ── batch test: 2 at a time, per-row state, stop, summary ──────────────
   //
@@ -2912,62 +3236,60 @@ console.log('\n[50] one tidy toolbar line and a DSN field you can actually read'
   const p = await page(rows, { snapshot: Object.assign({}, MODERN_DEFAULTS) })
   const bar = classed(p.tree, 'dbh-searchbar')[0] || { props: {}, children: [] }
   const barKids = (bar.children || []).map((c) => String((c.props || {}).className || ''))
-  const sortAt = barKids.findIndex((c) => c.includes('dbh-sort') && !c.includes('dbh-sortbtn'))
-  const batchAt = barKids.findIndex((c) => c.includes('dbh-batchbtn'))
+  const searchAt = barKids.indexOf('dbh-search')
+  const sortAt = barKids.indexOf('dbh-sort')
+  const batchAt = barKids.indexOf('dbh-btn dbh-batchbtn')
   const growAt = barKids.indexOf('dbh-grow')
 
   // ① The three clusters are siblings of the SAME container, in one row: the
   // search box must not take a line of its own (a full-width input on a wide card
-  // is a 900px-long search field).
+  // is a 900px-long search field), and nothing may wrap before 720px.
   check('the toolbar is one labelled group', bar.props.role === 'group' && !!bar.props['aria-label'],
     JSON.stringify({ role: bar.props.role, label: bar.props['aria-label'] }))
-  check('search + sort + batch share that single container',
-    barKids.indexOf('dbh-input dbh-search-input') >= 0 && sortAt > 0 && batchAt > sortAt, JSON.stringify(barKids))
-  check('a spacer keeps sort/batch flush with the right edge',
-    growAt >= 0 && growAt < sortAt, JSON.stringify({ growAt, sortAt }))
-
-  const searchEl = classed(bar, 'dbh-search-input')[0] || { props: {} }
-  check('the search placeholder names the three searchable things',
-    searchEl.props.placeholder === '搜索连接 / 别名 / 库', JSON.stringify(searchEl.props.placeholder))
-  check('the search box is a plain input, not a second row', searchEl.type === 'input' && searchEl.props.value === '')
-
-  // ①b The row's geometry: one flex line, 8px rhythm, equal 28px controls, and a
-  // CAPPED search box (a `flex:1` box with no ceiling becomes a 900px field).
+  check('search + sort + batch share that single container, in reading order',
+    searchAt >= 0 && growAt > searchAt && sortAt > growAt && batchAt > sortAt, JSON.stringify(barKids))
   const barCss = cssRule('.dbh-searchbar')
-  check('the row is one centred flex line with an 8px rhythm',
-    /display:flex/.test(barCss) && /align-items:center/.test(barCss) && /gap:8px/.test(barCss), barCss)
-  check('the search box grows but is capped at 320px',
-    /flex:1 1 200px/.test(cssRule('.dbh-search-input')) && /max-width:320px/.test(cssRule('.dbh-search-input')),
-    cssRule('.dbh-search-input'))
-  check('the tabs and the batch button are the same 28px height as the search field',
-    /height:28px/.test(cssRule('.dbh-sortbtn')) && /height:28px/.test(cssRule('.dbh-batchbtn'))
-    && /height:28px/.test(cssRule('.dbh-sort')) && /height:28px/.test(cssRule('.dbh-input')),
-    JSON.stringify([cssRule('.dbh-sortbtn'), cssRule('.dbh-batchbtn')]))
-  check('the active tab is underlined (text colour + inset rule, no extra colour)',
-    /box-shadow:inset 0 -2px 0/.test(cssRule('.dbh-sortbtn-on')), cssRule('.dbh-sortbtn-on'))
-  check('the phone keeps the search on its own line, tabs + batch on the next',
-    /flex:1 1 100%/.test(cssRule('.dbh-mobile .dbh-search-input')), cssRule('.dbh-mobile .dbh-search-input'))
+  check('the row is one centred flex line with an 8px rhythm, and it does not wrap',
+    /display:flex/.test(barCss) && /align-items:center/.test(barCss) && /gap:8px/.test(barCss)
+    && /flex-wrap:nowrap/.test(barCss), barCss)
 
-  // ② Sort is two INLINE tabs, never a dropdown.
+  // ①b The search is a BOX with a text prefix and an inline ×: a bordered wrapper
+  // (one control, not two nested frames) whose input is capped at 360px.
+  const searchBox = classed(bar, 'dbh-search')[0] || { props: {}, children: [] }
+  const searchLabel = classed(searchBox, 'dbh-searchlabel')[0]
+  const searchEl = classed(bar, 'dbh-search-input')[0] || { props: {} }
+  check('the box has a 搜索 text prefix (a label, not a button)',
+    !!searchLabel && toHtml(searchLabel).includes('搜索'),
+    searchLabel ? toHtml(searchLabel) : 'no .dbh-searchlabel')
+  check('the prefix is not clickable (it is not a second action)',
+    !!searchLabel && typeof searchLabel.props.onClick !== 'function')
+  check('the placeholder is the short 输入关键字',
+    searchEl.props.placeholder === '输入关键字', JSON.stringify(searchEl.props.placeholder))
+  check('no × while the box is empty', classed(searchBox, 'dbh-searchclear').length === 0, toHtml(searchBox).slice(0, 200))
+  const searchCss = cssRule('.dbh-search')
+  check('the wrapper grows but is capped (flex 1 / max-width 360)',
+    /flex:1 1 180px/.test(searchCss) && /max-width:360px/.test(searchCss), searchCss)
+  check('the input inside the wrapper carries no second border',
+    /border:0/.test(cssRule('.dbh-search-input')), cssRule('.dbh-search-input'))
+  const phoneSearch = cssRule('.dbh-mobile .dbh-search')
+  check('the phone puts the search on its own full-width line',
+    /flex:1 1 100%/.test(phoneSearch), phoneSearch)
+
+  // ② Sort is ONE text control, never a dropdown and never a button frame.
   const sortGroup = classed(bar, 'dbh-sort')[0] || { children: [], props: {} }
-  const sortBtns = classed(sortGroup, 'dbh-sortbtn')
-  check('sort is two inline tabs in a labelled group',
-    sortGroup.props.role === 'group' && !!sortGroup.props['aria-label'] && sortBtns.length === 2,
-    JSON.stringify({ role: sortGroup.props.role, tabs: sortBtns.length }))
+  const sortTexts = classed(sortGroup, 'dbh-sorttext')
+  check('sort renders exactly one text control',
+    sortTexts.length === 1 && classed(sortGroup, 'dbh-sortbtn').length === 0, String(sortTexts.length))
+  check('its label is 排序：默认 in the initial state',
+    toHtml(sortGroup).includes('排序：默认'), toHtml(sortGroup).slice(0, 200))
   check('no <select> anywhere (the sort is not a dropdown)',
     elements(p.tree, (el) => el.type === 'select').length === 0)
-  check('exactly one tab is pressed and marked',
-    sortBtns[0].props['aria-pressed'] === true && sortBtns[1].props['aria-pressed'] === false
-    && String(sortBtns[0].props.className).includes('dbh-sortbtn-on')
-    && !String(sortBtns[1].props.className).includes('dbh-sortbtn-on'))
-  check('the two tab labels are 名称 / 最近更新',
-    toHtml(sortBtns[0]).includes('名称') && toHtml(sortBtns[1]).includes('最近更新'))
-  const recentTab = sortBtns[1]
-  if (typeof recentTab.props.onClick === 'function') recentTab.props.onClick({ stopPropagation() {}, preventDefault() {} })
-  p.tree = p.renderAgain()
-  const pressedAfter = classed(classed(p.tree, 'dbh-sort')[0], 'dbh-sortbtn').map((b) => b.props['aria-pressed'])
-  check('clicking a tab moves the pressed state (no panel, same list)',
-    JSON.stringify(pressedAfter) === JSON.stringify([false, true]), JSON.stringify(pressedAfter))
+  const sortCss = cssRule('.dbh-sorttext')
+  check('the text control has no frame: no border, transparent background',
+    /border:0/.test(sortCss) && /background:transparent/.test(sortCss), sortCss)
+  check('…is secondary-coloured and only underlines on hover',
+    /color:var\(--dsw-alias-label-secondary\)/.test(sortCss)
+    && /text-decoration:underline/.test(cssRule('.dbh-sorttext:hover')), sortCss)
 
   // ③ The batch action is a quiet secondary button; no rows disables it.
   const batchBtn = classed(p.tree, 'dbh-batchbtn')[0] || { props: {} }
@@ -2977,6 +3299,10 @@ console.log('\n[50] one tidy toolbar line and a DSN field you can actually read'
   const empty = await page([], { snapshot: Object.assign({}, MODERN_DEFAULTS) })
   const emptyBtn = classed(empty.tree, 'dbh-batchbtn')[0] || { props: {} }
   check('no connections → the batch button is disabled', emptyBtn.props.disabled === true, JSON.stringify(emptyBtn.props))
+  // The three clusters line up on one 28px baseline.
+  check('all three controls sit on the same 28px height',
+    /height:28px/.test(cssRule('.dbh-search')) && /height:28px/.test(cssRule('.dbh-batchbtn'))
+    && /height:28px/.test(cssRule('.dbh-sort')), JSON.stringify([cssRule('.dbh-search'), cssRule('.dbh-batchbtn')]))
 
   // ④ The DSN editor is a 2-row MONOSPACE textarea that grows with its content and
   // still feeds the same write path (trim only — `connDraftOf` untouched).
@@ -3047,7 +3373,286 @@ console.log('\n[50] one tidy toolbar line and a DSN field you can actually read'
   q.dispose()
 }
 
+console.log('\n[51] row order from the store, drag & drop moves, copy')
+{
+  viewport(1440)
+  // The stored order is published on EVERY row of a workspace (there is no group
+  // object on the wire). `app` says prod-then-default (NOT the input order), and
+  // `bill` says staging-then-default. The third `app` row is auto-discovered, so
+  // it is not in `order` at all and must render last, by name.
+  const DND = [
+    row('app', 'D:/qa/dnd-app', 'default', 'mysql://127.0.0.1:3306/app', { order: ['prod', 'default'] }),
+    row('app', 'D:/qa/dnd-app', 'prod', 'mysql://127.0.0.1:3306/app_prod', { order: ['prod', 'default'] }),
+    row('app', 'D:/qa/dnd-app', 'zeta', 'mysql://127.0.0.1:3306/app_zeta', { persisted: false, source: 'mise env', order: ['prod', 'default'] }),
+    row('bill', 'D:/qa/dnd-bill', 'default', 'postgres://127.0.0.1:5432/bill', { order: ['staging', 'default'] }),
+    row('bill', 'D:/qa/dnd-bill', 'staging', 'postgres://127.0.0.1:5432/bill_staging', { order: ['staging', 'default'] }),
+  ]
+  const p = await page(DND, { slot: 'main' })
+  // Two groups: only the most recent one opens by itself, so open both.
+  expandAll(p)
+  const groupsOf = (tree) => classed(tree, 'dbh-group')
+  const rowsOf = (tree, gi) => classed(groupsOf(tree)[gi], 'dbh-envwrap')
+  const envNames = (tree, gi) => rowsOf(tree, gi).map((wrap) => {
+    const chip = classed(wrap, 'dbh-envname')[0]
+    return chip ? toHtml(chip).replace(/<[^>]*>/g, '') : '?'
+  })
+  const rowEl = (wrap) => classed(wrap, 'dbh-envrow')[0]
+  const dragStart = (wrap) => {
+    const el = rowEl(wrap)
+    check('the dragged row is draggable', el && el.props.draggable === true)
+    if (el && typeof el.props.onDragStart === 'function') {
+      el.props.onDragStart({ dataTransfer: { setData() {}, effectAllowed: '' }, stopPropagation() {} })
+    }
+    p.tree = p.renderAgain()
+  }
+  const dragOver = (wrap, after) => {
+    if (typeof wrap.props.onDragOver === 'function') {
+      wrap.props.onDragOver({
+        preventDefault() {},
+        currentTarget: { getBoundingClientRect: () => ({ top: 0, height: 20 }) },
+        clientY: after ? 19 : 1,
+      })
+    }
+    p.tree = p.renderAgain()
+  }
+  const drop = async (wrap) => {
+    const before = p.getCalls.length
+    if (wrap && typeof wrap.props.onDrop === 'function') wrap.props.onDrop({ preventDefault() {} })
+    p.tree = p.renderAgain()
+    await flush()
+    await flush()
+    return p.getCalls.length - before
+  }
+  const lastOp = () => p.opCalls[p.opCalls.length - 1] || {}
+
+  // ① The stored order wins; the auto-discovered row is appended by name.
+  check('rows follow the stored order, not the /state order',
+    JSON.stringify(envNames(p.tree, 0)) === JSON.stringify(['prod', 'default', 'zeta']),
+    JSON.stringify(envNames(p.tree, 0)))
+  check('the second workspace honours its own stored order',
+    JSON.stringify(envNames(p.tree, 1)) === JSON.stringify(['staging', 'default']),
+    JSON.stringify(envNames(p.tree, 1)))
+  check('the auto-discovered row is last and is not draggable',
+    rowEl(rowsOf(p.tree, 0)[2]).props.draggable !== true, JSON.stringify(rowEl(rowsOf(p.tree, 0)[2]).props.draggable))
+  const autoGrip = classed(rowsOf(p.tree, 0)[2], 'dbh-grip')[0]
+  check('…its grip explains why', !!autoGrip && String(autoGrip.props.title || '').includes('自动发现'),
+    autoGrip ? String(autoGrip.props.title || '') : 'no grip')
+  check('…and it has no copy button',
+    classed(rowsOf(p.tree, 0)[2], 'dbh-copybtn').length === 0)
+  check('a persisted row does have one', classed(rowsOf(p.tree, 0)[0], 'dbh-copybtn').length === 1)
+
+  // ② Drag DOWN inside one workspace: dropping on the lower half of `default`
+  // must send index 1 (the Host measures the index AFTER removing the source).
+  dragStart(rowsOf(p.tree, 0)[0]) // prod
+  dragOver(rowsOf(p.tree, 0)[1], true) // default, lower half
+  check('the insertion line is drawn below the hovered row',
+    String(rowsOf(p.tree, 0)[1].props.className).includes('dbh-drop-after'),
+    String(rowsOf(p.tree, 0)[1].props.className))
+  let refreshed = await drop(rowsOf(p.tree, 0)[1])
+  let op = lastOp()
+  check('dropping below the neighbour sends move with index 1',
+    op.op === 'move' && op.env === 'prod' && op.workspace === 'D:/qa/dnd-app'
+    && op.toWorkspace === 'D:/qa/dnd-app' && op.index === 1, JSON.stringify(op))
+  check('…and the page re-reads the Host instead of reordering locally',
+    refreshed >= 1 && JSON.stringify(envNames(p.tree, 0)) === JSON.stringify(['prod', 'default', 'zeta']),
+    `${refreshed} read(s), ${JSON.stringify(envNames(p.tree, 0))}`)
+
+  // ③ Drag UP: dropping on the upper half of the row above = index 0.
+  dragStart(rowsOf(p.tree, 0)[1]) // default
+  dragOver(rowsOf(p.tree, 0)[0], false) // prod, upper half
+  await drop(rowsOf(p.tree, 0)[0])
+  op = lastOp()
+  check('dropping above a row sends the index it would take there',
+    op.op === 'move' && op.env === 'default' && op.toWorkspace === 'D:/qa/dnd-app' && op.index === 0, JSON.stringify(op))
+
+  // ④ Cross-workspace: app/prod onto bill/staging (upper half) = index 0.
+  dragStart(rowsOf(p.tree, 0)[0])
+  dragOver(rowsOf(p.tree, 1)[0], false)
+  await drop(rowsOf(p.tree, 1)[0])
+  op = lastOp()
+  check('cross-workspace move names both workspaces and the target index',
+    op.op === 'move' && op.env === 'prod' && op.workspace === 'D:/qa/dnd-app'
+    && op.toWorkspace === 'D:/qa/dnd-bill' && op.index === 0, JSON.stringify(op))
+  check('the op carries nothing but the five keys (no DSN, no credentials)',
+    Object.keys(op).sort().join(',') === 'env,index,op,toWorkspace,workspace', JSON.stringify(op))
+
+  // ⑤ Dropping on the group's empty area appends: index = the target's persisted
+  // row count (the auto row is not part of `order`).
+  dragStart(rowsOf(p.tree, 0)[0])
+  const billDropEnd = classed(groupsOf(p.tree)[1], 'dbh-dropend')[0]
+  check('a group offers a trailing drop zone', !!billDropEnd, toHtml(groupsOf(p.tree)[1]).slice(0, 300))
+  if (billDropEnd && typeof billDropEnd.props.onDragOver === 'function') {
+    billDropEnd.props.onDragOver({ preventDefault() {} })
+    p.tree = p.renderAgain()
+  }
+  const billDropEnd2 = classed(groupsOf(p.tree)[1], 'dbh-dropend')[0]
+  check('…which lights up while a row hovers it',
+    String((billDropEnd2 || { props: {} }).props.className || '').includes('dbh-dropend-on'),
+    String((billDropEnd2 || { props: {} }).props.className))
+  await drop(billDropEnd2)
+  op = lastOp()
+  check('dropping at the end of a workspace appends after its last stored row',
+    op.op === 'move' && op.toWorkspace === 'D:/qa/dnd-bill' && op.index === 2, JSON.stringify(op))
+
+  // ⑤b The append zone is a real 28px block, not a hairline (it is the only
+  // "append" target of an open group, so it has to be aimable).
+  check('the trailing drop zone is at least 28px tall',
+    /height:28px/.test(cssRule('.dbh-dropend')), cssRule('.dbh-dropend'))
+  check('…and its hover state is a fill + dashed edge (not the row insertion line)',
+    /background:var/.test(cssRule('.dbh-dropend-on')) && /border-color:var/.test(cssRule('.dbh-dropend-on')),
+    cssRule('.dbh-dropend-on'))
+
+  // ⑤c A COLLAPSED group still accepts a drop: its head appends (index = that
+  // workspace's persisted rows), with its own highlight.
+  const billHead = classed(groupsOf(p.tree)[1], 'dbh-grouphead')[0]
+  if (billHead && typeof billHead.props.onClick === 'function') billHead.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  p.tree = p.renderAgain()
+  check('the second group is collapsed', classed(groupsOf(p.tree)[1], 'dbh-grouphead')[0].props['aria-expanded'] === false)
+  dragStart(rowsOf(p.tree, 0)[0])
+  const headOver = classed(groupsOf(p.tree)[1], 'dbh-grouphead')[0]
+  if (headOver && typeof headOver.props.onDragOver === 'function') headOver.props.onDragOver({ preventDefault() {} })
+  p.tree = p.renderAgain()
+  const headLit = classed(groupsOf(p.tree)[1], 'dbh-grouphead')[0]
+  check('a collapsed group head lights up as a drop target',
+    String((headLit || { props: {} }).props.className || '').includes('dbh-drophead-on'),
+    String((headLit || { props: {} }).props.className))
+  check('…with a dashed ring, distinct from the row insertion line',
+    /outline:2px dashed/.test(cssRule('.dbh-grouphead.dbh-drophead-on')),
+    cssRule('.dbh-grouphead.dbh-drophead-on'))
+  const opsBeforeHead = p.opCalls.length
+  const headDrop = classed(groupsOf(p.tree)[1], 'dbh-grouphead')[0]
+  if (headDrop && typeof headDrop.props.onDrop === 'function') headDrop.props.onDrop({ preventDefault() {} })
+  p.tree = p.renderAgain()
+  await flush()
+  await flush()
+  p.tree = p.renderAgain()
+  op = lastOp()
+  check('dropping on a collapsed head appends to that workspace',
+    p.opCalls.length === opsBeforeHead + 1 && op.op === 'move' && op.env === 'prod'
+    && op.toWorkspace === 'D:/qa/dnd-bill' && op.index === 2, JSON.stringify(op))
+  // Re-open it: the rest of this section expects both groups expanded.
+  const billHead2 = classed(groupsOf(p.tree)[1], 'dbh-grouphead')[0]
+  if (billHead2 && typeof billHead2.props.onClick === 'function') billHead2.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  p.tree = p.renderAgain()
+
+
+  // ⑥ Copy: one op, then a re-read (the clone lands under its source).
+  const beforeCopy = p.getCalls.length
+  const copyBtn = classed(rowsOf(p.tree, 0)[0], 'dbh-copybtn')[0]
+  if (copyBtn && typeof copyBtn.props.onClick === 'function') copyBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  p.tree = p.renderAgain()
+  await flush()
+  await flush()
+  op = lastOp()
+  check('the copy button sends {op:"copy", env, workspace}',
+    op.op === 'copy' && op.env === 'prod' && op.workspace === 'D:/qa/dnd-app', JSON.stringify(op))
+  check('…and the page re-reads so the clone appears where the Host put it',
+    p.getCalls.length > beforeCopy, `${p.getCalls.length - beforeCopy} read(s)`)
+
+  // ⑦ An explicit sort outranks the stored order — and disables dragging. It also
+  // CANCELS an in-flight drag: the rows it pointed at may already have moved.
+  dragStart(rowsOf(p.tree, 0)[0])
+  check('a dragged row is marked while the drag is live',
+    count(p.tree, 'dbh-dragging') === 1, `${count(p.tree, 'dbh-dragging')} dragging row(s)`)
+  const sortCtl = classed(p.tree, 'dbh-sorttext')[0]
+  if (sortCtl && typeof sortCtl.props.onClick === 'function') sortCtl.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  p.tree = p.renderAgain()
+  check('switching the sort clears the drag highlight',
+    count(p.tree, 'dbh-dragging') === 0, `${count(p.tree, 'dbh-dragging')} dragging row(s)`)
+  const opsBeforeDrop = p.opCalls.length
+  const staleDrop = rowsOf(p.tree, 0)[0]
+  if (staleDrop && typeof staleDrop.props.onDrop === 'function') staleDrop.props.onDrop({ preventDefault() {} })
+  p.tree = p.renderAgain()
+  check('…and a drop after that sends nothing (the drag is gone)',
+    p.opCalls.length === opsBeforeDrop, `${p.opCalls.length - opsBeforeDrop} op(s)`)
+  check('choosing 名称 ↑ sorts by name instead of the stored order',
+    JSON.stringify(envNames(p.tree, 0)) === JSON.stringify(['default', 'prod', 'zeta']),
+    JSON.stringify(envNames(p.tree, 0)))
+  const sortGrip = classed(rowsOf(p.tree, 0)[0], 'dbh-grip')[0]
+  check('…and the grip says dragging is off', !!sortGrip && /排序/.test(String(sortGrip.props.title || '')),
+    sortGrip ? String(sortGrip.props.title || '') : 'no grip')
+  check('…and the row is not draggable', rowEl(rowsOf(p.tree, 0)[0]).props.draggable !== true)
+  // ⑤d A group whose rows are ALL auto-discovered still offers the append zone
+  // (nothing to aim between, but "append here" is still meaningful → index 0).
+  const AUTO_ONLY = [
+    row('app', 'D:/qa/dnd-app', 'prod', 'mysql://127.0.0.1:3306/app_prod', { order: ['prod', 'default'] }),
+    row('app', 'D:/qa/dnd-app', 'default', 'mysql://127.0.0.1:3306/app', { order: ['prod', 'default'] }),
+    row('solo', 'D:/qa/dnd-solo', 'temp', 'sqlite://127.0.0.1:0/solo', { persisted: false, source: 'mise env' }),
+  ]
+  const autoOnly = await page(AUTO_ONLY, { slot: 'main' })
+  expandAll(autoOnly)
+  const soloEnd = classed(groupsOf(autoOnly.tree)[1], 'dbh-dropend')[0]
+  check('a group with only auto-discovered rows still has the append zone', !!soloEnd,
+    toHtml(groupsOf(autoOnly.tree)[1]).slice(0, 300))
+  const autoRowEl = classed(groupsOf(autoOnly.tree)[1], 'dbh-envrow')[0]
+  check('…and its auto row is still not draggable', autoRowEl.props.draggable !== true)
+  autoOnly.dispose()
+  p.dispose()
+
+  // ⑧ A refused move is reported AND rolled back by re-reading.
+  viewport(1440)
+  const r = await page(DND, {
+    slot: 'main',
+    fetchImpl: ({ body }) => (body && body.op && (body.op.op === 'move' || body.op.op === 'copy')
+      ? { status: 200, payload: { ok: false, error: '目标工作区不存在' } }
+      : undefined),
+  })
+  expandAll(r)
+  const rRows = (gi) => classed(groupsOf(r.tree)[gi], 'dbh-envwrap')
+  const rRowEl = rowEl(rRows(0)[0])
+  if (typeof rRowEl.props.onDragStart === 'function') {
+    rRowEl.props.onDragStart({ dataTransfer: { setData() {}, effectAllowed: '' }, stopPropagation() {} })
+  }
+  r.tree = r.renderAgain()
+  const rTarget = rRows(1)[0]
+  if (typeof rTarget.props.onDragOver === 'function') rTarget.props.onDragOver({ preventDefault() {}, clientHeight: 20, clientY: 1 })
+  r.tree = r.renderAgain()
+  const readsBefore = r.getCalls.length
+  const rDrop = rRows(1)[0]
+  if (typeof rDrop.props.onDrop === 'function') rDrop.props.onDrop({ preventDefault() {} })
+  r.tree = r.renderAgain()
+  await flush()
+  await flush()
+  r.tree = r.renderAgain()
+  check('a refused move shows the Host reason',
+    textMatching(r.tree, 'dbh-writefail').includes('目标工作区不存在'),
+    textMatching(r.tree, 'dbh-writefail'))
+  check('…and rolls back by re-reading the Host order',
+    r.getCalls.length > readsBefore && JSON.stringify(envNames(r.tree, 0)) === JSON.stringify(['prod', 'default', 'zeta']),
+    `${r.getCalls.length - readsBefore} read(s), ${JSON.stringify(envNames(r.tree, 0))}`)
+  r.dispose()
+
+  // ⑨ Phone: no grip at all (HTML5 drag does not fire on a finger), and each
+  // persisted row gets 上移 / 下移 with the same `move` op.
+  viewport(390)
+  const m = await page(DND, { slot: 'main' })
+  expandAll(m)
+  check('the phone shows no drag grip',
+    classed(m.tree, 'dbh-grip').length === 0, `${classed(m.tree, 'dbh-grip').length} grip(s)`)
+  const mRows = (gi) => classed(groupsOf(m.tree)[gi], 'dbh-envwrap')
+  check('every persisted row gets an up/down pair, the auto row does not',
+    classed(m.tree, 'dbh-movebtn').length === 8, `${classed(m.tree, 'dbh-movebtn').length} button(s)`)
+  const mFirst = classed(mRows(0)[0], 'dbh-movebtn')
+  check('the first row cannot move up', !!mFirst[0] && mFirst[0].props.disabled === true)
+  check('…but can move down', !!mFirst[1] && mFirst[1].props.disabled !== true)
+  const readsBeforeMobile = m.getCalls.length
+  if (mFirst[1] && typeof mFirst[1].props.onClick === 'function') mFirst[1].props.onClick({ stopPropagation() {}, preventDefault() {} })
+  m.tree = m.renderAgain()
+  await flush()
+  await flush()
+  const mOp = m.opCalls[m.opCalls.length - 1] || {}
+  check('the down button sends the same move op with index 1',
+    mOp.op === 'move' && mOp.env === 'prod' && mOp.workspace === 'D:/qa/dnd-app'
+    && mOp.toWorkspace === 'D:/qa/dnd-app' && mOp.index === 1, JSON.stringify(mOp))
+  check('…and re-reads', m.getCalls.length > readsBeforeMobile)
+  const mLast = classed(mRows(0)[1], 'dbh-movebtn')
+  check('the last persisted row cannot move down', !!mLast[1] && mLast[1].props.disabled === true)
+  m.dispose()
+  viewport(1440)
+}
+
 if (liveMount) liveMount.dispose()
+
 
 // No page may leave its 1.5s poll interval behind: a leaked one used to keep the
 // process alive, which showed up as "the gate hangs" instead of a red check.

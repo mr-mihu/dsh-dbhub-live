@@ -28,8 +28,8 @@ test('the pure block keeps its extraction markers', () => {
 
 const block = startAt >= 0 && endAt > startAt ? source.slice(startAt, endAt) : ''
 // eslint-disable-next-line no-new-func
-const helpers = new Function(block + '\nreturn { rowKeyOf, filterRows, sortRows, batchSummaryOf };')()
-const { rowKeyOf, filterRows, sortRows, batchSummaryOf } = helpers
+const helpers = new Function(block + '\nreturn { rowKeyOf, filterRows, sortRows, batchSummaryOf, nextSortMode, sortViewOf, orderMapOf, sortByStoredOrder, persistedRowsOf, moveIndexFor };')()
+const { rowKeyOf, filterRows, sortRows, batchSummaryOf, nextSortMode, sortViewOf, orderMapOf, sortByStoredOrder, persistedRowsOf, moveIndexFor } = helpers
 
 // A row as the Host publishes it: metadata only (no DSN exists in the view).
 const row = (title, path, env, conn, extra = {}) => Object.assign({
@@ -101,6 +101,61 @@ test('the default order is title → environment → path', () => {
     .map((r) => r.title), ['a', 'B'])
 })
 
+test('"no sort" is a real state: the list keeps the order the Host sent', () => {
+  const rows = [
+    row('zzz', 'D:/w/z', 'default', 'mysql://h:1/z'),
+    row('aaa', 'D:/w/a', 'default', 'mysql://h:1/a'),
+    row('mmm', 'D:/w/m', 'default', 'mysql://h:1/m'),
+  ]
+  // `''` (the control's 默认 state) and anything unrecognised mean "leave it alone".
+  assert.deepEqual(sortRows(rows, '').map((r) => r.title), ['zzz', 'aaa', 'mmm'])
+  assert.deepEqual(sortRows(rows, undefined).map((r) => r.title), ['zzz', 'aaa', 'mmm'])
+  assert.deepEqual(sortRows(rows, 'nonsense').map((r) => r.title), ['zzz', 'aaa', 'mmm'])
+  // …and it is still a copy: the caller's array is never reordered.
+  const copy = rows.slice()
+  sortRows(rows, '')
+  assert.deepEqual(rows, copy)
+})
+
+test('the descending name order reverses the whole chain (title → env → path)', () => {
+  const rows = [
+    row('aaa', 'D:/w/a', 'default', 'mysql://h:1/a1'),
+    row('aaa', 'D:/w/a', 'prod', 'mysql://h:1/a2'),
+    row('aaa', 'D:/w/b', 'prod', 'mysql://h:1/b'),
+    row('zzz', 'D:/w/z', 'prod', 'mysql://h:1/z'),
+  ]
+  assert.deepEqual(sortRows(rows, 'name-desc').map(rowKeyOf),
+    ['D:/w/z|prod', 'D:/w/b|prod', 'D:/w/a|prod', 'D:/w/a|default'])
+  // Rows that compare equal keep their INPUT order in both directions (a stable
+  // sort — otherwise the list would flicker between renders).
+  const twins = [
+    row('same', 'D:/w/1', 'default', 'mysql://h:1/1'),
+    row('same', 'D:/w/1', 'default', 'mysql://h:1/1'),
+  ]
+  assert.deepEqual(sortRows(twins, 'name-desc').map((r) => r.path), ['D:/w/1', 'D:/w/1'])
+})
+
+test('the sort control cycles 默认 → 名称 ↑ → 名称 ↓ → 最近更新 → 默认', () => {
+  assert.equal(nextSortMode(''), 'name-asc')
+  assert.equal(nextSortMode('name-asc'), 'name-desc')
+  assert.equal(nextSortMode('name-desc'), 'recent')
+  assert.equal(nextSortMode('recent'), '')
+  // The pre-6.0 spelling of the ascending state continues the cycle, and an
+  // unknown value starts it again instead of sticking.
+  assert.equal(nextSortMode('name'), 'name-desc')
+  assert.equal(nextSortMode('nonsense'), 'name-asc')
+  assert.equal(nextSortMode(undefined), 'name-asc')
+})
+
+test('the sort control displays a label key and an arrow per state', () => {
+  assert.deepEqual(sortViewOf(''), { key: 'sort.modeDefault', arrow: '' })
+  assert.deepEqual(sortViewOf('name-asc'), { key: 'sort.name', arrow: '↑' })
+  assert.deepEqual(sortViewOf('name'), { key: 'sort.name', arrow: '↑' })
+  assert.deepEqual(sortViewOf('name-desc'), { key: 'sort.name', arrow: '↓' })
+  assert.deepEqual(sortViewOf('recent'), { key: 'sort.recent', arrow: '' })
+  assert.deepEqual(sortViewOf(undefined), { key: 'sort.modeDefault', arrow: '' })
+})
+
 test('the name order is deterministic (the same list sorts the same way)', () => {
   const shuffled = [ROWS[3], ROWS[1], ROWS[0], ROWS[2]]
   assert.deepEqual(sortRows(shuffled, 'name').map(rowKeyOf), sortRows(ROWS, 'name').map(rowKeyOf))
@@ -158,6 +213,105 @@ test('a row without a stamp sorts last, and a numeric stamp still orders correct
 test('a throwing stamp lookup cannot break the list', () => {
   const boom = () => { throw new Error('no snapshot') }
   assert.equal(sortRows(ROWS, 'recent', boom).length, ROWS.length)
+})
+
+// ── stored order (drag & drop) ──────────────────────────────────────────────
+//
+// The Host publishes the same `order` array on EVERY row of a workspace (there is
+// no group object on the wire), and only PERSISTED environments appear in it.
+
+test('orderMapOf reads one array per workspace, from the first row that has one', () => {
+  const rows = [
+    row('app', 'D:/w/a', 'prod', 'mysql://h:1/a1', { order: ['prod', 'default'] }),
+    row('app', 'D:/w/a', 'default', 'mysql://h:1/a2'),
+    row('docs', 'D:/w/d', 'default', 'mysql://h:1/d'),
+  ]
+  assert.deepEqual(orderMapOf(rows), { 'D:/w/a': ['prod', 'default'] })
+  // No `order` anywhere (an older Host, or a workspace with no persisted row):
+  // an empty map, never a guess.
+  assert.deepEqual(orderMapOf([row('x', 'D:/w/x', 'default', 'mysql://h:1/x')]), {})
+  // Junk entries are dropped rather than turned into env names.
+  assert.deepEqual(orderMapOf([row('x', 'D:/w/x', 'default', 'c', { order: ['a', '', null, 7] })]),
+    { 'D:/w/x': ['a', '7'] })
+  assert.deepEqual(orderMapOf(null), {})
+})
+
+test('the stored order wins; rows it does not know follow by name', () => {
+  const rows = [
+    row('app', 'D:/w/a', 'default', 'mysql://h:1/a1', { order: ['prod', 'default'] }),
+    row('app', 'D:/w/a', 'zeta', 'mysql://h:1/z', { persisted: false }),
+    row('app', 'D:/w/a', 'prod', 'mysql://h:1/a2'),
+    row('app', 'D:/w/a', 'beta', 'mysql://h:1/b', { persisted: false }),
+  ]
+  // prod/default as stored, then the auto rows alphabetically — and NOT the
+  // input order (default, zeta, prod, beta).
+  assert.deepEqual(sortByStoredOrder(rows).map((r) => r.env), ['prod', 'default', 'beta', 'zeta'])
+  // Names in `order` that no longer exist are simply skipped.
+  const stale = [
+    row('g', 'D:/w/g', 'b', 'mysql://h:1/b', { order: ['gone', 'b', 'a'] }),
+    row('g', 'D:/w/g', 'a', 'mysql://h:1/a'),
+  ]
+  assert.deepEqual(sortByStoredOrder(stale).map((r) => r.env), ['b', 'a'])
+  // The caller's array is never reordered.
+  const copy = rows.slice()
+  sortByStoredOrder(rows)
+  assert.deepEqual(rows, copy)
+})
+
+test('a workspace without a stored order falls back to name order (its own group only)', () => {
+  const rows = [
+    row('b', 'D:/w/b', 'zzz', 'mysql://h:1/z'),
+    row('a', 'D:/w/a', 'yyy', 'mysql://h:1/y'),
+    row('b', 'D:/w/b', 'aaa', 'mysql://h:1/a'),
+    row('a', 'D:/w/a', 'xxx', 'mysql://h:1/x'),
+  ]
+  const out = sortByStoredOrder(rows)
+  // Groups keep their first-appearance order; rows inside each sort by name.
+  assert.deepEqual(out.map((r) => r.title + '/' + r.env), ['b/aaa', 'b/zzz', 'a/xxx', 'a/yyy'])
+})
+
+test('persistedRowsOf is the move/copy domain (auto rows are excluded)', () => {
+  const rows = [
+    row('a', 'D:/w/a', 'one', 'mysql://h:1/1'),
+    row('a', 'D:/w/a', 'auto', 'mysql://h:1/2', { persisted: false }),
+    row('a', 'D:/w/a', 'two', 'mysql://h:1/3'),
+  ]
+  assert.deepEqual(persistedRowsOf(rows).map((r) => r.env), ['one', 'two'])
+  assert.deepEqual(persistedRowsOf(null), [])
+})
+
+test('moveIndexFor measures the index AFTER the source leaves its list', () => {
+  const groupA = [
+    row('a', 'D:/w/a', 'one', 'mysql://h:1/1'),
+    row('a', 'D:/w/a', 'two', 'mysql://h:1/2'),
+    row('a', 'D:/w/a', 'three', 'mysql://h:1/3'),
+  ]
+  const groupB = [
+    row('b', 'D:/w/b', 'x', 'mysql://h:1/x'),
+    row('b', 'D:/w/b', 'y', 'mysql://h:1/y'),
+  ]
+  const [one, two, three] = groupA
+  const [x, y] = groupB
+  // Within one workspace, dragging `one` below `two` → index 1 (not 2): after
+  // removing `one` the list is [two, three] and 1 is right after `two`.
+  assert.equal(moveIndexFor(groupA, one, two, true), 1)
+  // Dragging `three` above `one` → index 0.
+  assert.equal(moveIndexFor(groupA, three, one, false), 0)
+  // Dropping on your OWN lower half is a no-op, not an off-by-one.
+  assert.equal(moveIndexFor(groupA, two, two, true), 1)
+  assert.equal(moveIndexFor(groupA, two, two, false), 1)
+  // Cross-workspace: the source is not in the target list, so nothing shifts.
+  assert.equal(moveIndexFor(groupB, one, y, true), 2)
+  assert.equal(moveIndexFor(groupB, one, x, false), 0)
+  // The group's empty area appends to the persisted rows of THAT workspace.
+  assert.equal(moveIndexFor(groupB, one, null, true), 2)
+  assert.equal(moveIndexFor(groupB, null, null, true), 2)
+  // Out-of-range values are clamped to a legal insert position.
+  assert.equal(moveIndexFor(groupA, null, one, false), 0)
+  assert.equal(moveIndexFor(groupA, null, three, true), 3)
+  // An auto-discovered row is not a place in `order`: dropping on it appends.
+  const withAuto = [x, y, row('b', 'D:/w/b', 'auto', 'mysql://h:1/z', { persisted: false })]
+  assert.equal(moveIndexFor(withAuto, null, withAuto[2], false), 2)
 })
 
 test('the batch tally counts pass / fail and treats everything else as untested', () => {
