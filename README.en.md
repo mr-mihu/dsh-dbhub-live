@@ -79,10 +79,10 @@ The full statement lives in [the policy section](https://github.com/mr-mihu/dsh-
 
 | DSH version | UI | Boot | Hard checks | Result | Last verified |
 | --- | --- | --- | --- | --- | --- |
-| `0.2.1-rc.2` | modern | 32.7s | 21 | ✅ pass | 2026-11-13 · 6002a08d |
-| `0.2.1-rc.5` | modern | 22.6s | 21 | ✅ pass | 2026-11-13 · 6002a08d |
-| `0.2.2-rc.1` | modern | 23.8s | 21 | ✅ pass | 2026-11-13 · 6002a08d |
-| `0.2.2-rc.2` | modern | 25.5s | 21 | ✅ pass | 2026-11-13 · 6002a08d |
+| `0.2.1-rc.2` | modern | 26.6s | 21 | ✅ pass | 2026-11-13 · 29a1444b |
+| `0.2.1-rc.5` | modern | 20.0s | 21 | ✅ pass | 2026-11-13 · 29a1444b |
+| `0.2.2-rc.1` | modern | 21.6s | 21 | ✅ pass | 2026-11-13 · 29a1444b |
+| `0.2.2-rc.2` | modern | 23.2s | 21 | ✅ pass | 2026-11-13 · 29a1444b |
 
 </details>
 
