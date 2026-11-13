@@ -935,6 +935,30 @@ test('row ordering follows the store; drag, copy and the phone arrows share one 
   assert.match(source, /isMobile \? null : h\("span", \{\s*\n\s*className: "dbh-grip"/)
 })
 
+test('the update check reports itself: spinner while running, a named outcome after', () => {
+  // The reported bug: the button only went `disabled`, so a check that ran looked
+  // exactly like a check that never fired. Three things have to be in the source.
+  assert.match(source, /"ver\.checking": "检查中…"/)
+  assert.match(source, /"ver\.latest": "已是最新"/)
+  assert.match(source, /"ver\.found": "发现 v\{v\}"/)
+  assert.match(source, /"ver\.stateFailed": "检查失败"/)
+  assert.match(source, /"ver\.latest": "Up to date"/)
+  assert.match(source, /"ver\.found": "v\{v\} available"/)
+  assert.match(source, /"ver\.stateFailed": "Check failed"/)
+  // The spinner is a child span with a keyframe (so `disabled` cannot stop it),
+  // with a reduced-motion opt-out.
+  assert.match(source, /\.dbh-spin\{display:inline-flex;align-items:center;justify-content:center;animation:dbh-spin 900ms linear infinite;\}/)
+  assert.match(source, /@keyframes dbh-spin\{/)
+  assert.match(source, /@media \(prefers-reduced-motion: reduce\)\{\.dbh-spin\{animation:none;\}\}/)
+  // Busy state is announced, and the label follows the state.
+  assert.match(source, /"aria-busy": checking \? "true" : undefined/)
+  assert.match(source, /"aria-label": checking \? t\("ver\.checking"\) : t\("ver\.check"\)/)
+  // The outcome line is transient (2.5s) and cleaned up on unmount.
+  assert.match(source, /setCheckFlash\(outcome\);/)
+  assert.match(source, /\}, 2500\);/)
+  assert.match(source, /if \(checkFlashTimer\.current\) \{\s*\n\s*clearTimeout\(checkFlashTimer\.current\);/)
+})
+
 // ── locale tables ───────────────────────────────────────────────────────────
 // The bundle is hand-written and its dictionaries are plain object literals, so
 // a repeated key is SILENT: the later value wins and the earlier one becomes

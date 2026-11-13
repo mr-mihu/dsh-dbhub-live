@@ -3651,6 +3651,112 @@ console.log('\n[51] row order from the store, drag & drop moves, copy')
   viewport(1440)
 }
 
+console.log('\n[52] the update check spins, then says what it found (then gets out of the way)')
+{
+  viewport(1440)
+  const CHECKED_AT = 1_700_000_000_000
+  const up = (over) => JSON.stringify(Object.assign({
+    latest: '', latestSpec: '', hasUpdate: false, checkedAt: CHECKED_AT, source: 'npm', error: '',
+  }, over))
+  // ① the page-open check (throttled, not forced) → ② 已是最新 → ③ 发现 9.9.9 →
+  // ④ 失败. Each answer must differ from the snapshot it replaces, or the client
+  // cannot tell that the Host replied at all.
+  const answers = [
+    up({}),
+    up({ checkedAt: CHECKED_AT + 1000 }),
+    up({ checkedAt: CHECKED_AT + 2000, latest: '9.9.9', latestSpec: 'dsh-dbhub-live@9.9.9', hasUpdate: true }),
+    up({ checkedAt: CHECKED_AT + 2000, error: 'npm: 连接超时' }),
+  ]
+  let answersServed = 0
+  const p = await page(TILED, {
+    slot: 'main',
+    snapshot: Object.assign({}, MODERN_DEFAULTS),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+    fetchImpl: ({ body }) => {
+      if (!body || !body.op || body.op.op !== 'updateCheck') return undefined
+      const update = answers[Math.min(answersServed, answers.length - 1)]
+      answersServed += 1
+      return { payload: { ok: true, value: snapshotOf(TILED, Object.assign({}, MODERN_DEFAULTS, { update })) } }
+    },
+  })
+  const settle = async () => {
+    await flush()
+    p.tree = p.renderAgain()
+    await flush()
+    p.tree = p.renderAgain()
+  }
+  await settle()
+  await settle()
+  const button = () => classed(p.tree, 'dbh-vercheck')[0] || { props: {} }
+  const stateText = () => {
+    const el = classed(p.tree, 'dbh-verstate')[0]
+    return el ? toHtml(el).replace(/<[^>]*>/g, '') : ''
+  }
+  check('the header is quiet at rest (no status line, no spinner)',
+    stateText() === '' && classed(p.tree, 'dbh-spin').length === 0,
+    JSON.stringify({ state: stateText(), spin: classed(p.tree, 'dbh-spin').length }))
+
+  clickClass(p.tree, 'dbh-vercheck')
+  p.tree = p.renderAgain()
+  // ① While the request is out: the icon spins, the word appears, and the button
+  // says so to a screen reader too. `disabled` alone was the reported bug.
+  check('clicking spins the refresh icon', classed(button(), 'dbh-spin').length === 1,
+    JSON.stringify(button().props.className))
+  check('…and says 检查中… next to it', stateText() === '检查中…', JSON.stringify(stateText()))
+  check('…while the button reports itself busy and disabled',
+    button().props['aria-busy'] === 'true' && button().props.disabled === true,
+    JSON.stringify({ busy: button().props['aria-busy'], disabled: button().props.disabled }))
+  check('…and its label/tooltip follow', button().props['aria-label'] === '检查中…' && button().props.title === '检查中…',
+    JSON.stringify({ label: button().props['aria-label'], title: button().props.title }))
+  // The animation sits on a CHILD of the disabled button: `disabled` blocks
+  // pointer/focus, never CSS animation, and nothing in the stylesheet pauses it.
+  check('the rotation is on a child, and :disabled does not stop it',
+    !/animation:none/.test(cssRule('.dbh-vercheck:disabled'))
+    && /animation:dbh-spin 900ms linear infinite/.test(cssRule('.dbh-spin')),
+    JSON.stringify({ spin: cssRule('.dbh-spin'), disabled: cssRule('.dbh-vercheck:disabled') }))
+  check('…with a keyframe and a reduced-motion opt-out',
+    PAGE_STYLE.text.includes('@keyframes dbh-spin')
+    && /prefers-reduced-motion:\s*reduce\)\{\.dbh-spin\{animation:none/.test(PAGE_STYLE.text),
+    PAGE_STYLE.text.slice(-400))
+
+  // ② The Host answers: the spinner must GO (a stuck spinner is the same lie as
+  // no feedback), and the outcome takes its place.
+  await settle()
+  check('the spinner stops once the Host answers', classed(p.tree, 'dbh-spin').length === 0,
+    JSON.stringify(classed(p.tree, 'dbh-spin').length))
+  check('…and the outcome is named: 已是最新', stateText() === '已是最新', JSON.stringify(stateText()))
+  check('…the button re-arms and says 检查更新 again',
+    button().props.disabled !== true && button().props['aria-busy'] === undefined
+    && button().props['aria-label'] === '检查更新',
+    JSON.stringify({ disabled: button().props.disabled, busy: button().props['aria-busy'], label: button().props['aria-label'] }))
+  check('…while the tooltip keeps the richer 检查于… line', String(button().props.title || '').includes('检查于'),
+    JSON.stringify(button().props.title))
+
+  // ③ 2.5s later the line is gone: it is a transient confirmation, not furniture.
+  await new Promise((r) => setTimeout(r, 2600))
+  p.tree = p.renderAgain()
+  check('the outcome line clears itself after 2.5s', stateText() === '', JSON.stringify(stateText()))
+
+  // ④ A check that finds a release names it.
+  clickClass(p.tree, 'dbh-vercheck')
+  p.tree = p.renderAgain()
+  await settle()
+  check('a found release is named with its version', stateText() === '发现 v9.9.9', JSON.stringify(stateText()))
+
+  // ⑤ A failed check says 检查失败 in the line and keeps the Host's own words in
+  // the tooltip (the line is 12px, the error is not a sentence to truncate).
+  clickClass(p.tree, 'dbh-vercheck')
+  p.tree = p.renderAgain()
+  await settle()
+  check('a failed check is a failure in the line, not a fake success',
+    stateText() === '检查失败', JSON.stringify(stateText()))
+  check('…and the tooltip still carries the Host error text',
+    String(button().props.title || '').includes('检查更新失败') && String(button().props.title || '').includes('连接超时'),
+    JSON.stringify(button().props.title))
+  p.dispose()
+  viewport(1440)
+}
+
 if (liveMount) liveMount.dispose()
 
 
