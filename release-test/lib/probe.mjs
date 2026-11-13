@@ -168,12 +168,15 @@ export async function runProbes(ctx) {
             ? check('state.dsh-version', 'pass', `plugin detects host ${value.dshVersion}`)
             : check('state.dsh-version', 'fail', `plugin detects host ${value.dshVersion}, expected ${version}`),
         )
-        // Every matrix target is >= the supported minimum (0.2.1), so the view's
-        // version gate must report "supported" for it.
+        // The version floor is `package.json#engines.dsh` now: DSH refuses to
+        // activate an unsupported runtime, so a plugin that booted on this target
+        // proves the gate is satisfied. Assert the old in-card warning is GONE
+        // instead — a view that still carries it means the gate moved back into
+        // the plugin (the thing this check exists to prevent).
         checks.push(
-          value.dshTooOld === false && value.dshMinVersion === '0.2.1'
-            ? check('state.version-gate', 'pass', `dshTooOld=false, min=${value.dshMinVersion} for ${version} (${target.ui} face)`)
-            : check('state.version-gate', 'fail', `dshTooOld=${value.dshTooOld}, min=${value.dshMinVersion}; the matrix expects a supported host for ${version}`),
+          value.dshTooOld === undefined && value.dshMinVersion === undefined
+            ? check('state.version-gate', 'pass', `no in-card version gate for ${version}; engines.dsh enforces the floor`)
+            : check('state.version-gate', 'fail', `view still carries a version gate: dshTooOld=${value.dshTooOld}, min=${value.dshMinVersion}`),
         )
       }
 

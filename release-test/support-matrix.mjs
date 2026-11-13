@@ -67,7 +67,7 @@ const advisory = matrix.targets.filter((t) => t.tier === 'advisory')
 // are also no longer part of a modern harness and are not imported here.
 //
 // What actually guards compatibility: the host FEATURE-PROBES the bridge at
-// runtime, and `dshTooOld()` only adds a visible in-card upgrade prompt. Keep the
+// runtime, and `engines.dsh` refuses an unsupported host at activation time. Keep the
 // two library peers (cordis / schemastery): they describe what the host provides,
 // and their `^` ranges already span every release we test.
 const FRAMEWORK_PEERS = ['@deepseek-ai/cordis', '@deepseek-ai/schemastery']
@@ -301,7 +301,7 @@ ${advisory.map((t) => {
 2. 在 \`.release-test/homes/dsh-<版本>/\` 建**隔离的 DSH_HOME**，跑 \`--profile web --dump-config\` 生成 web profile；
 3. 把 \`npm pack\` 出来的**真实发布产物**装进该 profile（\`--provision cli\` 时走真实 \`dsh plugin add\`）；
 4. 起 \`dsh web\`，抓 ready 行的 token，换 cookie 后探针：\`/api/dsh-dbhub-live/state\`（带/不带 cookie）、模块清单里的 client bundle、写 options、非法 op；
-5. 断言启动日志里的 4 工具与通道、state 里的 \`pluginVersion\` / \`dshVersion\` / \`dshTooOld\` / \`dshMinVersion\` 与矩阵一致；
+5. 断言启动日志里的 4 工具与通道、state 里的 \`pluginVersion\` / \`dshVersion\` 与矩阵一致，且 view 里**没有**版本门（门槛由 \`engines.dsh\` 在激活期强制，插件不再自己判）；
 6. 证据落在 \`.release-test/reports/<run>/evidence/<版本>/\`；由 AI 复核后写 \`verdict.json\`；\`npm run release:preflight\` 校验「报告新鲜 + 矩阵未变 + 声明无偏差 + AI 判定通过 + 工作区干净」后才允许打 tag。
 
 ## 判定规则
