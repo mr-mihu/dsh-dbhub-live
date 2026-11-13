@@ -11,6 +11,8 @@
 2. DSH 凭据库（默认 `$DSH_HOME/.credentials.yaml`，由 DSH 管理）：SSH 登录密码 / 密钥口令，以及从 DSN 里拆出来的**数据库口令**的**值**。插件不读写该文件，只经 `ctx.get('credentials')` 服务读写；
 3. 本地 `.env` 的 `DSH_DBHUB_DESENSITIZE_RE`（`.gitignore` 排除、`package.json` 的 `files` 不含）。
 
+**查询结果导出不是仓库内容**：`dbhub_execute_sql` 的 `export` 把结果行写到 `$DSH_HOME/storages/dsh-dbhub-live/exports/`（仓库外、不进包），模型可见的只有摘要里的 **source 句柄 / 行数 / 路径**（文案在 `lib/i18n.mjs` 的 `result.export*`，JSON 载荷不含 DSN）。`lib/export.mjs` 是新增的模型可见文本出口（摘要拼装 + 文件头注释），已登记进 `host-copy` 槽位；导出文件的**内容**只在本机，**不得**被复制进仓库、测试夹具或文档示例。
+
 **仓库内一切内容都视为会公开分发**（含 `test/`——它被打进 npm tarball——以及工具描述文案）。这些值一旦公开即视为泄露、无法追回，所以门禁是硬门而不是提示。
 
 ## 三层规则

@@ -182,7 +182,7 @@ export const SLOTS = [
   {
     id: 'host-copy',
     description: '宿主侧模型可见文案：工具描述、i18n 结果与标签（会打进 npm 包、直接进模型上下文）',
-    globs: ['lib/i18n.mjs', 'lib/tools.mjs', 'lib/policy.mjs', 'lib/index.mjs', 'lib/mcp.mjs', 'lib/state.mjs', 'lib/bridge.mjs'],
+    globs: ['lib/i18n.mjs', 'lib/tools.mjs', 'lib/export.mjs', 'lib/policy.mjs', 'lib/index.mjs', 'lib/mcp.mjs', 'lib/state.mjs', 'lib/bridge.mjs'],
     rules: ['password', 'dsn', 'host', 'name'],
   },
   {

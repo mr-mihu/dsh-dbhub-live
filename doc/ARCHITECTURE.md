@@ -137,7 +137,9 @@ lib/
   adhoc.mjs      唯一执行引擎：一次性 dbhub 进程（描述符 {dsn,ro,ssh}）、--dsn 或临时 TOML、stderr 清洗、
                  probeConnection、probeSshTunnel、diagnosticTail/DIAG_TAIL_MAX=600/failureLayerOf
   collect.mjs    授权扫描项目配置文件(mise/.env)提取 DSN 候选，含 askUser 桥接；连接别名 assignConnectionAliases（唯一实现点）
-  tools.mjs      4 个工具的定义与注册；configure 探连优先；SQL 写判定 classifySql + 会话权限闸门（sandboxPolicy/approval）
+  tools.mjs      4 个工具的定义与注册；configure 探连优先；SQL 写判定 classifySql + 会话权限闸门（sandboxPolicy/approval）；
+                 结果行数上限 capExecuteSqlText；结果导出 exportReceiptText（摘要回执 + fail-soft）
+  export.mjs     查询结果导出：CSV(RFC 4180)/JSON 载荷生成、文件名 ASCII 安全化与长度上限、exports/ 落盘（0o700/0o600、wx 不覆盖）；纯函数 + 可注入 fs 缝
   policy.mjs     模型侧访问策略：唯一的 system prompt 段（order 8900，含 @db:<句柄> 语义与别名→句柄目录；取行函数由 index 传入）
   client.js      Web 半（手写 lazy-CJS bundle，无构建）：settings.section + 侧边栏面板 + plugins.row.config(summary/page) + 输入框 `@` 输入源
 test/            node:test 单测（纯逻辑 + bridge/客户端契约 + 零知识泄漏门）

@@ -61,6 +61,16 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - UI 落点：行内 `.dbh-rochip`（点击发 `{op:'options', readOnly}`）；SSH 只进 tooltip。行内「高级」区另有「最大返回行数」数字输入（`.dbh-caprow`，占位「0 或留空 = 不限」）。见 [doc/CLIENT.md](doc/CLIENT.md)。
 - **结果行数上限 `maxRows`**：环境级整数，`0`/缺省 = 不限（存量行为不变），`N>0` = 每条语句最多 N 行。存储层 `applyEnvOptions` / `setWorkspaceEnvOptions` 里 `0`/`null` 是**显式 delete**（与 `readOnly:false` 同款），非法值（负数/小数/非数字/NaN）抛 `code:'badMaxRows'` → 卡片 `result.badMaxRows`、模型路径在**改名之前**拒绝（`optionsPatchOf` 在 `applyOptionsOp` 开头抛，零写入）。**裁剪发生在插件侧**（`capExecuteSqlText`，纯函数）：dbhub 的 `max_rows` 在静态 `[[tools]]` 里，单次调用改不了它，所以插件拿到结果文本后自己裁。只裁 `statements[i].rows` 数组（加 `truncated:true`/`shown:N`，**保留原 `count`**、不二次序列化行值），并在结果**首行**加一条本地化提示（写明本次上限、原行数、「可用 maxRows 覆盖」）；**JSON 解析失败或结构不符一律原样返回**。执行侧优先级 = 调用参数 > 环境设置（`resolveRowCap`），参数 `0` = 本次完全不限；`dbhub_execute_sql` 的 `maxRows` **只用于本次裁剪，绝不透传给 dbhub**。门禁 `test/max-rows.test.mjs` + `check:ui` `[48]`。
 
+### 结果导出（CSV / JSON）
+- **形态**：插件没有结果卡片可挂按钮，导出是**工具参数**——`dbhub_execute_sql` 的可选 `export: 'csv' | 'json'`；省略时行为逐字节不变。命中时把这条 SQL 的**结果行**写成本机文件，回执**只给摘要 + 文件绝对路径**（不再内联行数据）——大结果因此不占模型上下文。与 `maxRows` 一样，`export` **绝不透传给 dbhub**。
+- **行数上限**：导出**默认绕过环境的 `maxRows`**（导出就是"我要全部"）；只有调用方**显式传 `maxRows`** 才按它截断，并沿用既有截断提示语义（`result.rowsTruncated` 仍是回执首行，`count` 仍保留原值）。不设 `export` 的路径完全不变（`resolveRowCap`）。
+- **多语句**：csv = **每个 statement 一个文件**（`…-1.csv`、`…-2.csv`…）；json = **一个文件**装整个 `{source, statements:[{sql,rows,count}], exportedAt}` 载荷（**不含 DSN**，`count` 取 dbhub 原值）。
+- **落盘**：`join(DATA_DIR, 'exports')`；目录 `0o700`、文件 `0o600`（沿用 `tightenStorageModes` 的约定，Windows 靠 profile ACL）。写入用 `flag:'wx'`——同名**绝不覆盖**，同一秒的再次导出自动加 `-2` 后缀。文件名 = `<sourceId 的 ASCII 安全化>-<yyyymmdd-hhmmss>-<seq>.<csv|json>`，时间戳取 **UTC**（跨时区可复现）；安全化 = `[A-Za-z0-9_-]` 原样、其余按 UTF-8 字节百分号转义（`/`→`%2F`、`\`→`%5C`、`.`→`%2E`，所以不可能出现路径分隔符、`..`、控制字符或虚线转义），超 `EXPORT_STEM_MAX = 64` 时留可读头 + `shortHash(原名)`，`con`/`nul` 等 Windows 保留名加 `_` 前缀（`test/export.test.mjs` 用 `../`、`\`、中文、emoji、200 字符钉住）。
+- **CSV 方言**：列集合 = 所有行 key 的**并集、按首次出现顺序**（不排序，否则与数据库列序不一致）；`null`/`undefined` → 空串、对象/数组 → `JSON.stringify`、布尔/数字 → `String`；含 `,` `"` `\r` `\n` 的字段（含表头）双引号包裹、内部 `"` 双写；行尾 `\r\n`、文件末尾**不加**多余空行；**默认不加 BOM**（`csvTextOf(rows, {bom:true})` 才加）。零行结果没有列名可写 → 空文件。
+- **fail-soft**：回执不是文档形状（JSON 解析失败/结构不符）或写文件失败（权限/磁盘）→ 退回**不含导出**的那份回执（仍按 `resolveRowCap(args, 环境值)` 截断的内联结果），并追加一句本地化 `result.exportFailed`（含错误码）；**绝不让一次成功的查询变成失败**。`setExportFsHooks` 是唯一测试缝（生产恒用 node:fs），`test/export.test.mjs` 用它钉住这条路径。
+- **零知识**：摘要与 JSON 载荷只有 source 句柄 / 行数 / 路径 / SQL 与行值——**没有 DSN、主机、账号**。文件本体落在本机数据目录，不进对话上下文。
+- **不自动清理**：导出文件与连接数据同目录、同生命周期（删 `$DSH_HOME/storages/dsh-dbhub-live` 即清空），插件不主动删除，用户按路径自行清理。
+
 ### 秘密与凭据库（SSH 口令 + 数据库口令）
 - 秘密值只存 **DSH 凭据服务**（`ctx.get('credentials')`，可选服务；默认实现落 `$DSH_HOME/.credentials.yaml`，由 DSH 管理，**插件不自己读写该文件**）。store 只留三类引用：`ssh.passwordRef` / `ssh.passphraseRef`（`DSH_DBHUB_SSH_<8–12 位小写十六进制>`）与 `dsnPasswordRef`（`DSH_DBHUB_DSN_<8–12 位小写十六进制>`），**随机生成、与工作区/环境名无关**（改名不重新键化，重名不串号）；ref 名不是秘密，可以出现在日志里。
 - **写入顺序是安全属性**：add / set / options / `copyFrom` / 扫描落库都先把新明文交给 `encryptSshSecrets` / `encryptDsnPassword`（`creds.set(ref, value)` **成功**之后才返回只带 ref 的结果），再写 store。凭据服务缺失或 `set` 抛错 → 保持明文（旧布局，连接不受影响）+ `warnOnce` 一条不含值/路径的警告。**不要在 store 写入器里同步调凭据服务**（`config.mjs` 是纯模块，命令层负责这一步）。

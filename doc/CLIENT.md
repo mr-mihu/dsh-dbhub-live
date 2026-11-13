@@ -176,6 +176,7 @@
 - SSH 高级区 `.dbh-adv` 折叠面板**必须排在 DSN 输入之后**，折叠态放 `uiMemory.advOpen`；区内「测试该配置」旁是**「测试 SSH 隧道」**（独立按钮/回执，只验 SSH 层）。折叠按钮**不再因 dbhub 能力过旧而禁用**（面板里还有行数上限，它不依赖 dbhub 方言）；SSH 复选框与相关字段在能力不足时禁用并显示 `capHint`。
 - 秘密输入 `type="password"`、占位符写明「留空 = 保持原值」，**编辑态绝不回显已存密码/口令/密钥路径**（镜像行只给 `authKind` / `hasPassword` / `hasPassphrase` / `keyReady` 布尔）。
 - 写入载荷统一走 `connDraftOf(form)` / `withConnDraft(op, form)`：只读开关、行数上限与隧道随 `add` / `test` / `options` 三种 op 一起发出，**绝不单独再发一条**。表单对象在产生 op 时会带 `_draft` 指回原始草稿，别绕过这两个函数手拼 `readOnly` / `maxRows` / `ssh`。
+- **结果导出 NOT in the card**：导出（CSV / JSON）是**纯模型侧**能力——`dbhub_execute_sql` 的工具参数 `export`，宿主落盘后只回摘要与绝对路径（见 [AGENTS.md](../AGENTS.md#结果导出csv-json)）。**界面上没有按钮、没有新 op、没有新 view 字段**；文件在 `$DSH_HOME/storages/dsh-dbhub-live/exports/`，由用户按路径自行读取 / 清理（插件不自动删除）。客户端半若将来要展示导出文件，必须新增只带路径与行数的元数据通道，**不得**把文件内容或 DSN 带进 `/state`。
 
 ## 三面布局契约（5.2）
 
