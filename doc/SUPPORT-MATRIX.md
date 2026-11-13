@@ -5,7 +5,7 @@
 > `.release-test/reports/` 只被 `--write` 读取一次并蒸馏成上面这份摘要，渲染不依赖本机目录，所以干净检出也能复现。
 > 重新生成：`node release-test/support-matrix.mjs --write`　校验结构：`--check`　校验证据是否过期（仅本机有报告时）：`--check-evidence`
 
-- 插件版本：`6.0.0-rc.1`
+- 插件版本：`6.0.0-rc.2`
 - 矩阵指纹：`34be607694e6`（证据摘要按当前矩阵盖章；增减 target 后必须重跑 `--write`）
 - 最近一次完整测试：`20261112-152205-34be60`（2026-11-12T07:22:59.539Z，green）
 - 最近一次 AI 判定：pass — dsh-agent (lead) @ 2026-11-12T07:25:00.000Z
