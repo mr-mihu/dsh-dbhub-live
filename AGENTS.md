@@ -163,6 +163,7 @@ Get-ChildItem test/*.test.mjs | ForEach-Object { node $_.FullName }
 - **`release:preflight` 不认「空报告」**：声明版本必须 `checksCounts.pass >= 1 && skip === 0`。`aggregate()` 把全 skip 折成 `warn`，只看 `fail|error` 会让「一项都没跑」通过发版闸门。
 - **`prepublishOnly`** = `check` + `check:ui` + `test:unit` + `check:docs` + `check:secrets` + `release:preflight`（发布前自动跑全套，不只是文档/脱敏/闸门三样）。
 - CI：`.github/workflows/quality.yml` job **`gate`**（ubuntu-latest + Node 22），push `main`/`dev`、所有 PR、`workflow_dispatch`；`main` 分支保护把它设为必需检查。另有 `release-matrix.yml` 定时跑 `support:check`（结构）与 `support:evidence`（仅本地有报告时才有意义，CI 自跳过）。
+- **版本漂移监控**：`version-watch.yml` 每周一 03:20 UTC（+ `workflow_dispatch`）比对**本插件自己**的 `package.json` 版本与 npm `dist-tags`（**不监控 DSH 版本**）；`ahead`/`behind`/`diverged` 开 issue `chore: 版本待发布（<status>）`（同标题 open 的只追评论），除 issue 外不产生任何副作用、**永不 `npm publish`**；网络失败以退出码 2 让 job 红并且**不得判成 `ok`**。见 [doc/RELEASE.md](doc/RELEASE.md#版本漂移监控)。
 - **CI 是真实执行**，Linux 会暴露 Windows 掩盖的缺陷 → [原因](doc/ARCHITECTURE.md#自动发现的代价与unref教训)。
 - 发布前在隔离实例完整冷启动一遍：见 [doc/DEVELOPMENT.md](doc/DEVELOPMENT.md) 第 3 步（含 200/401 与 bundle 校验）。
 

@@ -87,6 +87,32 @@ gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> dsh-dbhu
 4. 证据齐了再考虑 `x.y.z` 正式版（此时 `release:preflight` 对证据是硬阻断）。
 
 未跑矩阵就发正式版仍会被拦住，这条不能绕过。
+
+## 版本漂移监控
+
+`.github/workflows/version-watch.yml` 每周一 03:20 UTC（也支持 `workflow_dispatch`）跑一次 `node scripts/version-watch.mjs`，比较**本插件自己**的 `package.json` 版本与 **npm registry 的 `dist-tags`**，把两类事故变成一条可见的 issue：
+
+- 「代码写完了但没人记得发版」→ 仓库版本高于所有已发布的 tag；
+- 「发了版但仓库没同步」→ 仓库版本低于已发布的 tag。
+
+**只查本插件，不查 DSH 版本**：harness 的发布节奏不是本仓库的信息，混进来只会让红灯无法归因。
+
+判定（脚本里的纯函数 `classify()`，单测 `test/version-watch.test.mjs`）：
+
+| 状态 | 含义 | 退出码 |
+| --- | --- | --- |
+| `ok` | 仓库版本等于某个 dist-tag，或是**已发布基线上的预发布迭代**（`<已发布>-dev.N` / `-rc.N`，即上面「版本号策略」说的正常开发状态） | 0 |
+| `ahead` | 仓库版本高于**所有**已发布 tag = 版本号抬了但没发版 | 1 |
+| `behind` | 仓库版本低于参照 tag（有 `dev` 用 `dev`，否则用 `latest`）= 发布过的东西仓库里没有 | 1 |
+| `diverged` | 仓库版本夹在两个 tag 之间（不高于全部、也不低于参照 tag）= registry 与仓库对不上 | 1 |
+| `error` | registry 连不上 / 没有可用 dist-tags / 版本号不是 semver | 2 |
+
+- **网络失败不得当成 `ok`**：退出码 2 让 job 直接红（`::error::`）且**不建 issue**——连不上 registry 时谈版本漂移没有意义。
+- 非 `ok` 时开 issue，标题固定为 `chore: 版本待发布（<status>）`，正文含仓库版本、`dev`/`latest`、最近 5 条提交与下一步建议；**幂等**：同标题且 open 的 issue 已存在就只追一条带日期的评论，不重复开、也不自动关（处理完手动关）。
+- **标题与正文由脚本的纯函数生成**（`issueTitle` / `issueBody` / `issueComment`，单测 `test/version-watch.test.mjs` 断言措辞与「`ok` 绝不生成 issue」）：`--issue-dir` 把它们写成 `title.txt` / `body.md` / `comment.md`，workflow 只负责「搜标题 → 创建或评论」。这样措辞在本地就能验证，不必发一条真 issue 去试。
+- **为什么不会自动发布**：发布有硬约束（见上文「触发词与硬约束」）——测试版必须 `--tag dev` + `--prerelease`，正式版命令只输出给维护者手动执行，已发布的版本绝不移动。定时任务没有判断「升补丁 / 次版本 / 主版本」的能力，也不该握着发布凭据，它只负责提醒。
+- 收到 issue 时：`npm run release:preflight` 过闸门 → 按「阶段一 / 阶段二」发布，或把分支同步回已发布版本 → `workflow_dispatch` 重跑一次确认回到 `ok` → 关 issue。
+
 ## 版本号策略（测试版本 → 发布版本）
 
 - **基线 = 代码库当前版本**（`package.json` 版本，即最近一次发布）。测试/调试迭代一律在基线上挂 `-dev.<序号>`，序号从 1 递增、不复用，`pnpm pack` 产物随之换名。
