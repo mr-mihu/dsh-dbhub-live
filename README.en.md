@@ -39,17 +39,17 @@ Supports **MySQL · PostgreSQL · MariaDB · SQLite · SQL Server**.
 <!-- release-test:versions:begin -->
 ## Supported version range
 
-**From DSH 0.2.1 (lines 0.2.1 / 0.2.2, prereleases included)** — 4 declared versions verified (last verified 2026-11-12).
+**From DSH 0.2.1 (lines 0.2.1 / 0.2.2, prereleases included)** — 4 declared versions verified (last verified 2026-11-13).
 
 <details>
 <summary>Per-version verification details (expand)</summary>
 
 | DSH version | UI | Boot | Hard checks | Result | Last verified |
 | --- | --- | --- | --- | --- | --- |
-| `0.2.1-rc.2` | modern | 5.7s | 21 | ✅ pass | 2026-11-12 · 42462db5 |
-| `0.2.1-rc.5` | modern | 21.1s | 21 | ✅ pass | 2026-11-12 · 42462db5 |
-| `0.2.2-rc.1` | modern | 5.5s | 21 | ✅ pass | 2026-11-12 · 42462db5 |
-| `0.2.2-rc.2` | modern | 5.5s | 21 | ✅ pass | 2026-11-12 · 42462db5 |
+| `0.2.1-rc.2` | modern | 32.9s | 21 | ✅ pass | 2026-11-13 · 3ded4e75 |
+| `0.2.1-rc.5` | modern | 26.6s | 21 | ✅ pass | 2026-11-13 · 3ded4e75 |
+| `0.2.2-rc.1` | modern | 26.6s | 21 | ✅ pass | 2026-11-13 · 3ded4e75 |
+| `0.2.2-rc.2` | modern | 27.9s | 21 | ✅ pass | 2026-11-13 · 3ded4e75 |
 
 </details>
 
