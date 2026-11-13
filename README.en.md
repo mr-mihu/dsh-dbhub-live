@@ -72,17 +72,17 @@ The full statement lives in [the policy section](https://github.com/mr-mihu/dsh-
 <!-- release-test:versions:begin -->
 ## Supported version range
 
-**From DSH 0.2.1 (lines 0.2.1 / 0.2.2, prereleases included)** — 4 declared versions not all verified yet (last verified 2026-11-13).
+**From DSH 0.2.1 (lines 0.2.1 / 0.2.2, prereleases included)** — 4 declared versions verified (last verified 2026-11-13).
 
 <details>
 <summary>Per-version verification details (expand)</summary>
 
 | DSH version | UI | Boot | Hard checks | Result | Last verified |
 | --- | --- | --- | --- | --- | --- |
-| `0.2.1-rc.2` | modern | 32.9s | 21 | ✅ pass | 2026-11-13 · 3ded4e75 |
-| `0.2.1-rc.5` | modern | 26.6s | 21 | ✅ pass | 2026-11-13 · 3ded4e75 |
-| `0.2.2-rc.1` | modern | 8.4s | 20 | ❌ fail | 2026-11-13 · c3cd87dc |
-| `0.2.2-rc.2` | modern | 27.9s | 21 | ✅ pass | 2026-11-13 · 3ded4e75 |
+| `0.2.1-rc.2` | modern | 3.9s | 21 | ✅ pass | 2026-11-13 · 0abcab0d |
+| `0.2.1-rc.5` | modern | 4.1s | 21 | ✅ pass | 2026-11-13 · 0abcab0d |
+| `0.2.2-rc.1` | modern | 4.1s | 21 | ✅ pass | 2026-11-13 · 0abcab0d |
+| `0.2.2-rc.2` | modern | 4.3s | 21 | ✅ pass | 2026-11-13 · 0abcab0d |
 
 </details>
 
