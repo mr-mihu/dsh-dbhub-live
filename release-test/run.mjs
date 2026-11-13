@@ -212,8 +212,12 @@ async function runOne({ target, artifact, matrix, runDir, provision, keep, skipI
 
     // The capability probe runs asynchronously after boot. Give it a bounded
     // moment to land, otherwise the probe would race the log it asserts on.
-    const capabilityWait = await waitForFile(logs.boot, (text) => /dbhub 能力探测/.test(text), { timeoutMs: 15_000 })
-    if (!capabilityWait.ok) result.notes.push('dbhub capability line did not appear within 15s of boot')
+    // The bound must cover a COLD auto-install: with no dbhub on PATH the host
+    // runs `npm install @bytebase/dbhub --prefix <runtime>` (DBHUB_INSTALL_
+    // TIMEOUT_MS = 180s) and only then logs the capability line — a 15s wait
+    // silently turned every target into a warn on a machine without dbhub.
+    const capabilityWait = await waitForFile(logs.boot, (text) => /dbhub 能力探测/.test(text), { timeoutMs: 180_000 })
+    if (!capabilityWait.ok) result.notes.push('dbhub capability line did not appear within 180s of boot (cold auto-install failed or is still running)')
 
     step(`[${version}] probes`)
     const session = await openSession(server.base, server.token)
