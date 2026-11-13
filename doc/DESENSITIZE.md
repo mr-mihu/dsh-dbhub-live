@@ -7,8 +7,8 @@
 
 真实主机 / 账号 / 密码 / 库名 / 项目名只允许存在于三处（都在仓库外）：
 
-1. `$DSH_HOME/storages/dsh-dbhub-live/credentials.json`（DSN 与连接元数据；SSH 隧道口令自 6.0 起不在这里，见下一条）；
-2. DSH 凭据库（默认 `$DSH_HOME/.credentials.yaml`，由 DSH 管理）：SSH 登录密码 / 密钥口令的**值**；插件自己的连接文件只保存引用名（`ssh.passwordRef` / `ssh.passphraseRef`）。插件不读写该文件，只经 `ctx.get('credentials')` 服务读写；
+1. `$DSH_HOME/storages/dsh-dbhub-live/credentials.json`（连接元数据与**去口令的 DSN**）：自 6.0 起 SSH 隧道口令与**数据库口令**的**值**都不在这里，本文件只保存引用名（`ssh.passwordRef` / `ssh.passphraseRef` / `dsnPasswordRef`）与不含口令的 DSN；形态无法安全拆分或凭据服务不可用时才回退明文，并在日志里提示一次（`/state` 行只多一个布尔 `passwordUnsplit`，卡片 tooltip 说明）；
+2. DSH 凭据库（默认 `$DSH_HOME/.credentials.yaml`，由 DSH 管理）：SSH 登录密码 / 密钥口令，以及从 DSN 里拆出来的**数据库口令**的**值**。插件不读写该文件，只经 `ctx.get('credentials')` 服务读写；
 3. 本地 `.env` 的 `DSH_DBHUB_DESENSITIZE_RE`（`.gitignore` 排除、`package.json` 的 `files` 不含）。
 
 **仓库内一切内容都视为会公开分发**（含 `test/`——它被打进 npm tarball——以及工具描述文案）。这些值一旦公开即视为泄露、无法追回，所以门禁是硬门而不是提示。

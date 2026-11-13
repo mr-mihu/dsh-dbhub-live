@@ -36,7 +36,14 @@ const CANARY = 'CANARY_PW'
 // A reference name in the shape the plugin generates: DSH_DBHUB_SSH_<10 hex>.
 // Split so the literal stays a plain SCREAMING_SNAKE token for check:secrets.
 const REF = 'DSH_DBHUB_SSH_' + 'ab12cd34ef'
+// The same shape for the DATABASE password reference. A row written by this build
+// keeps its DSN without the password and this reference in its place.
+const DSN_REF = 'DSH_DBHUB_DSN_' + 'ab12cd34ef'
 const DSN = 'mysql://user:CHANGE_ME@127.0.0.1:3306/app'
+/** `DSN` with the password taken out (what the store actually holds). */
+const DSN_SPLIT = 'mysql://user@127.0.0.1:3306/app'
+/** The value behind DSN_REF in the copy fixture. */
+const DSN_PASSWORD = 'CHANGE_ME'
 const WS = 'D:/work/app'
 const OTHER = 'D:/work/other'
 const SSH_PASSWORD = {
@@ -439,10 +446,15 @@ test('removing a row unsets an unreferenced ref, but keeps a shared one', async 
 
 test('copyFrom shares the source reference (no new secret is created)', async () => {
   seedStore({})
-  cfg.setWorkspaceEnv(OTHER, 'default', DSN, 'user', {
+  // A row as this build writes it: the DSN has no inline password, the value
+  // lives behind DSN_REF. The copy must SHARE that reference — minting a second
+  // one would duplicate the secret and leave the target unable to follow a
+  // rotation of the source.
+  cfg.setWorkspaceEnv(OTHER, 'default', DSN_SPLIT, 'user', {
     ssh: { host: SSH_PASSWORD.host, port: 22, user: 'ops', auth: 'password', passwordRef: REF },
+    dsnPasswordRef: DSN_REF,
   })
-  const creds = fakeCreds({ [REF]: CANARY })
+  const creds = fakeCreds({ [REF]: CANARY, [DSN_REF]: DSN_PASSWORD })
   const { specs, subprocess } = recorder()
   const tools = {}
   registerCoreTools({
@@ -465,6 +477,7 @@ test('copyFrom shares the source reference (no new secret is created)', async ()
   const row = findRow(WS, 'prod')
   assert.ok(row, 'the copied row exists in the current workspace')
   assert.equal(row.ssh.passwordRef, REF, 'the reference is shared verbatim')
+  assert.equal(row.dsnPasswordRef, DSN_REF, 'the database-password reference is shared too')
   assert.equal(creds.calls.set.length, 0, 'copying must not mint a second secret')
   // Still resolvable for the probe that ran right after the copy.
   assert.ok(dbhubSpawns(specs).length >= 1, 'the post-copy probe still runs through the tunnel')

@@ -50,6 +50,14 @@
 - **SSH 口令为什么搬进 DSH 凭据库、以及写入为何必须在命令层**：`credentials.json` 曾被当作 SSH 口令的保险箱，但它只是"同目录、0600、靠 profile ACL"——用户要的是 DSH 自己的密钥保存方式（`ctx.get('credentials')`，默认落 `$DSH_HOME/.credentials.yaml`，由 DSH 管理）。`config.mjs` 是纯模块（单测/边界都靠它同步读 store），凭据服务是异步的，所以**顺序被拆成两段**：命令层先 `creds.set(ref, value)`（成功才继续），再把只有 ref 的块交给同步的 store 写入器。反过来在写入器里 fire-and-forget 会出现"文件里已有 ref、凭据库里还没有值"的窗口，那条连接在窗口内必然认证失败——所以这个顺序不是风格，是正确性。凭据服务是可选的：缺失/抛错时保留明文（旧布局 + 一条警告）比"写不进去就丢失口令"安全；boot 迁移同样只搬不删——搬不动就留着。
 - **为什么执行/探连要重新解析、失败要显式报错**：DSH 的契约是每次操作重新 `resolve`（凭据文件可能被替换/删除），插件不能缓存明文；而"ref 在、值没了"若退化成空口令，dbhub 会报一个**看起来像密码错**的 SSH 认证失败，用户会去反复重输/换 key，真正的原因（凭据被删）永远不出现。所以 `resolveEnvSecrets` 在 spawn 之前抛 `sshSecretMissing`，探连也走同一句话。
 
+## 数据库口令为什么也拆进凭据库
+
+- **中间层只能由我们做**：dbhub 的 TOML `[[sources]]` 只有 `dsn` 一个连接字段，`dsn = "${VAR}"` 是官方推荐的插值写法；另一组进程级 `DB_*` 分项变量不能用——那会失去 `[[tools]] readonly` 与 `ssh_*` 隧道（只读环境必须靠 TOML 白名单）。所以存储层仍是 DSN，但**口令从 DSN 里拆出来存凭据库**，每次操作再拼回去。
+- **为什么拆分发生在写入侧、而且必须在命令层**：`config.mjs` 是纯同步模块（单测和边界都直接读 store），凭据服务是异步的。若在 store 写入器里 fire-and-forget 调 `set`，会出现"文件里已有 ref、凭据库里还没有值"的窗口——那条连接在窗口内必然认证失败；反过来先 `set` 成功再写 store，最坏情况只是一条孤儿凭据（随后被释放/覆盖）。这与 SSH 口令的顺序是同一条正确性要求。
+- **为什么必须逐字节还原（D-2）**：dbhub 只接受一个 DSN 串，所以拆分的唯一安全判据是 `join(split(dsn)) === dsn`。任何有损转换（解码后重新编码、把引号/转义规整掉、按 `;` 重新拼接属性）都可能改变**实际发送的字节**：口令里一个 `%2B` 被解码成 `+` 就是另一个口令，库名/端口被重排就是另一个目标。与其拼出一条"看起来对"的 DSN，不如不拆——所以拆分器在内部再做一次 round-trip 比较，不同就放弃，并 `warnOnce` 一条不含值/路径的提示。
+- **URL 形态为什么按原始文本切片**：`new URL()` 会解码 `u.password`、归一化协议/端口，重新拼回去未必与用户输入一致（大小写、`%40` vs `@`、空路径的斜杠……）。因此只在 authority 里找 `user:password@` 的**下标**，保留 `user@`，口令段（编码后的原样）交给凭据库；属性形态则把口令值的原始 token（连同引号）整体换成 `${DSH_DBHUB_DSN}` 占位符，join 时原样填回。
+- **降级与可见性**：凭据服务缺失、`set` 失败、或形态无法安全拆分时，连接**保持原样**（口令仍在 0600 的本地文件里）并且只警告一次；`/state` 行只多一个布尔 `passwordUnsplit`（卡片 env tooltip 说明），绝不把口令或 ref 放进 view/patch。迁移同理：先 `creds.set` 成功，再改**当前**行；已有 ref 的行跳过，因此重复启动不会重复搬。
+
 ## 会话权限闸门
 
 > 需求：`dbhub_execute_sql` 要尊重会话输入框的权限模式（仅可查看 / 工作区内修改 / 完全权限），而插件的「环境只读」开关含义保持不变。两者的区别是**谁设的、存哪里**：环境只读是用户在配置页设的连接属性（持久化，dbhub 执行），会话权限是这一轮对话的临时策略（DSH 的 `sandboxPolicy`，不落本插件存储）。
@@ -117,8 +125,8 @@ lib/
   meta.mjs       插件版本(读 package.json)、DSH 运行时版本探测、semver 比较、最低支持版本门(dshTooOld)
   update.mjs     最新版本检查：npm registry 为主 → GitHub Releases 兜底；内存节流、force、绝不抛错
   bridge.mjs     /api/dsh-dbhub-live 四条 exact Fetch 路由的请求/响应编解码（纯函数）
-  config.mjs     路径与原子持久化(store/runtime/prefs)、DSN 解析、工作区发现、环境选项(readOnly/ssh 归一化、默认密钥)、
-                 零知识助手(describeConn/connLabel/scrubSecrets)、configure 决策纯函数(decideConfigureStep/argsChangedEndpoint/emptyUserDenied)
+  config.mjs     路径与原子持久化(store/runtime/prefs)、DSN 解析、DSN 口令拆分/拼装(splitDsnPassword/joinDsnPassword)、工作区发现、
+                 环境选项(readOnly/ssh 归一化、默认密钥)、零知识助手(describeConn/connLabel/scrubSecrets)、configure 决策纯函数(decideConfigureStep/argsChangedEndpoint/emptyUserDenied)
   i18n.mjs       宿主侧文案表与插值
   state.mjs      运行时状态机 enabled/phase/toolCount/lastError/mode + 订阅发布
   options.mjs    部署开关：updateIntervalDays / showSidebarEntry / announceAccessPolicy；层叠 Config > prefs.json > 环境变量 > 内置默认

@@ -124,12 +124,16 @@ test('a patched row still summarizes to metadata only (no DSN, no credentials)',
   assert.equal(summaries.length, 1)
   assert.deepEqual(
     Object.keys(summaries[0]).sort(),
-    ['alias', 'conn', 'env', 'maxRows', 'path', 'persisted', 'ro', 'source', 'ssh', 'srcId', 'title', 'updatedAt'].sort(),
+    // `passwordUnsplit` is a BOOLEAN STATUS: this row still carries its
+    // password inside the DSN, so the card is allowed to say so (the status is
+    // not the password, and the ref itself is never published).
+    ['alias', 'conn', 'passwordUnsplit', 'env', 'maxRows', 'path', 'persisted', 'ro', 'source', 'ssh', 'srcId', 'title', 'updatedAt'].sort(),
   )
   const text = JSON.stringify(summaries)
   assert.equal(text.includes('CHANGE_ME'), false)
   assert.equal(text.includes('mysql://user'), false, 'no credentialed URL shape survives')
   assert.equal(text.includes('"dsn"'), false)
+  assert.equal(summaries[0].passwordUnsplit, true, 'a row whose password was not split is flagged')
   assert.equal(summaries[0].conn, 'mysql://127.0.0.1:3307/app')
   assert.equal(summaries[0].alias, 'prod', 'the unrivaled environment name is the alias')
   assert.equal(summaries[0].source, 'persisted(user)', 'provenance stays, credentials do not')

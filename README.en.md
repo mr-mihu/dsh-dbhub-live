@@ -218,7 +218,7 @@ Only the statement's **first keyword** matters: `SELECT` / `SHOW` / `DESCRIBE` /
 | ProxyJump | Optional, **one hop only**, format `[user@]host[:port]` |
 | Key passphrase / SSH password | **Typed in the UI only**, never echoed back; when editing, **blank = keep the stored value** |
 
-The password/passphrase is stored in the **DSH credential store** (by default `~/.dsh/.credentials.yaml`); the plugin's own connection file keeps only a reference name, so no plaintext secret appears there (connections created before the credential service was available keep plaintext and log a one-time notice).
+The password/passphrase is stored in the **DSH credential store** (by default `~/.dsh/.credentials.yaml`); the plugin's own connection file keeps only a reference name, so no plaintext secret appears there (connections created before the credential service was available keep plaintext and log a one-time notice). **The database password works the same way**: the stored DSN is stripped of its password and the value goes into the same credential store, then the plugin joins it back for every connection (when a shape cannot be split safely, the DSN is left as-is and a one-time notice is logged).
 
 "Advanced: SSH tunnel" holds **two** test buttons:
 
@@ -260,6 +260,8 @@ All configuration and credentials live outside the module directory; delete that
 
 Isolated per `DSH_HOME` and shared by multiple profiles of the same instance (the same convention as dsh's own `workspace.json`). Connections are stored per "workspace × environment"; old formats and leftovers from manual edits are cleaned up and migrated in one pass at startup, and the plugin does not crash if the runtime directory is deleted by accident or a write is blocked. **There is no resident process and no shared configuration file**, so several instances running at once on one machine never interfere. **Upgrading, reinstalling or uninstalling the plugin never touches this directory** — including the desktop upgrade path of "uninstall, then reinstall the latest": connections, read-only / tunnel settings and credentials are all preserved.
 
+That connection file holds **no passwords**: the DSN is stored without its database password and the file keeps only reference names. **The SSH login password, the key passphrase and the database password are stored in the DSH credential store** (by default `~/.dsh/.credentials.yaml`, managed by DSH); at startup the plugin moves plaintext secrets that older builds wrote into the connection file into that store in one pass. When the move fails (credential service unavailable) or a connection's password cannot be split out safely, the connection stays as it is, one notice is logged, and it keeps working (the card marks that row's environment tooltip so the value is still in the local file).
+
 ## Uninstall
 
 ```bash
@@ -289,6 +291,7 @@ On desktop you can also uninstall directly on the **left menu → Plugins** page
 | How do I upgrade on desktop | Uninstall on the **left menu → Plugins** page, then reinstall the latest version; connections and credentials live in `~/.dsh/storages/dsh-dbhub-live` and are still there after the reinstall. |
 | After a dsh upgrade the plugin is reported as incompatible | Check that dsh is 0.2.1 or later, then upgrade the plugin to the latest version; forcing it through with `allow-version` buys nothing. |
 | The configure page keeps saying "the plugin state could not be read" | The panel cannot reach the Host half, usually because the **plugin is disabled** or the **Host half never loaded**: check under **Settings → Plugins** that the row is enabled, and restart DSH after a version change. Tool calls are unaffected — only this panel cannot read the state. |
+| Connections fail to authenticate after downgrading below 6.1 | From 6.1 on, the database password is split out of the connection string into the DSH credential store, and older versions cannot read it (a URL DSN is treated as password-less; a property DSN sends the placeholder as the password). **Re-enter those DSNs once before downgrading** (the password then returns to the connection file), or stay on 6.1+. The password itself is not lost — it is still in the credential store. |
 | Automatic dbhub updates are not wanted | Set "Auto-update interval (days)" to `0` on the configure page and save, or set `DSH_DBHUB_UPDATE_DAYS=0`. |
 
 **Environment variables** (only these two, not exposed in the UI): `DSH_DBHUB_PACKAGE` (the package that gets auto-installed, default `@bytebase/dbhub`), `DSH_DBHUB_UPDATE_DAYS` (the seed for the auto-update interval, default `7`, overridden by the value saved on the configure page).

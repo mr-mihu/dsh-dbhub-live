@@ -170,6 +170,7 @@
 | 连接串 🔒 | 不加（唯一锁是只读 chip） |
 
 - SSH 只影响路由，**不做徽章**，只进环境 chip 的 tooltip（`ro.sshTitle`）。
+- 数据库口令没能移入凭据库的行（凭据服务缺失或形态无法安全拆分）：`/state` 行只多一个布尔 `passwordUnsplit`，环境 chip 的 tooltip 追加 `ws.dsnUnsplitHint`（「仍以明文保存在本地连接文件」）。**镜像与补丁里不得出现口令或 ref**——这个布尔值就是全部可见信息。
 - 编辑表单里的只读勾选保留（两面都有）；`.dbh-checkbox` **不用 `.dbh-input`、不包进 `.dbh-field`**，否则 `render-check` 的 `dbh-field === 3` 与 `typeWithin('dbh-addpanel',0..2)` 索引会变。**「最大返回行数」刻意用 `.dbh-caprow` 而不是 `.dbh-advrow`**：后者在门禁里被当作"隧道字段"计数（未开隧道时必须为 0），且它必须排在 DSN 之后、SSH 字段之后以保住 `typeWithin('dbh-advbody',0..3)` 的索引。
 - **行数上限的就地校验**：`parseRowCap` 返回 `null`（负数 / 小数 / 非数字文本）时保存按钮**零请求**并渲染 `.dbh-error .dbh-invalid`（`cap.badRows`，错误按表单归属，添加面板与行编辑器各看自己那条）；这是**发请求前**的校验，不是把值塞给宿主再等拒绝。空值 = `0` = 不限，是显式写入（与 `readOnly:false` 同款），不是"省略"。
 - SSH 高级区 `.dbh-adv` 折叠面板**必须排在 DSN 输入之后**，折叠态放 `uiMemory.advOpen`；区内「测试该配置」旁是**「测试 SSH 隧道」**（独立按钮/回执，只验 SSH 层）。折叠按钮**不再因 dbhub 能力过旧而禁用**（面板里还有行数上限，它不依赖 dbhub 方言）；SSH 复选框与相关字段在能力不足时禁用并显示 `capHint`。
