@@ -1,17 +1,17 @@
-// Maximum-rows tests: the environment-level row cap (`maxRows`), its per-call
-// override on `dbhub_execute_sql`, and the pure capping pass that trims dbhub's
-// JSON receipt.
+// Maximum-rows tests: the GLOBAL result row cap (`options.defaultMaxRows`), its
+// per-call override on `dbhub_execute_sql`, and the pure capping pass that trims
+// dbhub's JSON receipt.
 //
 // Two halves, deliberately:
-//   1. the STORE / command half — persistence semantics (`0`/absent = unlimited,
-//      explicit delete, illegal values refused without a write) and the card's
-//      `{op:'options', maxRows}` path, against fresh config instances;
+//   1. the SETTING half — the global value's validation (`badMaxRows`, zero
+//      writes), its read-back, and the DEPRECATED per-environment `maxRows`
+//      proving it no longer participates (store compat kept, card path ignored);
 //   2. the PURE half — `resolveRowCap` (override priority) and
 //      `capExecuteSqlText` (boundaries, multi-statement independence, count
-//      preservation, fail-soft passthrough, localized notice), plus one
-//      end-to-end tool call through a fake dbhub so "the argument is ours, not
-//      dbhub's" and "the environment cap really reaches the model" are pinned
-//      rather than assumed.
+//      preservation, fail-soft passthrough, localized notice), plus end-to-end
+//      tool calls through a fake dbhub so "the argument is ours, not dbhub's",
+//      "the global cap really reaches the model", and "a leftover environment
+//      value is ignored" are pinned rather than assumed.
 //
 // Test isolation: config.mjs binds its storage paths at import time, so
 // DSH_HOME points at a temp dir BEFORE importing; store tests use a fresh module
@@ -58,6 +58,7 @@ const index = await import('../lib/index.mjs')
 const mcp = await import('../lib/mcp.mjs')
 const state = await import('../lib/state.mjs')
 const i18n = await import('../lib/i18n.mjs')
+const options = await import('../lib/options.mjs')
 const { registerCoreTools, resolveRowCap, capExecuteSqlText } = await import('../lib/tools.mjs')
 
 const DSN = 'mysql://user:CHANGE_ME@127.0.0.1:3306/app'
@@ -159,56 +160,63 @@ test('a hand-edited / unusable stored cap degrades to unlimited (never to 1 row)
   assert.deepEqual(byEnv, { neg: 0, frac: 0, text: 0, nil: 0, ok: 9 })
 })
 
-// ── the card command: `{op:'options', maxRows}` ───────────────────────────
+// ── the GLOBAL setting: `defaultMaxRows` ─────────────────────────────────
+//
+// The per-environment `maxRows` is DEPRECATED: execution reads only the global
+// option, and the card can no longer write the store field. Its validator and
+// refusal live in `options.validatePatch` (the same gate the bridge uses before
+// `applyPatch`), so an invalid save is refused with nothing written.
 
-test('the card options op writes, preserves and clears the cap', async () => {
-  seedBase({ [WS]: { environments: { prod: { dsn: DSN, source: 'user', updatedAt: 1 } } } })
-  const ws = { path: WS, title: 'cap' }
-  const lookup = async () => undefined
-
-  let r = await index.applyOptionsOp({ env: 'prod', maxRows: 300 }, ws, lookup)
-  assert.equal(r.error, undefined)
-  assert.equal(readStore()[WS].environments.prod.maxRows, 300)
-  assert.ok(r.patches.some((p) => p.op === 'options'))
-  // The mirror patch carries the stored cap so the card re-renders what landed.
-  const mirrored = index.mirrorPatchOf(r.patches.find((p) => p.op === 'options'))
-  assert.equal(mirrored.maxRows, 300)
-  assert.equal(mirrored.dsn, undefined, 'a mirror patch never carries a DSN')
-
-  // An options write that says nothing about the cap preserves it.
-  r = await index.applyOptionsOp({ env: 'prod', readOnly: true }, ws, lookup)
-  assert.equal(r.error, undefined)
-  assert.equal(readStore()[WS].environments.prod.maxRows, 300)
-
-  // 0 clears the stored field (the explicit "unlimited").
-  r = await index.applyOptionsOp({ env: 'prod', maxRows: 0 }, ws, lookup)
-  assert.equal(r.error, undefined)
-  assert.equal('maxRows' in readStore()[WS].environments.prod, false)
+test('an illegal global cap is refused at the options layer with zero writes', () => {
+  const before = readStoreText()
+  for (const bad of [-2, 2.5, 'many', Number.NaN, -0.5]) {
+    assert.throws(
+      () => options.validatePatch({ defaultMaxRows: bad }),
+      (err) => err.code === 'badMaxRows',
+      'refused: ' + String(bad),
+    )
+  }
+  // `validatePatch` only INSPECTS; a caller that sees the throw never reaches
+  // `applyPatch`, so the effective value cannot have moved.
+  assert.equal(options.get('defaultMaxRows'), 0)
+  assert.equal(readStoreText(), before, 'zero writes for every refused value')
 })
 
-test('an illegal cap is refused through the card path with zero writes', async () => {
-  seedBase({ [WS]: { environments: { prod: { dsn: DSN, source: 'user', updatedAt: 1, maxRows: 10 } } } })
-  const ws = { path: WS, title: 'cap' }
-  for (const bad of [-2, 2.5, 'many', Number.NaN]) {
-    const before = readStoreText()
-    const r = await index.applyOptionsOp({ env: 'prod', maxRows: bad }, ws, async () => undefined)
-    assert.deepEqual(r.patches, [])
-    assert.equal(r.error, 'badMaxRows', 'refused: ' + String(bad))
-    assert.equal(readStoreText(), before, 'zero writes for ' + String(bad))
+test('an illegal batch concurrency is refused at the options layer too', () => {
+  for (const bad of [0, 9, 1.5, 'two']) {
+    assert.throws(
+      () => options.validatePatch({ batchConcurrency: bad }),
+      (err) => err.code === 'badConcurrency',
+      'refused: ' + String(bad),
+    )
   }
 })
 
-test('an illegal cap cannot be smuggled next to a rename (no half-applied command)', async () => {
+test('a valid global cap is accepted, read back, and exposed in the snapshot', () => {
+  try {
+    assert.equal(options.applyPatch({ defaultMaxRows: 250 }), true)
+    assert.equal(options.get('defaultMaxRows'), 250)
+    assert.equal(options.snapshot().defaultMaxRows, 250)
+    // 0 is a legal value and means unlimited.
+    assert.equal(options.applyPatch({ defaultMaxRows: 0 }), true)
+    assert.equal(options.get('defaultMaxRows'), 0)
+  } finally {
+    options.applyPatch({ defaultMaxRows: 0 })
+  }
+})
+
+test('the card options command ignores the deprecated per-environment maxRows', async () => {
   seedBase({ [WS]: { environments: { prod: { dsn: DSN, source: 'user', updatedAt: 1 } } } })
   const r = await index.applyOptionsOp(
-    { env: 'prod', newEnv: 'renamed', maxRows: -1 },
+    { env: 'prod', maxRows: 300 },
     { path: WS, title: 'cap' },
     async () => undefined,
   )
-  assert.equal(r.error, 'badMaxRows')
-  const doc = readStore()
-  assert.ok(doc[WS].environments.prod, 'the source row was not renamed')
-  assert.equal(doc[WS].environments.renamed, undefined, 'the rename did not land')
+  // `maxRows` is not an option field any more, so the command carries nothing
+  // the store understands: the same zero-write no-op as any unknown key.
+  assert.deepEqual(r.patches, [])
+  assert.equal(r.noop, true)
+  assert.equal('maxRows' in readStore()[WS].environments.prod, false, 'the card wrote nothing')
 })
 
 test('the refused cap has its own localized sentence in both languages', () => {
@@ -216,26 +224,31 @@ test('the refused cap has its own localized sentence in both languages', () => {
     const text = i18n.tFor(locale, 'result.badMaxRows')
     assert.notEqual(text, 'result.badMaxRows')
     assert.match(text, /0/)
+    const conc = i18n.tFor(locale, 'result.badConcurrency')
+    assert.notEqual(conc, 'result.badConcurrency')
+    assert.match(conc, /1/)
+    assert.match(conc, /8/)
   }
   assert.equal(/[\u4e00-\u9fff]/.test(i18n.tFor('en', 'result.badMaxRows')), false, 'the en copy must stay English')
+  assert.equal(/[\u4e00-\u9fff]/.test(i18n.tFor('en', 'result.badConcurrency')), false, 'the en copy must stay English')
 })
 
 // ── override priority (pure) ──────────────────────────────────────────────
 
-test('the call argument overrides the environment cap, and 0 means unlimited', () => {
-  assert.equal(resolveRowCap({}, 5), 5, 'omitted → environment setting')
+test('the call argument overrides the global default, and 0 means unlimited', () => {
+  assert.equal(resolveRowCap({}, 5), 5, 'omitted → the configured default')
   assert.equal(resolveRowCap({ maxRows: 2 }, 5), 2, 'positive override wins')
   assert.equal(resolveRowCap({ maxRows: 0 }, 5), 0, '0 = unlimited FOR THIS CALL')
   assert.equal(resolveRowCap({ maxRows: 0 }, 0), 0)
   assert.equal(resolveRowCap({ maxRows: '7' }, 5), 7, 'a numeric string is tolerated')
 })
 
-test('an unusable override or environment value falls back safely', () => {
+test('an unusable override or global value falls back safely', () => {
   assert.equal(resolveRowCap({ maxRows: -1 }, 5), 5, 'a negative override must not widen or break')
   assert.equal(resolveRowCap({ maxRows: 1.5 }, 5), 5)
   assert.equal(resolveRowCap({ maxRows: 'x' }, 5), 5)
   assert.equal(resolveRowCap({ maxRows: Number.NaN }, 5), 5)
-  assert.equal(resolveRowCap({}, Number.NaN), 0, 'an unusable environment value = unlimited')
+  assert.equal(resolveRowCap({}, Number.NaN), 0, 'an unusable global value = unlimited')
   assert.equal(resolveRowCap({}, -3), 0)
   assert.equal(resolveRowCap({}, 'nope'), 0)
 })
@@ -389,47 +402,85 @@ function toolHarness() {
   return { captured, ctx }
 }
 
-test('dbhub_execute_sql caps the receipt by the environment setting and never forwards maxRows upstream', async () => {
+test('dbhub_execute_sql caps the receipt by the GLOBAL setting and never forwards maxRows upstream', async () => {
   if (!state.isEnabled()) state.setEnabled(true)
+  // A leftover per-environment value: it must NOT win over the global setting.
   seedBase({ [WS]: { environments: { default: { dsn: DSN, source: 'user', updatedAt: 1, maxRows: 3 } } } })
-  const receiptText = JSON.stringify({ statements: [stmt(rowsOf(6), 6)], source_id: 'default' })
-  const { subprocess, calls } = fakeDbhub(receiptText)
-  const { captured, ctx } = toolHarness()
-  registerCoreTools(ctx, subprocess)
+  options.applyPatch({ defaultMaxRows: 5 })
+  try {
+    const receiptText = JSON.stringify({ statements: [stmt(rowsOf(6), 6)], source_id: 'default' })
+    const { subprocess, calls } = fakeDbhub(receiptText)
+    const { captured, ctx } = toolHarness()
+    registerCoreTools(ctx, subprocess)
 
-  const sourceId = mcp.sourceIdOf({ title: 'cap', wsPath: WS, env: 'default' })
-  const out = await captured.dbhub_execute_sql.execute({ source: sourceId, sql: 'select 1' }, {})
-  assert.equal(out.ok, true)
-  assert.ok(String(out.text).includes('已截断'), out.text)
-  // The upstream call carries the SQL only: `maxRows` is the PLUGIN's argument.
-  assert.deepEqual(calls[0].arguments, { sql: 'select 1' })
-  assert.equal(calls[0].name, 'execute_sql')
-  const body = JSON.parse(String(out.text).split('\n').slice(2).join('\n'))
-  assert.equal(body.statements[0].rows.length, 3)
-  assert.equal(body.statements[0].truncated, true)
-  delete base.store[WS]
+    const sourceId = mcp.sourceIdOf({ title: 'cap', wsPath: WS, env: 'default' })
+    const out = await captured.dbhub_execute_sql.execute({ source: sourceId, sql: 'select 1' }, {})
+    assert.equal(out.ok, true)
+    const text = String(out.text)
+    assert.ok(text.includes('已截断'), text)
+    assert.ok(text.split('\n')[0].includes('5'), 'the notice names the GLOBAL default: ' + text.split('\n')[0])
+    // The upstream call carries the SQL only: `maxRows` is the PLUGIN's argument.
+    assert.deepEqual(calls[0].arguments, { sql: 'select 1' })
+    assert.equal(calls[0].name, 'execute_sql')
+    const body = JSON.parse(text.split('\n').slice(2).join('\n'))
+    assert.equal(body.statements[0].rows.length, 5, 'the global cap applied, not the leftover environment value')
+    assert.equal(body.statements[0].truncated, true)
+  } finally {
+    options.applyPatch({ defaultMaxRows: 0 })
+    delete base.store[WS]
+  }
 })
 
-test('the per-call maxRows argument wins over the environment, and 0 disables it', async () => {
+test('a leftover per-environment maxRows is IGNORED (deprecated field)', async () => {
   if (!state.isEnabled()) state.setEnabled(true)
   seedBase({ [WS]: { environments: { default: { dsn: DSN, source: 'user', updatedAt: 1, maxRows: 3 } } } })
-  const receiptText = JSON.stringify({ statements: [stmt(rowsOf(6), 6)], source_id: 'default' })
-  const { subprocess, calls } = fakeDbhub(receiptText)
-  const { captured, ctx } = toolHarness()
-  registerCoreTools(ctx, subprocess)
-  const sourceId = mcp.sourceIdOf({ title: 'cap', wsPath: WS, env: 'default' })
+  options.applyPatch({ defaultMaxRows: 0 })
+  try {
+    const receiptText = JSON.stringify({ statements: [stmt(rowsOf(6), 6)], source_id: 'default' })
+    const { subprocess } = fakeDbhub(receiptText)
+    const { captured, ctx } = toolHarness()
+    registerCoreTools(ctx, subprocess)
+    const sourceId = mcp.sourceIdOf({ title: 'cap', wsPath: WS, env: 'default' })
+    const out = await captured.dbhub_execute_sql.execute({ source: sourceId, sql: 'select 1' }, {})
+    assert.equal(out.ok, true)
+    const text = String(out.text)
+    assert.equal(text.includes('已截断'), false, 'the stored environment cap must not truncate anything')
+    const body = JSON.parse(text.split('\n').slice(1).join('\n'))
+    assert.equal(body.statements[0].rows.length, 6, 'every row comes back')
+  } finally {
+    delete base.store[WS]
+  }
+})
 
-  // 0 = no cap at all for this call.
-  let out = await captured.dbhub_execute_sql.execute({ source: sourceId, sql: 'select 1', maxRows: 0 }, {})
-  assert.equal(out.ok, true)
-  assert.equal(String(out.text).includes('已截断'), false, 'the environment cap was overridden')
-  assert.equal(JSON.parse(String(out.text).split('\n').slice(1).join('\n')).statements[0].rows.length, 6)
-  assert.deepEqual(calls[0].arguments, { sql: 'select 1' }, 'still no maxRows upstream')
+test('the per-call maxRows argument wins over the global default, and 0 disables it', async () => {
+  if (!state.isEnabled()) state.setEnabled(true)
+  seedBase({ [WS]: { environments: { default: { dsn: DSN, source: 'user', updatedAt: 1 } } } })
+  options.applyPatch({ defaultMaxRows: 3 })
+  try {
+    const receiptText = JSON.stringify({ statements: [stmt(rowsOf(6), 6)], source_id: 'default' })
+    const { subprocess, calls } = fakeDbhub(receiptText)
+    const { captured, ctx } = toolHarness()
+    registerCoreTools(ctx, subprocess)
+    const sourceId = mcp.sourceIdOf({ title: 'cap', wsPath: WS, env: 'default' })
 
-  // A smaller explicit cap applies even though the environment is larger.
-  out = await captured.dbhub_execute_sql.execute({ source: sourceId, sql: 'select 1', maxRows: 1 }, {})
-  const body = JSON.parse(String(out.text).split('\n').slice(2).join('\n'))
-  assert.equal(body.statements[0].rows.length, 1)
-  assert.ok(String(out.text).split('\n')[0].includes('1'))
-  delete base.store[WS]
+    // 0 = no cap at all for this call, even though the default is 3.
+    let out = await captured.dbhub_execute_sql.execute({ source: sourceId, sql: 'select 1', maxRows: 0 }, {})
+    assert.equal(out.ok, true)
+    assert.equal(String(out.text).includes('已截断'), false, 'the global default was overridden')
+    assert.equal(JSON.parse(String(out.text).split('\n').slice(1).join('\n')).statements[0].rows.length, 6)
+    assert.deepEqual(calls[0].arguments, { sql: 'select 1' }, 'still no maxRows upstream')
+
+    // A smaller explicit cap applies even though the default is larger.
+    out = await captured.dbhub_execute_sql.execute({ source: sourceId, sql: 'select 1', maxRows: 1 }, {})
+    const body = JSON.parse(String(out.text).split('\n').slice(2).join('\n'))
+    assert.equal(body.statements[0].rows.length, 1)
+    assert.ok(String(out.text).split('\n')[0].includes('1'))
+
+    // Omitted → the global default (3), proving the setting is the fallback.
+    out = await captured.dbhub_execute_sql.execute({ source: sourceId, sql: 'select 1' }, {})
+    assert.equal(JSON.parse(String(out.text).split('\n').slice(2).join('\n')).statements[0].rows.length, 3)
+  } finally {
+    options.applyPatch({ defaultMaxRows: 0 })
+    delete base.store[WS]
+  }
 })

@@ -69,6 +69,9 @@
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/schemastery": "^3.18.1"
   },
+  "engines": {
+    "dsh": ">=0.2.1-0"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/mr-mihu/dsh-dbhub-live.git"

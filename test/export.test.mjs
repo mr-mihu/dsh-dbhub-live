@@ -10,8 +10,9 @@
 //      never overwrites an earlier one, owner-only modes are requested;
 //   3. the END-TO-END half — a fake dbhub so these behaviours are pinned rather
 //      than assumed: no `export` changes nothing, csv/json replace the rows with
-//      a summary + path, the ENVIRONMENT cap is bypassed unless `maxRows` is
-//      explicit, a failing fs is fail-soft, and none of it leaks a credential.
+//      a summary + path, the configured default row cap is bypassed unless
+//      `maxRows` is explicit, a failing fs is fail-soft, and none of it leaks a
+//      credential.
 //
 // Test isolation: config.mjs binds its storage paths at import time, so DSH_HOME
 // points at a temp dir BEFORE importing (exports land there, never in the real
@@ -22,7 +23,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { basename, join, resolve, sep } from 'node:path'
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-dbhub-export-'))
@@ -33,6 +34,7 @@ delete process.env.MISE_DATA_DIR
 
 const storeDir = join(home, 'storages', 'dsh-dbhub-live')
 const storePath = join(storeDir, 'credentials.json')
+const prefsPath = join(storeDir, 'prefs.json')
 mkdirSync(storeDir, { recursive: true })
 
 // The plain instances the tool reads (no cache-busting: the store must be the
@@ -42,6 +44,7 @@ const mcp = await import('../lib/mcp.mjs')
 const state = await import('../lib/state.mjs')
 const i18n = await import('../lib/i18n.mjs')
 const exp = await import('../lib/export.mjs')
+const options = await import('../lib/options.mjs')
 const { registerCoreTools } = await import('../lib/tools.mjs')
 
 // Assembled so this file carries no credentialed URL literal (the desensitize
@@ -225,6 +228,145 @@ test('the writer puts files in DATA_DIR/exports and never overwrites a same-seco
   assert.equal(second.totalRows, 1)
 })
 
+// ── export directory option (exportDir) ───────────────────────────────────
+//
+// Two independent properties:
+//   * RESOLUTION is pure: '' = the default directory, `~/…` expands, a relative
+//     path means "under $DSH_HOME" (never the workspace);
+//   * SAVING proves the directory is writable (mkdir + probe file) and refuses
+//     with a typed `badExportDir` WITHOUT persisting anything — a value that only
+//     fails later, mid-query, would be a trap.
+
+const readPrefsText = () => {
+  try {
+    return readFileSync(prefsPath, 'utf8')
+  } catch (e) {
+    return ''
+  }
+}
+
+/** Run `fn` with the exportDir option temporarily set (and always restore it). */
+async function withExportDir(value, fn) {
+  const previous = options.get('exportDir')
+  options.applyPatch({ exportDir: value }, { persist: true })
+  try {
+    return await fn()
+  } finally {
+    options.applyPatch({ exportDir: previous }, { persist: true })
+  }
+}
+
+test('the export directory resolves to the default when empty', () => {
+  assert.equal(exp.resolveExportDir(''), exp.EXPORT_DIR)
+  assert.equal(exp.resolveExportDir(undefined), exp.EXPORT_DIR)
+  assert.equal(exp.resolveExportDir('   '), exp.EXPORT_DIR)
+  assert.ok(exp.EXPORT_DIR.startsWith(join(home, 'storages', 'dsh-dbhub-live')))
+})
+
+test('an absolute export directory is kept (normalized)', () => {
+  const dir = join(home, 'some', 'custom', 'exports')
+  assert.equal(exp.resolveExportDir(dir), resolve(dir, '.'))
+  assert.equal(exp.resolveExportDir(dir + sep), resolve(dir, '.'))
+})
+
+test('~/ expands to the user home; a relative path resolves against $DSH_HOME', () => {
+  const userHome = homedir()
+  assert.equal(exp.resolveExportDir('~'), userHome)
+  assert.equal(exp.resolveExportDir('~/db-exports'), join(userHome, 'db-exports'))
+  if (process.platform === 'win32') {
+    assert.equal(exp.resolveExportDir('~\\db-exports'), join(userHome, 'db-exports'))
+  }
+  // NOT the workspace: one configured directory means the same thing everywhere.
+  assert.equal(exp.resolveExportDir('db-exports'), join(home, 'db-exports'))
+  assert.equal(exp.resolveExportDir('./db-exports'), join(home, 'db-exports'))
+})
+
+test('prepareExportDir creates the directory, writes a probe (0700/0600) and cleans it up', () => {
+  const dir = join(home, 'probe-target', 'nested')
+  const calls = []
+  exp.setExportFsHooks({
+    mkdirSync: (p, o) => {
+      calls.push(['mkdir', o && o.mode])
+      return mkdirSync(p, o)
+    },
+    writeFileSync: (p, data, o) => {
+      calls.push(['write', o && o.mode])
+      return writeFileSync(p, data, o)
+    },
+  })
+  try {
+    const resolvedDir = exp.prepareExportDir(dir)
+    assert.equal(resolvedDir, resolve(dir, '.'))
+    assert.ok(existsSync(resolvedDir), 'the directory was created')
+    // The probe file is gone again: only a real (empty) directory is left.
+    assert.deepEqual(readdirSync(resolvedDir), [])
+  } finally {
+    exp.setExportFsHooks(null)
+  }
+  assert.deepEqual(calls[0], ['mkdir', 0o700], 'directories are owner-only')
+  assert.deepEqual(calls[1], ['write', 0o600], 'the probe is owner-only too')
+})
+
+test('saving an unwritable export directory is refused and persists NOTHING', () => {
+  const beforePrefs = readPrefsText()
+  const beforeValue = options.get('exportDir')
+  exp.setExportFsHooks({
+    writeFileSync: () => {
+      const err = new Error('permission denied')
+      err.code = 'EACCES'
+      throw err
+    },
+  })
+  try {
+    const target = join(home, 'unwritable-target')
+    assert.throws(
+      () => options.applyPatch({ exportDir: target }, { persist: true }),
+      (e) => {
+        assert.equal(e.code, 'badExportDir')
+        assert.equal(e.detail, 'EACCES')
+        // Localized, names the code and the user's own path, no stack frames.
+        assert.match(e.message, /EACCES/)
+        assert.ok(e.message.includes(resolve(target, '.')), e.message)
+        assert.equal(e.message.includes('    at '), false, 'no stack frames in the message')
+        return true
+      },
+    )
+    // The option value and the persisted document are both untouched.
+    assert.equal(options.get('exportDir'), beforeValue)
+    assert.equal(readPrefsText(), beforePrefs)
+  } finally {
+    exp.setExportFsHooks(null)
+  }
+})
+
+test('a save that passes the probe persists exportDir (and "" restores the default)', () => {
+  const custom = join(home, 'exports-custom')
+  try {
+    assert.equal(options.applyPatch({ exportDir: custom }, { persist: true }), true)
+    assert.equal(options.get('exportDir'), custom)
+    // `/state` carries it through the snapshot the view spreads.
+    assert.equal(options.snapshot().exportDir, custom)
+    assert.equal(JSON.parse(readFileSync(prefsPath, 'utf8')).exportDir, custom)
+  } finally {
+    options.applyPatch({ exportDir: '' }, { persist: true })
+  }
+  assert.equal(options.get('exportDir'), '')
+  assert.equal(JSON.parse(readFileSync(prefsPath, 'utf8')).exportDir, '')
+})
+
+test('the writer honours the directory it is given', () => {
+  const dir = join(home, 'writer-dir')
+  const out = exp.writeExportFiles({
+    dir,
+    sourceId: 'ws_writer_default',
+    format: 'csv',
+    statements: [{ sql: 'select 1', rows: [{ a: 1 }], count: 1 }],
+    at: AT,
+  })
+  assert.ok(out.files[0].path.startsWith(resolve(dir, '.') + sep), out.files[0].path)
+  assert.equal(readFileSync(out.files[0].path, 'utf8'), 'a\r\n1')
+})
+
 // ── end-to-end: a fake dbhub answers the MCP calls ────────────────────────
 
 /** A fake dbhub child: answers initialize, then replies to tools/call. */
@@ -320,7 +462,8 @@ test('csv export writes one file per statement and returns only a summary', asyn
   const SRC = sourceOf('csvone')
   const { out, calls } = await execute({
     receipt,
-    // The environment cap is DELIBERATELY set: an export ignores it.
+    // The DEPRECATED per-environment cap is deliberately present: it no longer
+    // applies anywhere (the cap is global now), so an export must be unaffected.
     fixture: fixture('csvone', { maxRows: 2 }),
     args: { source: SRC, sql: 'select 1', export: 'csv' },
   })
@@ -328,7 +471,7 @@ test('csv export writes one file per statement and returns only a summary', asyn
   const text = String(out.text)
   assert.match(text, /已导出 5 行到 /, text)
   assert.ok(text.includes(SRC), 'the summary names the source handle')
-  assert.equal(text.includes('已截断'), false, 'the environment cap must not apply to an export')
+  assert.equal(text.includes('已截断'), false, 'the deprecated per-environment cap is ignored')
   assert.equal(text.includes('CELL-1'), false, 'the rows must NOT be inlined')
   assert.ok(text.includes(i18n.currentT('result.exportNote')))
   assert.deepEqual(calls[0].arguments, { sql: 'select 1' }, 'neither export nor maxRows is forwarded')
@@ -347,6 +490,54 @@ test('csv export writes one file per statement and returns only a summary', asyn
   // Zero knowledge: neither the canary password nor the host crosses.
   assert.equal(text.includes(CANARY), false)
   assert.equal(text.includes(HOST), false)
+})
+
+test('an exported file goes to the CONFIGURED directory (not the default one)', async () => {
+  const custom = join(home, 'exports-chosen')
+  const SRC = sourceOf('customdir')
+  await withExportDir(custom, async () => {
+    const receipt = receiptOf([stmt(rowsOf(3, 'CELL'))])
+    const { out } = await execute({
+      receipt,
+      fixture: fixture('customdir'),
+      args: { source: SRC, sql: 'select 1', export: 'csv' },
+    })
+    const text = String(out.text)
+    const names = readdirSync(custom).filter((n) => n.startsWith(exp.safeExportStem(SRC) + '-'))
+    assert.equal(names.length, 1, JSON.stringify(names))
+    const path = join(resolve(custom, '.'), names[0])
+    assert.ok(text.includes(path), 'the summary carries the configured path: ' + text)
+    assert.equal(exportFilesOf(SRC).length, 0, 'nothing was written to the default directory')
+  })
+})
+
+test('a configured directory that became unwritable only fails that EXPORT (fail-soft)', async () => {
+  const custom = join(home, 'exports-vanished')
+  const SRC = sourceOf('custfail')
+  await withExportDir(custom, async () => {
+    exp.setExportFsHooks({
+      writeFileSync: () => {
+        const err = new Error('no such directory')
+        err.code = 'ENOENT'
+        throw err
+      },
+    })
+    try {
+      const receipt = receiptOf([stmt(rowsOf(4, 'CELL'))])
+      const { out } = await execute({
+        receipt,
+        fixture: fixture('custfail', { maxRows: 2 }),
+        args: { source: SRC, sql: 'select 1', export: 'csv' },
+      })
+      assert.equal(out.ok, true, 'a vanished directory must never fail the query')
+      const text = String(out.text)
+      assert.ok(text.includes(i18n.currentT('result.exportFailed').replace('{code}', 'ENOENT')), text)
+      assert.equal(text.includes('CELL-1'), true, 'the rows come back inline instead')
+      assert.equal(readdirSync(custom).length, 0, 'nothing was written')
+    } finally {
+      exp.setExportFsHooks(null)
+    }
+  })
 })
 
 test('a multi-statement csv export produces one numbered file per statement', async () => {
@@ -441,27 +632,32 @@ test('a FAILING fs is fail-soft: inline receipt (still capped) + one notice, nev
       throw err
     },
   })
+  // The fallback is the receipt WITHOUT `export`, so it applies the same row cap
+  // an ordinary call would: the GLOBAL default (the deprecated per-environment
+  // field no longer participates anywhere).
+  options.applyPatch({ defaultMaxRows: 3 })
   try {
     const receipt = receiptOf([stmt(rowsOf(5, 'CELL'))])
     const { out } = await execute({
       receipt,
-      fixture: fixture('failfs', { maxRows: 3 }),
+      fixture: fixture('failfs'),
       args: { source: SRC, sql: 'select 1', export: 'csv' },
     })
     assert.equal(out.ok, true, 'a failed export must never fail the query')
     const text = String(out.text)
     assert.ok(text.includes(i18n.currentT('result.exportFailed').replace('{code}', 'EACCES')), text)
-    // The fallback is the ordinary receipt: environment cap applied, notice first
+    // The fallback is the ordinary receipt: the GLOBAL cap applied, notice first
     // and the "export failed" sentence appended AFTER the JSON body.
     const lines = text.split('\n')
     assert.ok(lines[0].includes('已截断'), lines[0])
     assert.match(lines[1], /^\{连接: exp_/)
     assert.ok(lines[lines.length - 1].includes('EACCES'), lines[lines.length - 1])
     const body = JSON.parse(lines.slice(2, -1).join('\n'))
-    assert.equal(body.statements[0].rows.length, 3, 'the normal cap still applies to the inline fallback')
+    assert.equal(body.statements[0].rows.length, 3, 'the normal (global) cap still applies to the inline fallback')
     assert.equal(text.includes('CELL-1'), true, 'the rows are returned inline instead')
     assert.equal(exportFilesOf(SRC).length, before, 'nothing was written')
   } finally {
+    options.applyPatch({ defaultMaxRows: 0 })
     exp.setExportFsHooks(null)
   }
 })

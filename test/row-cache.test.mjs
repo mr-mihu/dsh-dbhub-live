@@ -126,8 +126,11 @@ test('a patched row still summarizes to metadata only (no DSN, no credentials)',
     Object.keys(summaries[0]).sort(),
     // `passwordUnsplit` is a BOOLEAN STATUS: this row still carries its
     // password inside the DSN, so the card is allowed to say so (the status is
-    // not the password, and the ref itself is never published).
-    ['alias', 'conn', 'passwordUnsplit', 'env', 'maxRows', 'path', 'persisted', 'ro', 'source', 'ssh', 'srcId', 'title', 'updatedAt'].sort(),
+    // not the password, and the ref itself is never published). There is NO
+    // `maxRows`: the row cap became one GLOBAL setting, so a dead per-row value
+    // on the wire would suggest it still does something. `updatedAt` is the
+    // per-row edit stamp the card's "recently updated" sort reads.
+    ['alias', 'conn', 'passwordUnsplit', 'env', 'path', 'persisted', 'ro', 'source', 'ssh', 'srcId', 'title', 'updatedAt'].sort(),
   )
   const text = JSON.stringify(summaries)
   assert.equal(text.includes('CHANGE_ME'), false)

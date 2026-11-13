@@ -165,7 +165,7 @@
 | 元素 | 呈现 |
 | --- | --- |
 | 只读标记 | 行内 `.dbh-rochip`，弹窗/宽屏/手机三种布局都出现；点击发 `{op:'options', readOnly}`（无 DSN）；必须 **开锁+「可写」/ 闭锁+「只读」**（同一 16px 线性图标风格），否则两个灰色「只读」会被误读成都是只读 |
-| 最大返回行数 | 「高级」区里的数字输入 `.dbh-caprow`（`type="number"`、`min=0`、占位「0 或留空 = 不限」），`aria-label` = `adv.maxRows`；**不随 SSH 开关出现/消失**（未开隧道时也在），保存走 `connDraftOf`/`withConnDraft` 的 `options` 载荷（`maxRows: 0` = 清空 = 不限）；已设置的上限进环境 chip 的 tooltip（`cap.chip`） |
+| 最大返回行数 | **已移除**：上限改成全局设置 `defaultMaxRows`（设置条第二行）；老数据里的环境值不再参与判定 |
 | 设置控件 | 开关必须用 `primitives.Switch`（缺失时才回退 `.dbh-fbswitch`） |
 | 连接串 🔒 | 不加（唯一锁是只读 chip） |
 
@@ -191,6 +191,7 @@
   3. 设置 = **所有非弹窗、非手机页面（宽屏页 / 插件页 / 窄桌面列）一律一行紧凑设置条**（窄列自动加 `.dbh-barnarrow` 隐藏标题与状态词、收窄间距，**不得退回竖排设置行**；弹窗与手机才用竖排）。宽屏条 `.dbh-settingsbar`：标签 + 状态词 + `primitives.Switch` + 更新输入/保存同排，开关 `scale(.85)`；弹窗/手机为紧凑设置行（13px 标题、8px padding、开关 `scale(.8–.9)`）——**字号与控件刻意弱化，连接列表才是主体**。状态词统一为 `启用/停用`、`显示/隐藏`、`开启/关闭`；更新间隔输入 + 天 + 保存必须在同一行不换行；
   4. 行内只读 chip 在三种布局都出现（见上表）；
   5. 弹窗面的设置收进状态行「设置」折叠，宽屏面直接展开。
+- **设置区新增的字段（`defaultMaxRows` / `batchConcurrency` / `exportDir`）与写通道**：三个字段都走既有 `saveConfig`（同一个设置条/设置行、同一份 `.dbh-writefail`），但**`exportDir` 必须绕开 `configForms.set` 快路径、强制 `POST /options`**：它是唯一在宿主侧做「目录真能写」探针的选项（`badExportDir`），而官方表单只有 `true/undefined` 两种回答、没有错误通道，走表单会让拒绝原因丢失、甚至显示「已保存」。`/options` 对这类**业务性拒绝**回 200 `{ok:false,error:'<本地化原因>'}`（客户端 `request()` 对非 2xx 只显示通用「写入失败」），因此 saveOptions 里应把含 `exportDir` 的 patch 直接交给桥。输入框占位「留空 = 默认位置（数据目录/exports）」，值从 `/state` 的 `exportDir` 回填（空串 = 默认）。
 
 ## 交互细节（每条都对应一段回归门）
 

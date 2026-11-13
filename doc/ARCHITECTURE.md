@@ -129,7 +129,8 @@ lib/
                  环境选项(readOnly/ssh 归一化、默认密钥)、零知识助手(describeConn/connLabel/scrubSecrets)、configure 决策纯函数(decideConfigureStep/argsChangedEndpoint/emptyUserDenied)
   i18n.mjs       宿主侧文案表与插值
   state.mjs      运行时状态机 enabled/phase/toolCount/lastError/mode + 订阅发布
-  options.mjs    部署开关：updateIntervalDays / showSidebarEntry / announceAccessPolicy；层叠 Config > prefs.json > 环境变量 > 内置默认
+  options.mjs    部署开关：updateIntervalDays / showSidebarEntry / announceAccessPolicy / exportDir；层叠 Config > prefs.json > 环境变量 > 内置默认；
+                 exportDir 保存时走 prepareExportDir 探针校验（不可写 → code:'badExportDir'，零写入）
   runtime.mjs    dbhub 可执行文件发现、按需自动安装、定期自动更新
   capability.mjs 上游能力探测（文件级，不 spawn）：[[tools]] readonly 与 ssh_* 需 1.4.0+
   toml.mjs       一次性 TOML 生成器 buildDbhubToml/writeTempToml/removeTempToml/sweepTempToml（文本绝不含秘密）
@@ -139,7 +140,8 @@ lib/
   collect.mjs    授权扫描项目配置文件(mise/.env)提取 DSN 候选，含 askUser 桥接；连接别名 assignConnectionAliases（唯一实现点）
   tools.mjs      4 个工具的定义与注册；configure 探连优先；SQL 写判定 classifySql + 会话权限闸门（sandboxPolicy/approval）；
                  结果行数上限 capExecuteSqlText；结果导出 exportReceiptText（摘要回执 + fail-soft）
-  export.mjs     查询结果导出：CSV(RFC 4180)/JSON 载荷生成、文件名 ASCII 安全化与长度上限、exports/ 落盘（0o700/0o600、wx 不覆盖）；纯函数 + 可注入 fs 缝
+  export.mjs     查询结果导出：CSV(RFC 4180)/JSON 载荷生成、可配置目录解析(~/ 展开、相对 = $DSH_HOME)与保存探针 prepareExportDir、
+                 文件名 ASCII 安全化与长度上限、exports/ 落盘（0o700/0o600、wx 不覆盖）；纯函数 + 可注入 fs 缝
   policy.mjs     模型侧访问策略：唯一的 system prompt 段（order 8900，含 @db:<句柄> 语义与别名→句柄目录；取行函数由 index 传入）
   client.js      Web 半（手写 lazy-CJS bundle，无构建）：settings.section + 侧边栏面板 + plugins.row.config(summary/page) + 输入框 `@` 输入源
 test/            node:test 单测（纯逻辑 + bridge/客户端契约 + 零知识泄漏门）

@@ -241,7 +241,25 @@ test('client bundle localizes copy through ctx.locale (zh/en dictionaries)', () 
   assert.match(source, /"conn\.title": "Connections"/)
   assert.match(source, /"btn\.addEnv": "＋ 环境"/)
   assert.match(source, /"btn\.addEnv": "＋ Environment"/)
-  assert.match(source, /"dsh\.tooOld":/)
+  // The three global settings rows and their refusal copy exist in BOTH tables:
+  // a key that only ships in zh renders as the raw key (or as a Chinese line) for
+  // an en user. (The full key-set/en-purity check is the locale-tables test below.)
+  assert.match(source, /"row\.concurrency": "测试并发数"/)
+  assert.match(source, /"row\.concurrency": "Test concurrency"/)
+  assert.match(source, /"row\.rows": "默认返回行数"/)
+  assert.match(source, /"row\.rows": "Default row limit"/)
+  assert.match(source, /"row\.exportDir": "导出目录"/)
+  assert.match(source, /"row\.exportDir": "Export directory"/)
+  assert.match(source, /"cfg\.badConcurrency": "测试并发数必须是 1–8 之间的整数"/)
+  assert.match(source, /"cfg\.badConcurrency": "the test concurrency must be a whole number between 1 and 8"/)
+  assert.match(source, /"cfg\.badRows": "默认返回行数必须是不小于 0 的整数/)
+  assert.match(source, /"cfg\.badRows": "the default row limit must be a whole number of 0 or more/)
+  assert.match(source, /"cfg\.exportDirPh": "留空 = 默认位置/)
+  assert.match(source, /"cfg\.exportDirPh": "blank = default/)
+  // The version-too-old copy is GONE (engines.dsh owns the gate): leaving it in
+  // one dictionary would resurrect a warning nothing renders any more.
+  assert.doesNotMatch(source, /"dsh\.tooOld/)
+  assert.doesNotMatch(source, /"dsh\.tooOldShort/)
 })
 
 test('client bundle releases its locale dictionaries on disposal (hot reload)', () => {
@@ -685,21 +703,21 @@ test('client bundle disables what the installed dbhub cannot do', () => {
   assert.match(source, /disabled: !roSupported,/)
 })
 
-test('client bundle renders every surface unconditionally and warns on an unsupported dsh', () => {
-  // 5.2 surfaces (title/version header, update prompt, wide settings block,
-  // inline read-only toggle, switch-style controls) are the ONLY surfaces now:
-  // 0.1.x is no longer supported, so nothing is version-gated any more. An old
-  // host gets a full page plus one visible warning line (never a blank card).
+test('client bundle renders every surface unconditionally and no longer warns about an old dsh', () => {
+  // 6.0: the plugin no longer judges the host version at all. `engines.dsh` in
+  // package.json declares the range and DSH refuses to load the plugin on an
+  // unsupported runtime, so there is nothing left for the card to warn about —
+  // the surfaces below are the ONLY ones, for every supported host.
   assert.doesNotMatch(source, /dshModern/)
+  assert.doesNotMatch(source, /dbh-tooold/, 'the version warning card is gone')
+  assert.doesNotMatch(source, /dshTooOld|dshMinVersion/, 'no host-side version verdict survives')
+  assert.doesNotMatch(source, /dsh\.tooOld/, 'nor its copy')
   assert.match(source, /var pluginVersion = typeof value\.pluginVersion === "string"/)
   assert.match(source, /var dshVersion = typeof value\.dshVersion === "string"/)
-  assert.match(source, /var dshTooOld = value\.dshTooOld === true;/)
-  assert.match(source, /className: "dbh-warncard dbh-tooold"/)
-  assert.match(source, /t\("dsh\.tooOld", \{ min: dshMinVersion, v: dshVersion \|\| "\?" \}\)/)
-  assert.match(source, /"dsh\.tooOld": "此插件需要 DSH \{min\} 或更高版本/)
-  assert.match(source, /"dsh\.tooOld": "This plugin requires DSH \{min\} or later/)
   assert.match(source, /var runtime = value\.runtime === "desktop"/)
-  // The three mounts are named, not guessed: settings dialog vs full pages.
+  // The three mounts are named, not guessed: settings dialog vs full pages. All
+  // three stay registered unconditionally (no version gate, no enabled gate for
+  // the settings/Plugins entries).
   assert.match(source, /function SettingsSectionPanel\(props\)/)
   assert.match(source, /function MainPanel\(props\)/)
   assert.match(source, /surface: "modal"/)
@@ -794,8 +812,18 @@ test('client bundle contributes the composer `@` source (one message, many refer
   assert.match(source, /clipboardText: function \(ref\) \{ return "@" \+ aliasOfHandle\(ref\); \},/)
   assert.match(source, /insert: \{\s*\n\s*source: "dbhub",/)
   assert.match(source, /appearance: "file",/)
-  // A candidate carries the alias, the handle and the metadata label only.
-  assert.match(source, /var cand = \{ name: alias, label: alias, description: bits\.join\(" · "\), value: handle \};/)
+  // A menu row carries the DISPLAY name (env, plus a workspace suffix only for a
+  // cross-workspace duplicate), the metadata label and the handle — nothing else.
+  assert.match(source, /staged\.push\(\{/)
+  assert.match(source, /display: display,/)
+  assert.match(source, /description: bits\.join\(" · "\),/)
+  assert.match(source, /value: String\(item\.row\.srcId \|\| ""\),/)
+  // The current session's workspace is the pinned group, and it is read through
+  // the OPTIONAL sessions service (no session -> plain title order, never a guess).
+  assert.match(source, /var currentWorkspacePath = function \(projection\) \{/)
+  assert.match(source, /ctx\.get\("sessions"\)/)
+  assert.match(source, /t\("at\.currentSection", \{ title: wsTitle \}\)/)
+  assert.match(source, /return compareText\(a\.path, b\.path\);/)
   assert.match(source, /if \(v\.enabled !== true\) return \[\];/)
   // ... and the service stays out of the declared dependencies.
   assert.match(source, /var inject = \["slots"\];/)

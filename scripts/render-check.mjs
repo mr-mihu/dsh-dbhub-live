@@ -286,6 +286,42 @@ const req = (name) => {
 }
 const bundle = definition.factory(req)
 
+// ── the page's stylesheet, captured ────────────────────────────────────────
+//
+// `ensureStyle()` injects one scoped <style> into `document.head`. Node has no
+// document, so the gate supplies the minimum surface it touches and keeps the
+// text — which makes the LAYOUT contract (a capped search box, equal control
+// heights, the multi-line DSN field) assertable instead of trusting a comment.
+const PAGE_STYLE = { text: '' }
+if (!globalThis.document) {
+  globalThis.document = {
+    hidden: false,
+    head: {
+      appendChild(el) {
+        if (el && el.id === 'dsh-dbhub-live-style') PAGE_STYLE.text = String(el.textContent || '')
+      },
+    },
+    getElementById() { return null },
+    createElement(tag) { return { tagName: tag, id: '', textContent: '' } },
+  }
+}
+/** The declaration block of one TOP-LEVEL rule in the captured stylesheet. */
+function cssRule(selector) {
+  const text = PAGE_STYLE.text
+  const needle = selector + '{'
+  let at = 0
+  for (;;) {
+    at = text.indexOf(needle, at)
+    if (at < 0) return ''
+    // A rule starts at the beginning or right after the previous rule's `}`;
+    // otherwise this is a descendant selector (`.dbh-row .dbh-input{…}`).
+    if (at === 0 || text[at - 1] === '}') break
+    at += 1
+  }
+  const end = text.indexOf('}', at)
+  return end < 0 ? '' : text.slice(at + selector.length + 1, end)
+}
+
 // ── fake host (settings namespace + slots + locale) ────────────────────────
 //
 // The locale registry is a PAGE-level singleton in the real client (one
@@ -339,9 +375,23 @@ function mount(snapshot, opts = {}) {
       }
     },
   }
+  // The optional `sessions` service (a real client service: `ctx.get('sessions')`
+  // whose `list.getSnapshot()` carries `byId[sessionId].cwd`). The `@` menu uses it
+  // to pin the CURRENT workspace's group on top; without the service the menu still
+  // works, in plain title order — both paths are exercised below.
+  const sessions = opts.sessions === false ? null : {
+    list: {
+      getSnapshot: () => ({
+        ids: Object.keys((opts.sessions && opts.sessions.byId) || {}),
+        byId: (opts.sessions && opts.sessions.byId) || {},
+        phase: 'ready',
+      }),
+    },
+  }
   const ctx = {
     get(name) {
       if (name === 'configForms') return opts.configForms ? configForms : undefined
+      if (name === 'sessions') return sessions || undefined
       if (name !== 'locale') return undefined
       return {
         getLocale: () => ({ active: lang }),
@@ -869,7 +919,8 @@ console.log('\n[8] interaction: add panel (global + per group), settings rows, c
   check('the 设置 toggle opens the settings rows', count(p.tree, 'dbh-settings') === 1)
   const bar = toHtml(classed(p.tree, 'dbh-settings')[0])
   check('rows carry the sidebar switch', bar.includes('侧边栏入口'))
-  check('rows keep the interval field', classed(p.tree, 'dbh-srow-input').length === 1)
+  check('rows keep the numeric settings (interval + concurrency + row limit)', classed(p.tree, 'dbh-srow-input').length === 3,
+    `got ${classed(p.tree, 'dbh-srow-input').length}`)
   // Toggling it applies immediately (no Save round-trip). Index 1 = sidebar
   // (0 = enable, 1 = sidebar, 2 = policy).
   const beforeWrites = p.setCalls.length
@@ -1400,9 +1451,11 @@ console.log('\n[23] modern wide page: quiet header, DSH-style settings rows, inl
   check('tool count / one-shot mode no longer in the header', !html.includes('4 个工具') && !html.includes('固定'), html.slice(0, 300))
   check('no runtime badge in the header', !html.includes('Web 版') && !html.includes('桌面版'))
   check('settings bar visible (wide page owns it)', count(p.tree, 'dbh-settings') === 1 && count(p.tree, 'dbh-settingsbar') === 1)
-  check('four settings groups on one compact line', count(p.tree, 'dbh-bargroup') === 4, `got ${count(p.tree, 'dbh-bargroup')}`)
+  check('four toggle groups on the first line, three numeric settings on the second',
+    count(p.tree, 'dbh-bargroup') === 7 && classed(p.tree, 'dbh-barline').length === 2,
+    `got ${count(p.tree, 'dbh-bargroup')} groups / ${classed(p.tree, 'dbh-barline').length} lines`)
   check('three harness Switch controls (enable / sidebar / policy)', switches(p.tree).length === 3, `got ${switches(p.tree).length}`)
-  check('dbhub update interval stays on the same line', classed(p.tree, 'dbh-srow-input').length === 1)
+  check('the interval keeps its own input', classed(p.tree, 'dbh-srow-input').length === 3)
   check('no stretched settings rows in wide mode', count(p.tree, 'dbh-srow') === 0)
   check('no old four-cell grid / gear strip', count(p.tree, 'dbh-config') === 0 && count(p.tree, 'dbh-strip') === 0)
   check('a read-only chip per row (outside the edit form)', classed(p.tree, 'dbh-rochip').length === 3, `got ${classed(p.tree, 'dbh-rochip').length}`)
@@ -1530,7 +1583,7 @@ console.log('\n[26] modern settings dialog: compact header, 设置 disclosure, r
     p.tree = p.renderAgain()
   }
   html = toHtml(p.tree)
-  check('the dialog opens the same DSH-style rows', count(p.tree, 'dbh-settings') === 1 && count(p.tree, 'dbh-srow') === 4)
+  check('the dialog opens the same DSH-style rows', count(p.tree, 'dbh-settings') === 1 && count(p.tree, 'dbh-srow') === 7)
   check('sidebar/policy controls are harness switches', switches(p.tree).length === 3)
   const modernRows = classed(p.tree, 'dbh-settings')[0]
   check('no legacy tick-box left in the settings rows', elements(modernRows, (el) => el.type === 'input' && String(el.props.className || '').includes('dbh-checkbox')).length === 0)
@@ -1558,47 +1611,9 @@ console.log('\n[27] modern phone browser: stacked layout, chips and settings sti
     clickClass(p.tree, 'dbh-linkbtn')
     p.tree = p.renderAgain()
   }
-  check('phone can open the settings rows', count(p.tree, 'dbh-srow') === 4)
+  check('phone can open the settings rows', count(p.tree, 'dbh-srow') === 7)
   viewport(1440)
   p.dispose()
-}
-
-console.log('\n[28] unsupported dsh version: one visible warning, the page keeps working')
-{
-  viewport(1440)
-  const p = await page(TILED, {
-    slot: 'main',
-    snapshot: Object.assign({}, MODERN_DEFAULTS, { dshTooOld: true, dshVersion: '0.1.6-alpha.2' }),
-    props: { useWorkspaces: wsSnap('D:/work/app') },
-  })
-  const html = toHtml(p.tree)
-  // The warning is a normal block in the flow (not a modal, not an empty page):
-  // it must name both versions and leave every control in place.
-  check('the warning is rendered exactly once', count(p.tree, 'dbh-tooold') === 1, html.slice(0, 300))
-  check('the warning is an accessible alert',
-    String((classed(p.tree, 'dbh-tooold')[0] || { props: {} }).props.role || '') === 'alert')
-  const warn = toHtml(classed(p.tree, 'dbh-tooold')[0] || { children: [], props: {} })
-  check('the warning names the minimum and the running version',
-    warn.includes('0.2.1') && warn.includes('0.1.6-alpha.2'), warn)
-  // Nothing is version-gated any more: a full page, rows, chips and switches.
-  check('the page is not blank (rows still render)', count(p.tree, 'dbh-tile') === 3, `got ${count(p.tree, 'dbh-tile')}`)
-  check('the title bar and settings still render',
-    count(p.tree, 'dbh-titlebar') === 1 && count(p.tree, 'dbh-settingsbar') === 1)
-  check('read-only chips still render', classed(p.tree, 'dbh-rochip').length === 3)
-  check('the harness Switch still renders', switches(p.tree).length === 3)
-  p.dispose()
-  viewport(1440)
-  const en = await page(TILED, {
-    lang: 'en',
-    slot: 'main',
-    snapshot: Object.assign({}, MODERN_DEFAULTS, { dshTooOld: true, dshVersion: '0.1.6-alpha.2' }),
-    props: { useWorkspaces: wsSnap('D:/work/app') },
-  })
-  const enWarn = toHtml(classed(en.tree, 'dbh-tooold')[0] || { children: [], props: {} })
-  check('the warning is localized into English too',
-    enWarn.includes('DSH 0.2.1') && enWarn.includes('0.1.6-alpha.2') && enWarn.includes('Upgrade DSH'), enWarn)
-  en.dispose()
-  viewport(1440)
 }
 
 console.log('\n[29] narrow desktop window: non-modal pages keep the horizontal settings bar')
@@ -1616,7 +1631,7 @@ console.log('\n[29] narrow desktop window: non-modal pages keep the horizontal s
   check('narrow desktop still renders the settings bar', count(p.tree, 'dbh-settingsbar') === 1, html.slice(0, 200))
   check('narrow bar uses the compact variant', classed(p.tree, 'dbh-barnarrow').length === 1)
   check('no vertical settings rows on a narrow desktop', count(p.tree, 'dbh-srow') === 0)
-  check('all four controls stay reachable', count(p.tree, 'dbh-bargroup') === 4 && switches(p.tree).length === 3)
+  check('all controls stay reachable', count(p.tree, 'dbh-bargroup') === 7 && switches(p.tree).length === 3)
   viewport(1440)
   p.dispose()
 }
@@ -2432,7 +2447,7 @@ console.log('\n[47] the composer `@` source names connections without leaking th
 // ① The source shape: the optional input-trigger service is stubbed by the fake
 // host, so what is asserted here is the contract the bundle uses (trigger, group
 // name, hooks) — not another plugin's implementation.
-const at1 = await page(AT_MENU, {})
+const at1 = await page(AT_MENU, { sessions: { byId: { 's-at': { cwd: 'D:/work/app' } } } })
 const atSources = at1.inputTriggers ? at1.inputTriggers.sources : []
 check('exactly one dbhub @ source is registered', atSources.length === 1, JSON.stringify(atSources.map((s) => s && s.name)))
 const atSrc = atSources[0] || {}
@@ -2443,31 +2458,59 @@ check('the source exposes candidates/onPick/codec/lexicon/subscribeLexicon/warm'
   && !!atSrc.codec && typeof atSrc.codec.serialize === 'function' && typeof atSrc.codec.clipboardText === 'function'
   && typeof atSrc.lexicon === 'function' && typeof atSrc.subscribeLexicon === 'function' && typeof atSrc.warm === 'function')
 
-// ② Candidates come from the SAME /state rows the card renders.
+// ② Candidates come from the SAME /state rows the card renders, grouped by
+// WORKSPACE with the current session's workspace pinned first.
 const atCandidates = typeof atSrc.candidates === 'function'
-  ? await atSrc.candidates(null, { query: '', position: 0, drilled: false })
+  ? await atSrc.candidates({ sessionId: 's-at' }, { query: '', position: 0, drilled: false })
   : []
 check('one candidate per connection row', atCandidates.length === 3, JSON.stringify(atCandidates.map((c) => c && c.name)))
 const atNames = atCandidates.map((c) => c && c.name)
-check('candidate names are the Host aliases and stay unique in the menu',
-  new Set(atNames).size === 3 && atNames.indexOf('default') >= 0, JSON.stringify(atNames))
-check('two workspaces both owning prod keep DISTINCT aliases',
-  atNames.indexOf('app_prod') >= 0 && atNames.indexOf('billing_prod') >= 0, JSON.stringify(atNames))
+const atSections = atCandidates.map((c) => c && c.section)
+check('candidate names stay unique inside the source (exact matching needs it)',
+  new Set(atNames).size === 3, JSON.stringify(atNames))
+check('the current session workspace is the FIRST group, and it says so',
+  atSections[0] === '当前工作区 · app' && atSections.filter((s) => s === '当前工作区 · app').length === 2,
+  JSON.stringify(atSections))
+check('the other workspaces follow, in title order', atSections[2] === 'billing', JSON.stringify(atSections))
+check('an item shows ONLY its environment name when that name is unique',
+  atNames.indexOf('default') >= 0 && atNames.indexOf('app_default') < 0, JSON.stringify(atNames))
+check('…and only the CROSS-workspace duplicates get the short workspace suffix',
+  atNames.indexOf('prod · app') >= 0 && atNames.indexOf('prod · billing') >= 0, JSON.stringify(atNames))
 const atByName = (name) => atCandidates.find((c) => c && c.name === name) || {}
-const atProd = atByName('app_prod')
-check('a candidate describes its workspace, its metadata label and the read-only flag',
-  atProd.label === 'app_prod'
-  && String(atProd.description).includes('app')
-  && String(atProd.description).includes('mysql://127.0.0.1:3307/app')
-  && String(atProd.description).includes('只读'),
-  JSON.stringify(atProd))
-check('the section is the workspace title', atProd.section === 'app' && atByName('billing_prod').section === 'billing',
-  JSON.stringify(atCandidates.map((c) => c && c.section)))
+const atProd = atByName('prod · app')
+const atBill = atByName('prod · billing')
+check('a candidate describes its metadata label and the read-only flag (the section owns the workspace name)',
+  atProd.label === 'prod · app'
+  && String(atProd.description) === 'mysql://127.0.0.1:3307/app · 只读'
+  && String(atBill.description) === 'postgres://127.0.0.1:5432/bill',
+  JSON.stringify([atProd, atBill]))
 check('the candidate VALUE is the immutable source handle', atProd.value === 'app_1a2b3c_prod', JSON.stringify(atProd.value))
 const atLeak = JSON.stringify(atCandidates)
 check('no DSN, credential or local path reaches a candidate',
   !/:\/\/[^/\s]*:[^@\s]+@/.test(atLeak) && !atLeak.includes('D:/work') && !/password|passwd|secret|token/i.test(atLeak),
   atLeak)
+
+// ②b A host WITHOUT the sessions service cannot know the current workspace: the
+// menu must degrade to plain title order instead of guessing or throwing.
+const atNoSessions = await page(AT_MENU, { sessions: false })
+const atNoSessionsSrc = (atNoSessions.inputTriggers.sources || [])[0] || {}
+const atPlain = await atNoSessionsSrc.candidates({ sessionId: 's-at' }, { query: '', position: 0, drilled: false })
+check('without the sessions service the menu keeps a stable title order',
+  atPlain.map((c) => c.section).join('|') === 'app|app|billing', JSON.stringify(atPlain.map((c) => c.section)))
+
+// ②c Scan order must not move the menu: reversed rows produce the same order.
+const AT_MENU_REVERSED = AT_MENU.slice().reverse()
+const atRev = await page(AT_MENU_REVERSED, { sessions: { byId: { 's-at': { cwd: 'D:/work/app' } } } })
+const atRevSrc = (atRev.inputTriggers.sources || [])[0] || {}
+const atRevCand = await atRevSrc.candidates({ sessionId: 's-at' }, { query: '', position: 0, drilled: false })
+check('the menu order does not follow the scan order',
+  JSON.stringify(atRevCand.map((c) => [c.section, c.name]))
+  === JSON.stringify(atCandidates.map((c) => [c.section, c.name])),
+  JSON.stringify(atRevCand.map((c) => [c.section, c.name])))
+const atBack = await page(AT_MENU, { sessions: { byId: { 's-at': { cwd: 'D:/work/app' } } } })
+const atBackSrc = (atBack.inputTriggers.sources || [])[0] || {}
+const atBackCand = await atBackSrc.candidates({ sessionId: 's-at' }, { query: '', position: 0, drilled: false })
+const atProd2 = atBackCand.find((c) => c && c.name === 'prod · app') || {}
 
 // ③ Pick → insert: the routing key is the source name, the payload is the handle.
 const atPicked = typeof atSrc.onPick === 'function'
@@ -2476,8 +2519,8 @@ const atPicked = typeof atSrc.onPick === 'function'
 const atInsert = atPicked && atPicked.insert
 check('pick inserts a reference routed back to this source',
   !!atInsert && atInsert.source === 'dbhub' && atInsert.appearance === 'file', JSON.stringify(atPicked))
-check('the insert carries the HANDLE (not the alias) and shows the alias',
-  !!atInsert && atInsert.ref === 'app_1a2b3c_prod' && atInsert.label === 'app_prod' && atInsert.clipboardText === '@app_prod',
+check('the insert carries the HANDLE and shows the menu name (the alias stays the copy spelling)',
+  !!atInsert && atInsert.ref === 'app_1a2b3c_prod' && atInsert.label === 'prod · app' && atInsert.clipboardText === '@app_prod',
   JSON.stringify(atInsert))
 
 // ④ Codec: each chip serializes on its own — that is what makes SEVERAL
@@ -2488,7 +2531,7 @@ check('clipboardText resolves the CURRENT alias of the handle',
   atSrc.codec.clipboardText('app_1a2b3c_prod') === '@app_prod', atSrc.codec.clipboardText('app_1a2b3c_prod'))
 check('an UNKNOWN handle falls back to the handle, never to a guess',
   atSrc.codec.clipboardText('gone_zzzz') === '@gone_zzzz', atSrc.codec.clipboardText('gone_zzzz'))
-const atTwoRefs = [atByName('app_prod').value, atByName('billing_prod').value].map((r) => atSrc.codec.serialize(r))
+const atTwoRefs = [atProd2.value, atBill.value].map((r) => atSrc.codec.serialize(r))
 check('one message can carry several references, each serialized on its own',
   atTwoRefs.join(' ') === '@db:app_1a2b3c_prod @db:billing_1a2b3c_prod', JSON.stringify(atTwoRefs))
 check('the lexicon lists every alias',
@@ -2528,78 +2571,61 @@ check('a host without inputTriggers still mounts and registers nothing',
   atNoService.inputTriggers === null && !!slotEntry(atNoService, 'settings.section'),
   JSON.stringify({ triggers: atNoService.inputTriggers, settings: !!slotEntry(atNoService, 'settings.section') }))
 
-console.log('\n[48] per-environment row cap: number input, local refusal, options patch')
+console.log('\n[48] global settings: test concurrency / row limit / export directory')
 {
-  const rows = [
-    row('cap-app', 'D:/work/cap', 'default', 'mysql://127.0.0.1:3306/app'),
-    row('cap-app', 'D:/work/cap', 'prod', 'postgres://127.0.0.1:5432/app', { maxRows: 500 }),
-  ]
-  const p = await page(rows, {})
-  const chips = classed(p.tree, 'dbh-envname')
-  // The cap changes what a query RETURNS, so a capped row says so in the same
-  // tooltip that carries the other per-row attributes.
-  check('a capped row states its cap in the chip tooltip',
-    String(chips[1].props.title || '').includes('最多 500 行'), String(chips[1].props.title))
-  check('an uncapped row says nothing about a cap',
-    !String(chips[0].props.title || '').includes('最多'), String(chips[0].props.title))
-
-  clickLabelAt(p.tree, '修改', 1)
-  p.tree = p.renderAgain()
-  // `uiMemory.advOpen` is module-level (it survives remounts on purpose) and so
-  // is the add panel, so scope every probe to THIS row's editor instead of the
-  // whole tree — a leftover open add panel also carries a cap row.
-  const editScope = () => classed(p.tree, 'dbh-editbox')[0]
-  const editCapRows = () => (editScope() ? classed(editScope(), 'dbh-caprow') : [])
-  if (editScope() && classed(editScope(), 'dbh-advbody').length === 0) {
-    clickWithin(p.tree, 'dbh-editbox', '高级：SSH 隧道')
-    p.tree = p.renderAgain()
-  }
-  check('the row cap lives inside the row editor (one row)',
-    editCapRows().length === 1, `got ${editCapRows().length}`)
-  const capInput = classed(editCapRows()[0] || { children: [] }, 'dbh-input')[0]
-  check('it is a number input prefilled from the row, advertising "0 or blank = unlimited"',
-    !!capInput && capInput.props.type === 'number' && String(capInput.props.value) === '500'
-    && capInput.props.placeholder === '0 或留空 = 不限',
-    JSON.stringify(capInput && capInput.props))
-
-  // ① An illegal value is refused LOCALLY: one visible reason, ZERO requests.
-  const postsBefore = p.posts.length
-  typeWithin(editScope(), 'dbh-caprow', 0, '1.5')
-  p.tree = p.renderAgain()
-  clickWithin(p.tree, 'dbh-editrow', '保存')
-  p.tree = p.renderAgain()
-  check('an invalid cap sends no request at all', p.posts.length === postsBefore, JSON.stringify(p.posts.slice(postsBefore)))
-  check('…and names what the field accepts', classed(p.tree, 'dbh-invalid').length === 1
-    && toHtml(classed(p.tree, 'dbh-invalid')[0]).includes('不小于 0 的整数'), toHtml(p.tree).slice(0, 400))
-  check('no cap write was dispatched for the invalid value',
-    !p.opCalls.some((o) => o.op === 'options' && o.maxRows !== undefined), JSON.stringify(p.opCalls))
-
-  // ② A legal value goes through the NORMAL options write — never a DSN.
-  typeWithin(editScope(), 'dbh-caprow', 0, '250')
-  p.tree = p.renderAgain()
-  check('typing clears the previous refusal', classed(p.tree, 'dbh-invalid').length === 0)
-  const opsBefore = p.opCalls.length
-  clickWithin(p.tree, 'dbh-editrow', '保存')
-  p.tree = p.renderAgain()
-  const capOp = p.opCalls.slice(opsBefore).filter((o) => o.op === 'options').pop()
-  check('saving sends an options op carrying the new cap', !!capOp && capOp.maxRows === 250, JSON.stringify(capOp))
-  check('the cap write carries no DSN', !!capOp && capOp.dsn === undefined, JSON.stringify(capOp))
-  check('the cap write targets the row environment', !!capOp && capOp.env === 'prod', JSON.stringify(capOp))
-
-  // ③ An emptied field is the explicit "unlimited" (0), exactly like
-  // `readOnly: false`: the write must CLEAR the stored cap, not omit it.
+  viewport(1440)
+  const p = await page(TILED, { slot: 'main', props: { useWorkspaces: wsSnap('D:/work/app') } })
   await flush()
   p.tree = p.renderAgain()
-  clickLabelAt(p.tree, '修改', 1)
+  const bar = classed(p.tree, 'dbh-barline2')[0]
+  check('the second settings line renders', !!bar, toHtml(p.tree).slice(0, 300))
+  const inputs = bar ? classed(bar, 'dbh-input') : []
+  check('three settings inputs: concurrency, row limit, export directory', inputs.length === 3, `got ${inputs.length}`)
+  check('the concurrency box defaults to 2 and is numeric',
+    String((inputs[0] || { props: {} }).props.value) === '2' && (inputs[0] || { props: {} }).props.type === 'number',
+    JSON.stringify((inputs[0] || {}).props))
+  check('the row-limit box defaults to 0 (= unlimited)',
+    String((inputs[1] || { props: {} }).props.value) === '0')
+  check('the export directory starts blank (= the default location)',
+    String((inputs[2] || { props: {} }).props.value) === '')
+  check('…and its placeholder says blank means the default',
+    String((inputs[2] || { props: {} }).props.placeholder || '').includes('默认位置'),
+    JSON.stringify((inputs[2] || {}).props))
+
+  // ① An out-of-range concurrency is refused LOCALLY: one reason, zero requests.
+  const postsBefore = p.posts.length
+  typeWithin(p.tree, 'dbh-barline2', 0, '9')
   p.tree = p.renderAgain()
-  typeWithin(editScope(), 'dbh-caprow', 0, '')
+  clickWithin(p.tree, 'dbh-settingsbar', '保存')
   p.tree = p.renderAgain()
-  const clearBefore = p.opCalls.length
-  clickWithin(p.tree, 'dbh-editrow', '保存')
+  check('an out-of-range concurrency sends no request',
+    p.posts.length === postsBefore, JSON.stringify(p.posts.slice(postsBefore)))
+  check('…and names the accepted range',
+    classed(p.tree, 'dbh-invalid').length === 1
+    && toHtml(classed(p.tree, 'dbh-invalid')[0]).includes('1–8'),
+    toHtml(p.tree).slice(0, 400))
+
+  // ② Valid values ride ONE options write that still carries the older keys.
+  typeWithin(p.tree, 'dbh-barline2', 0, '5')
   p.tree = p.renderAgain()
-  const clearOp = p.opCalls.slice(clearBefore).filter((o) => o.op === 'options').pop()
-  check('an emptied field saves 0 (unlimited)', !!clearOp && clearOp.maxRows === 0, JSON.stringify(clearOp))
+  typeWithin(p.tree, 'dbh-barline2', 1, '100')
+  p.tree = p.renderAgain()
+  typeWithin(p.tree, 'dbh-barline2', 2, 'D:/tmp/exports')
+  p.tree = p.renderAgain()
+  const before = p.posts.length
+  clickWithin(p.tree, 'dbh-settingsbar', '保存')
+  await flush()
+  const sent = (p.posts[before] || {}).body || {}
+  check('saving posts one options write carrying all three settings',
+    sent.batchConcurrency === 5 && sent.defaultMaxRows === 100 && sent.exportDir === 'D:/tmp/exports',
+    JSON.stringify(sent))
+  check('the write keeps the interval and the switches too',
+    sent.updateIntervalDays !== undefined && sent.showSidebarEntry !== undefined
+    && sent.announceAccessPolicy !== undefined, JSON.stringify(sent))
+  p.dispose()
+  viewport(1440)
 }
+
 
 console.log('\n[49] connection search / sort / batch test (display-only, local state)')
 {
@@ -2634,7 +2660,7 @@ console.log('\n[49] connection search / sort / batch test (display-only, local s
   const p = await page(LS_TILED, { snapshot: Object.assign({}, MODERN_DEFAULTS), props: { useWorkspaces: wsRecent(sortMap) } })
   check('the list offers a search box above the rows (tiled layout)',
     count(p.tree, 'dbh-search-input') === 1, `got ${count(p.tree, 'dbh-search-input')}`)
-  check('…with the 搜索连接… placeholder', String((searchInputOf(p.tree) || { props: {} }).props.placeholder || '') === '搜索连接…',
+  check('…with a placeholder that names what it searches', String((searchInputOf(p.tree) || { props: {} }).props.placeholder || '') === '搜索连接 / 别名 / 库',
     JSON.stringify((searchInputOf(p.tree) || { props: {} }).props.placeholder))
   check('every row is listed before filtering', count(p.tree, 'dbh-tile') === 3, `got ${count(p.tree, 'dbh-tile')}`)
 
@@ -2783,8 +2809,8 @@ console.log('\n[49] connection search / sort / batch test (display-only, local s
   })
   const batchBtn = () => classed(b.tree, 'dbh-batchbtn')[0]
   const batchLabel = () => (batchBtn() ? toHtml(batchBtn()) : '')
-  check('the header offers 测试全部 with the visible row count',
-    count(b.tree, 'dbh-batchbtn') === 1 && batchLabel().includes('测试全部（5）'), batchLabel())
+  check('the toolbar offers a quiet 测试全部 button',
+    count(b.tree, 'dbh-batchbtn') === 1 && batchLabel().includes('测试全部') && !batchLabel().includes('（'), batchLabel())
   if (batchBtn() && typeof batchBtn().props.onClick === 'function') batchBtn().props.onClick({ stopPropagation() {}, preventDefault() {} })
   b.tree = b.renderAgain()
   check('a batch runs at most TWO probes at a time', held.length === 2, String(held.length) + ' probe(s) dispatched')
@@ -2792,7 +2818,8 @@ console.log('\n[49] connection search / sort / batch test (display-only, local s
   check('running rows say 测试中…', count(b.tree, 'dbh-test-batch') === 2, 'got ' + count(b.tree, 'dbh-test-batch'))
   check('the summary counts everything as untested while the run is open',
     textMatching(b.tree, 'dbh-batchsum').includes('5 未测'), textMatching(b.tree, 'dbh-batchsum'))
-  check('the running control becomes 停止', batchLabel().includes('停止'), batchLabel())
+  check('the running control becomes 停止 and shows 0/5 progress',
+    batchLabel().includes('停止') && batchLabel().includes('0/5'), batchLabel())
 
   // Resolve the first probe: its row reports SUCCESS from the POST answer (no
   // mirror, no 1.5s poll) and the next queued row starts.
@@ -2800,6 +2827,7 @@ console.log('\n[49] connection search / sort / batch test (display-only, local s
   b.tree = b.renderAgain()
   check('a finished row reports 通过 ✓', count(b.tree, 'dbh-batch-ok') === 1, 'got ' + count(b.tree, 'dbh-batch-ok'))
   check('a finished row frees its slot (a third probe is running)', held.length === 3, held.length + ' dispatched')
+  check('the progress advances to 1/5', batchLabel().includes('1/5'), batchLabel())
   check('the summary counts the pass', textMatching(b.tree, 'dbh-batchsum').includes('1 通过'), textMatching(b.tree, 'dbh-batchsum'))
 
   // A failure carries its reason, truncated so one long Host text cannot push the
@@ -2838,11 +2866,12 @@ console.log('\n[49] connection search / sort / batch test (display-only, local s
   // N = what the user can SEE: filtering to one row must run one probe, not five
   // ("I filtered to 1 and it tested 5" is the complaint this pins).
   typeSearch(b, 't1')
-  check('the batch button counts the FILTERED rows', batchLabel().includes('测试全部（1）'), batchLabel())
+  check('the idle button no longer carries the count (the tally does)', batchLabel().includes('测试全部'), batchLabel())
   const heldBeforeFiltered = held.length
   if (batchBtn() && typeof batchBtn().props.onClick === 'function') batchBtn().props.onClick({ stopPropagation() {}, preventDefault() {} })
   b.tree = b.renderAgain()
   check('only the visible row is probed', held.length === heldBeforeFiltered + 1, (held.length - heldBeforeFiltered) + ' probe(s)')
+  check('the progress denominator is the FILTERED row count', batchLabel().includes('0/1'), batchLabel())
   // Answer it, so the row carries a finished BATCH verdict for the retest below.
   await settleProbe(held.length - 1, true, '')
   b.tree = b.renderAgain()
@@ -2871,6 +2900,151 @@ console.log('\n[49] connection search / sort / batch test (display-only, local s
   globalThis.setTimeout = realSetTimeout
   globalThis.clearTimeout = realClearTimeout
   check('unmounting the card leaves no timer behind', pendingTimers.size === 0, `${pendingTimers.size} live timer(s)`)
+}
+
+console.log('\n[50] one tidy toolbar line and a DSN field you can actually read')
+{
+  viewport(1440)
+  const rows = [
+    row('alpha', 'D:/qa/tb-alpha', 'default', 'mysql://127.0.0.1:3306/alpha'),
+    row('beta', 'D:/qa/tb-beta', 'default', 'postgres://127.0.0.1:5432/beta'),
+  ]
+  const p = await page(rows, { snapshot: Object.assign({}, MODERN_DEFAULTS) })
+  const bar = classed(p.tree, 'dbh-searchbar')[0] || { props: {}, children: [] }
+  const barKids = (bar.children || []).map((c) => String((c.props || {}).className || ''))
+  const sortAt = barKids.findIndex((c) => c.includes('dbh-sort') && !c.includes('dbh-sortbtn'))
+  const batchAt = barKids.findIndex((c) => c.includes('dbh-batchbtn'))
+  const growAt = barKids.indexOf('dbh-grow')
+
+  // ① The three clusters are siblings of the SAME container, in one row: the
+  // search box must not take a line of its own (a full-width input on a wide card
+  // is a 900px-long search field).
+  check('the toolbar is one labelled group', bar.props.role === 'group' && !!bar.props['aria-label'],
+    JSON.stringify({ role: bar.props.role, label: bar.props['aria-label'] }))
+  check('search + sort + batch share that single container',
+    barKids.indexOf('dbh-input dbh-search-input') >= 0 && sortAt > 0 && batchAt > sortAt, JSON.stringify(barKids))
+  check('a spacer keeps sort/batch flush with the right edge',
+    growAt >= 0 && growAt < sortAt, JSON.stringify({ growAt, sortAt }))
+
+  const searchEl = classed(bar, 'dbh-search-input')[0] || { props: {} }
+  check('the search placeholder names the three searchable things',
+    searchEl.props.placeholder === '搜索连接 / 别名 / 库', JSON.stringify(searchEl.props.placeholder))
+  check('the search box is a plain input, not a second row', searchEl.type === 'input' && searchEl.props.value === '')
+
+  // ①b The row's geometry: one flex line, 8px rhythm, equal 28px controls, and a
+  // CAPPED search box (a `flex:1` box with no ceiling becomes a 900px field).
+  const barCss = cssRule('.dbh-searchbar')
+  check('the row is one centred flex line with an 8px rhythm',
+    /display:flex/.test(barCss) && /align-items:center/.test(barCss) && /gap:8px/.test(barCss), barCss)
+  check('the search box grows but is capped at 320px',
+    /flex:1 1 200px/.test(cssRule('.dbh-search-input')) && /max-width:320px/.test(cssRule('.dbh-search-input')),
+    cssRule('.dbh-search-input'))
+  check('the tabs and the batch button are the same 28px height as the search field',
+    /height:28px/.test(cssRule('.dbh-sortbtn')) && /height:28px/.test(cssRule('.dbh-batchbtn'))
+    && /height:28px/.test(cssRule('.dbh-sort')) && /height:28px/.test(cssRule('.dbh-input')),
+    JSON.stringify([cssRule('.dbh-sortbtn'), cssRule('.dbh-batchbtn')]))
+  check('the active tab is underlined (text colour + inset rule, no extra colour)',
+    /box-shadow:inset 0 -2px 0/.test(cssRule('.dbh-sortbtn-on')), cssRule('.dbh-sortbtn-on'))
+  check('the phone keeps the search on its own line, tabs + batch on the next',
+    /flex:1 1 100%/.test(cssRule('.dbh-mobile .dbh-search-input')), cssRule('.dbh-mobile .dbh-search-input'))
+
+  // ② Sort is two INLINE tabs, never a dropdown.
+  const sortGroup = classed(bar, 'dbh-sort')[0] || { children: [], props: {} }
+  const sortBtns = classed(sortGroup, 'dbh-sortbtn')
+  check('sort is two inline tabs in a labelled group',
+    sortGroup.props.role === 'group' && !!sortGroup.props['aria-label'] && sortBtns.length === 2,
+    JSON.stringify({ role: sortGroup.props.role, tabs: sortBtns.length }))
+  check('no <select> anywhere (the sort is not a dropdown)',
+    elements(p.tree, (el) => el.type === 'select').length === 0)
+  check('exactly one tab is pressed and marked',
+    sortBtns[0].props['aria-pressed'] === true && sortBtns[1].props['aria-pressed'] === false
+    && String(sortBtns[0].props.className).includes('dbh-sortbtn-on')
+    && !String(sortBtns[1].props.className).includes('dbh-sortbtn-on'))
+  check('the two tab labels are 名称 / 最近更新',
+    toHtml(sortBtns[0]).includes('名称') && toHtml(sortBtns[1]).includes('最近更新'))
+  const recentTab = sortBtns[1]
+  if (typeof recentTab.props.onClick === 'function') recentTab.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  p.tree = p.renderAgain()
+  const pressedAfter = classed(classed(p.tree, 'dbh-sort')[0], 'dbh-sortbtn').map((b) => b.props['aria-pressed'])
+  check('clicking a tab moves the pressed state (no panel, same list)',
+    JSON.stringify(pressedAfter) === JSON.stringify([false, true]), JSON.stringify(pressedAfter))
+
+  // ③ The batch action is a quiet secondary button; no rows disables it.
+  const batchBtn = classed(p.tree, 'dbh-batchbtn')[0] || { props: {} }
+  check('the batch action is a bordered secondary button, not a primary one',
+    String(batchBtn.props.className).includes('dbh-btn') && !String(batchBtn.props.className).includes('dbh-btn-primary'),
+    String(batchBtn.props.className))
+  const empty = await page([], { snapshot: Object.assign({}, MODERN_DEFAULTS) })
+  const emptyBtn = classed(empty.tree, 'dbh-batchbtn')[0] || { props: {} }
+  check('no connections → the batch button is disabled', emptyBtn.props.disabled === true, JSON.stringify(emptyBtn.props))
+
+  // ④ The DSN editor is a 2-row MONOSPACE textarea that grows with its content and
+  // still feeds the same write path (trim only — `connDraftOf` untouched).
+  const q = await page(rows, { snapshot: Object.assign({}, MODERN_DEFAULTS) })
+  clickLabelAt(q.tree, '修改', 0)
+  q.tree = q.renderAgain()
+  const editScope = () => classed(q.tree, 'dbh-editbox')[0]
+  const dsnBox = () => classed(editScope(), 'dbh-dsninput')[0] || { props: {} }
+  check('the row editor edits the DSN in a textarea', dsnBox().type === 'textarea',
+    dsnBox().type || 'missing')
+  check('…that starts at two rows and keeps the shared input class (helpers + styling)',
+    dsnBox().props.rows === 2 && String(dsnBox().props.className).includes('dbh-input'),
+    JSON.stringify({ rows: dsnBox().props.rows, className: dsnBox().props.className }))
+  check('…and still carries the DSN placeholder + accessible name',
+    String(dsnBox().props.placeholder).includes('完整 DSN') && String(dsnBox().props['aria-label']).includes('连接串'),
+    JSON.stringify({ ph: dsnBox().props.placeholder, label: dsnBox().props['aria-label'] }))
+  // The CSS is what actually makes the string readable: auto-growing between two
+  // and eight lines, wrapping, monospace, and still user-resizable.
+  const dsnCss = cssRule('.dbh-dsninput')
+  check('the DSN field auto-grows between 2 and 8 lines, then scrolls',
+    /field-sizing:content/.test(dsnCss) && /min-height:calc\(2\*1\.5em \+ 14px\)/.test(dsnCss)
+    && /max-height:calc\(8\*1\.5em \+ 14px\)/.test(dsnCss) && /overflow:auto/.test(dsnCss), dsnCss)
+  check('…wraps instead of clipping (pre-wrap + anywhere)',
+    /white-space:pre-wrap/.test(dsnCss) && /overflow-wrap:anywhere/.test(dsnCss), dsnCss)
+  check('…is monospace and vertically resizable',
+    /ui-monospace/.test(dsnCss) && /resize:vertical/.test(dsnCss), dsnCss)
+  check('the phone shrinks the same field to a shorter ceiling',
+    /max-height:calc\(6\*1\.5em \+ 14px\)/.test(cssRule('.dbh-mobile .dbh-dsninput')), cssRule('.dbh-mobile .dbh-dsninput'))
+  const longDsn = 'mysql://readonly_user:CHANGE_ME@db.internal.example:3306/analytics_replica?charset=utf8mb4&ssl=true'
+  // Only drive the field when it exists: a regression that drops the textarea must
+  // show every failing assertion instead of throwing on the first undefined node.
+  const typed = classed(editScope(), 'dbh-input')[1]
+  if (typed && typeof typed.props.onChange === 'function') typed.props.onChange({ target: { value: longDsn } })
+  q.tree = q.renderAgain()
+  const dsnValue = String((classed(editScope(), 'dbh-dsninput')[0] || { props: {} }).props.value || '')
+  check('the whole pasted string is visible in the field (no single-line clipping)',
+    dsnValue === longDsn, dsnValue.slice(0, 40))
+  const opsBefore = q.opCalls.length
+  clickWithin(q.tree, 'dbh-editrow', '保存')
+  q.tree = q.renderAgain()
+  const probe = q.opCalls.slice(opsBefore).filter((o) => o.dsn !== undefined).pop()
+  check('saving sends the FULL string (trimmed) through the existing probe op',
+    !!probe && probe.dsn === longDsn && probe.op === 'test', JSON.stringify(probe && { op: probe.op, len: String(probe.dsn || '').length }))
+  check('the DSN never lands in the page as text', !toHtml(q.tree).includes('CHANGE_ME'), toHtml(q.tree).slice(0, 200))
+
+  // ⑤ The add panel uses the same field.
+  click(q.tree, '＋ 添加连接')
+  q.tree = q.renderAgain()
+  // `uiMemory.advOpen` survives mounts: an earlier section may have left the SSH
+  // panel open, and it adds its own `.dbh-input` (the row cap). Collapse it so the
+  // three-field contract is what this asserts.
+  if (classed(q.tree, 'dbh-advbody').length > 0) {
+    clickWithin(q.tree, 'dbh-addpanel', '高级：SSH 隧道')
+    q.tree = q.renderAgain()
+  }
+  const addPanel = classed(q.tree, 'dbh-addpanel')[0] || { props: {}, children: [] }
+  const addInputs = classed(addPanel, 'dbh-input')
+  check('the add panel keeps its three fields', addInputs.length === 3, `got ${addInputs.length}`)
+  check('the add panel DSN field is the same textarea',
+    !!addInputs[2] && addInputs[2].type === 'textarea' && addInputs[2].props.rows === 2
+    && addInputs[2].props.placeholder === 'mysql://user:pass@host:3306/db',
+    JSON.stringify(addInputs[2] && { type: addInputs[2].type, rows: addInputs[2].props.rows }))
+  // The gate helpers must keep working on the new field (typing is still onChange).
+  typeWithin(q.tree, 'dbh-addpanel', 2, longDsn)
+  q.tree = q.renderAgain()
+  check('typing into the add-panel textarea lands in its value',
+    String((classed(classed(q.tree, 'dbh-addpanel')[0], 'dbh-input')[2] || { props: {} }).props.value || '') === longDsn)
+  q.dispose()
 }
 
 if (liveMount) liveMount.dispose()
