@@ -28,8 +28,8 @@ test('the pure block keeps its extraction markers', () => {
 
 const block = startAt >= 0 && endAt > startAt ? source.slice(startAt, endAt) : ''
 // eslint-disable-next-line no-new-func
-const helpers = new Function(block + '\nreturn { rowKeyOf, filterRows, sortRows, batchSummaryOf, nextSortMode, sortViewOf, orderMapOf, sortByStoredOrder, persistedRowsOf, moveIndexFor };')()
-const { rowKeyOf, filterRows, sortRows, batchSummaryOf, nextSortMode, sortViewOf, orderMapOf, sortByStoredOrder, persistedRowsOf, moveIndexFor } = helpers
+const helpers = new Function(block + '\nreturn { rowKeyOf, filterRows, sortRows, batchSummaryOf, nextSortMode, sortViewOf, orderMapOf, sortByStoredOrder, persistedRowsOf, moveIndexFor, sameSettingValue };')()
+const { rowKeyOf, filterRows, sortRows, batchSummaryOf, nextSortMode, sortViewOf, orderMapOf, sortByStoredOrder, persistedRowsOf, moveIndexFor, sameSettingValue } = helpers
 
 // A row as the Host publishes it: metadata only (no DSN exists in the view).
 const row = (title, path, env, conn, extra = {}) => Object.assign({
@@ -312,6 +312,53 @@ test('moveIndexFor measures the index AFTER the source leaves its list', () => {
   // An auto-discovered row is not a place in `order`: dropping on it appends.
   const withAuto = [x, y, row('b', 'D:/w/b', 'auto', 'mysql://h:1/z', { persisted: false })]
   assert.equal(moveIndexFor(withAuto, null, withAuto[2], false), 2)
+})
+
+// ── settings: "did this blur change anything?" ──────────────────────────────
+//
+// A blur happens when the user clicks anywhere else (the `?` help, the 默认
+// button, another row). It must NOT write when the value is the one the store
+// already holds — otherwise every stray click flashes 保存中… for nothing.
+
+test('an unchanged numeric setting does not need a write', () => {
+  // The parser has already resolved an empty box to the field's unset default,
+  // so the comparison is value-to-value.
+  assert.equal(sameSettingValue(2, 2, true), true)
+  assert.equal(sameSettingValue('2', 2, true), true)
+  assert.equal(sameSettingValue(7, 7, true), true)
+  // A number spelled differently is still the same number: the Host may report
+  // 7 while the box was typed as 7.0.
+  assert.equal(sameSettingValue(7, '7.0', true), true)
+  assert.equal(sameSettingValue('6.0', 6, true), true)
+  assert.equal(sameSettingValue(5, '05', true), true)
+  // Unset is one state: null, undefined and '' all mean "the default".
+  assert.equal(sameSettingValue(null, null, true), true)
+  assert.equal(sameSettingValue(null, undefined, true), true)
+  assert.equal(sameSettingValue('', null, true), true)
+  // Real changes still differ.
+  assert.equal(sameSettingValue(5, 7, true), false)
+  assert.equal(sameSettingValue(0, null, true), false)
+  assert.equal(sameSettingValue(100, 0, true), false)
+})
+
+test('the export directory compares after trimming both sides', () => {
+  // '' and a missing value are the same "no directory".
+  assert.equal(sameSettingValue('', '', false), true)
+  assert.equal(sameSettingValue('', null, false), true)
+  assert.equal(sameSettingValue(null, undefined, false), true)
+  // Invisible spaces around a path are not a change: they are illegal on Windows
+  // and the Host's probe would reject them, so the user cannot be expected to
+  // find the stray space.
+  assert.equal(sameSettingValue('D:/exports ', 'D:/exports', false), true)
+  assert.equal(sameSettingValue(' D:/exports', 'D:/exports', false), true)
+  assert.equal(sameSettingValue('  D:/exports  ', ' D:/exports ', false), true)
+  assert.equal(sameSettingValue('D:/exports', 'D:/exports', false), true)
+  // A real difference is still a difference — inside the path, not around it.
+  assert.equal(sameSettingValue('D:/exports', 'D:/other', false), false)
+  assert.equal(sameSettingValue('D:/exports/2', 'D:/exports', false), false)
+  // …and a path is never compared numerically (there is no "7" == "07" here).
+  assert.equal(sameSettingValue('7', '07', false), false)
+  assert.equal(sameSettingValue(7, '7', false), true)
 })
 
 test('the batch tally counts pass / fail and treats everything else as untested', () => {

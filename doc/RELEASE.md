@@ -27,6 +27,43 @@ npm run release:preflight     # 闸门：报告新鲜 + tree 一致 + 矩阵未�
 - 隔离纪律：每个版本都在 `.release-test/homes/dsh-<版本>/` 里跑，**永不碰用户真实 profile**（主实例 fail-loud）。CLI 一律钉版。
 - **CLI 来源**：默认 `--cli-source auto`——mise 里预装了该版本就用 `mise x npm:@deepseek-ai/dsh@<版本> -- dsh …`（不激活），否则回退 `.release-test/cache/tools/` 的 npm 一次性安装；报告里记录每个 target 实际用了哪种。预装清单 `release-test/mise.toml` 由矩阵生成，勿手改。确认 mise 装齐后可 `node release-test/run.mjs clean --tools` 回收 npm 缓存（每版本约 470 MB）。
 
+## 跨版本升级实测（`--tier upgrade`，每次正式版前必跑）
+
+上面的 `declared` 矩阵测的是**全新安装**（干净 home）：它能证明「新包装上去能跑」，证明不了「用过旧版、有数据的机器升上来会不会坏」。商店里真实用户的机器都是后者，所以另有一个档位**模拟升级**：
+
+```powershell
+# 全部声明版本，基线默认 5.2.0（缺了就从 npm 拉一次并缓存）
+node release-test/run.mjs --tier upgrade
+
+# 上一版 → 这一版（上一版还没发也行：用 --baseline-tarball <file>）
+node release-test/run.mjs --tier upgrade --only 0.2.2-rc.2 `
+  --tarball .qa/dsh-dbhub-live-6.0.0-rc.6.tgz --baseline 6.0.0-rc.5
+```
+
+> 没有对应的 npm script，这是故意的：升级档只在发版前手动跑，不该出现在 `prepublishOnly` 的默认链路里（每个目标两次启动，很慢）。
+
+每个目标跑两段：
+
+1. **装旧版**（`--baseline <version>`，默认 `5.2.0`；也可 `--baseline-tarball <file>`）到隔离 home，boot 一次，**用旧版自己的 HTTP 接口造真实旧数据**：两条连接（一条只读、一条 SSH 隧道，DSN 里都带口令）+ 改两项设置（`updateIntervalDays` / `showSidebarEntry`）。
+2. **就地升级**到被测产物（同一条 `dsh plugin add` 路径，同一 home），再 boot 一次，然后跑**既有全套探针**（界面/通道是否还正常）+ 升级专属断言。
+
+升级专属断言（都在 `report.json` 的 `targets[].upgrade` 里）：
+
+| 检查 | 断言 | 失败意味着 |
+| --- | --- | --- |
+| `upgrade.baseline-install` / `upgrade.baseline-seed` | 旧版真的装上了、真的写下了两条连接和两项设置 | 前半段没成立，后面的结论一律不算 |
+| `upgrade.connections` | 两条连接都还在，`ro` / 隧道描述、`conn` 元数据、工作区路径逐项不变 | 升级把连接丢了或改坏了 |
+| `upgrade.prefs` | 三项设置值不变（`announceAccessPolicy` 也必须保持默认 true） | 设置被重置 |
+| `upgrade.bundle-version` | `node_modules/<包>/package.json` 的版本 == 新产物 | **"升级了但界面还是上一版"**（pnpm 没换包） |
+| `upgrade.store-migrated` | 旧版写在连接文件里的明文口令搬进 DSH 凭据库、只留引用；引用在凭据库里真实存在 | 口令没迁移，或引用悬空（口令丢失） |
+| `upgrade.secret-resolve` | 用插件的 `{op:'test'}` 探一次：报的是**连不上库**（正常，种子指向关闭端口），不是「口令已不在凭据库」 | 迁移后连接不可用 |
+| `upgrade.boot-log` | 升级后的 boot 日志里没有 uncaught / unhandled rejection / fatal | 升级后宿主半崩过 |
+
+- **结果怎么读**：`upgrade.store-migrated` 有一条**主机能力分支**——如果这台 DSH 的 `credentials` 服务对插件根本不可用（boot 日志有「凭据服务不可用」），明文是**文档化的降级**，该检查判 `warn` 而不是 `fail`（迁移没被测到，不代表它坏了）。反过来，**boot 时说不可用、之后写入却能拿到引用**，就说明迁移跳过了旧行且没有重试——那是真问题，判 `fail`。
+- **为什么不用 `skip`**：`verdict --check` 把「升级段缺失 / 升级步骤被跳过 / `upgrade.*` 被判 skip」一律视为**未通过**——这一档的意义就是必须真跑，跳过等于没测。
+- **什么时候跑**：**每次正式版前必跑**（与 `declared` 矩阵一起构成发版依据）；预发布可以只在与上一版的差异涉及存储/凭据/设置/客户端包时跑。它比较慢（每个目标两次启动），所以不进 `prepublishOnly`。
+- **它还测不到什么**：跨多个大版本（如 `5.1.0` → `6.0.0`）的跳版、多个工作区之间的数据、导入他人 profile、以及**旧版客户端缓存**（浏览器里上一次的 bundle）——这几类需要额外造场景，见 `release-test/README.md` 的待补清单。
+
 ## 分支职责
 
 - `dev`：**集成/测试分支**。所有改动先落这里（直接提交，或功能分支 PR 进 dev）；允许 force push；CI（`gate`）在这里跑。

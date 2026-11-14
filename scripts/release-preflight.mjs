@@ -81,6 +81,13 @@ async function main() {
   const report = readJson(path.join(reportDir, 'report.json'))
   facts.run = report.runId
   facts.reportStatus = report.status
+  // The upgrade tier proves an OLD install can be upgraded in place; it starts
+  // from somebody else's artifact, so it can never prove that THIS version
+  // installs cleanly on a fresh profile. Release evidence must come from the
+  // cold-install tier. (Reports written before the tier existed carry no mode.)
+  if (report.mode === 'upgrade') {
+    evidence('这份报告是升级档（mode: upgrade）—— 正式发版必须有一份全新安装档（--tier declared）的报告')
+  }
 
   // 2. The report must be about THIS version, built from THIS commit, recently.
   if (report.plugin?.version !== pkg.version) {

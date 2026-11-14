@@ -30,6 +30,11 @@ async function httpPost(url, payload, { cookie } = {}) {
   return { status: response.status, body }
 }
 
+// Exported for the upgrade tier, which drives the same bridge to seed old data
+// and to probe a migrated connection. One HTTP helper set keeps both tiers
+// talking to the plugin exactly the same way.
+export { httpGet, httpPost }
+
 /** Extract the `name=value` cookie the token exchange handed out. */
 export async function openSession(base, token) {
   const response = await fetch(`${base}/?token=${encodeURIComponent(token)}`, { redirect: 'manual', signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) })
@@ -45,6 +50,7 @@ export async function openSession(base, token) {
 }
 
 const safeParse = (text) => { try { return JSON.parse(text) } catch { return null } }
+export { safeParse }
 
 /**
  * Run every probe for one booted target.

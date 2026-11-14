@@ -148,7 +148,7 @@ test('client bundle owns a sidebar entry gated by enabled AND the user switch', 
   assert.match(source, /props\.saveConfig\(\{ showSidebarEntry: next \}\);/)
   // Every settings write carries ONE field: the form-wide 保存 button is gone, so
   // there is no payload that could re-assert (and silently revert) the others.
-  assert.match(source, /var payload = \{\};\s*\n\s*payload\[field\] = value;/)
+  assert.match(source, /var payload = \{\};\s*\n\s*payload\[field\] = parsed;/)
   assert.doesNotMatch(source, /t\("btn\.save"\)/, 'the settings 保存 button is gone')
   // The settings section and the Plugins row never depend on either condition, so
   // no combination can lock the user out of the configuration.
@@ -835,7 +835,7 @@ test('client bundle contributes the composer `@` source (one message, many refer
   assert.match(source, /icon: "folder",/)
   // A drill is a TEXT edit with `continue`; the breadcrumb root writes a bare @.
   assert.match(source, /return \{ text: "@" \+ othersLabel\(\), continue: true \};/)
-  assert.match(source, /if \(String\(cand\.value \|\| ""\) === "root"\) return \{ text: "@", continue: true \};/)
+  assert.match(source, /if \(value === "root"\) return \{ text: "@", continue: true \};/)
   assert.match(source, /header: function \(projection, context\) \{/)
   assert.match(source, /label: t\("at\.group"\), value: "root"/)
   assert.match(source, /value: "others", current: true/)
@@ -933,6 +933,23 @@ test('row ordering follows the store; drag, copy and the phone arrows share one 
   assert.match(source, /"drag\.sortHint": "Switch the sort back to Default to drag rows"/)
   // No drag grip on a phone (HTML5 DnD is a mouse API): the arrows take over.
   assert.match(source, /isMobile \? null : h\("span", \{\s*\n\s*className: "dbh-grip"/)
+})
+
+test('the bundle declares which build it is, and it matches package.json', () => {
+  // A desktop app that upgrades without restarting keeps serving the PREVIOUS
+  // bundle while /state already reports the new plugin version. The header
+  // compares the two, so this constant is not decoration — it is what lets the
+  // page say "界面待重启" instead of quietly looking current.
+  const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'))
+  const declared = /var CLIENT_BUILD = "([^"]+)";/.exec(source)
+  assert.ok(declared, 'the bundle must declare CLIENT_BUILD')
+  // Byte-for-byte: a near miss (a `-rc.5` behind) is exactly the failure this
+  // gate exists for, so no semver comparison here.
+  assert.equal(declared[1], pkg.version,
+    `lib/client.js says CLIENT_BUILD = ${declared[1]} but package.json is ${pkg.version}`)
+  assert.match(source, /var staleUi = !!pluginVersion && pluginVersion !== CLIENT_BUILD;/)
+  assert.match(source, /"ver\.stale": "界面待重启"/)
+  assert.match(source, /"ver\.stale": "UI restart needed"/)
 })
 
 test('the update check reports itself: spinner while running, a named outcome after', () => {

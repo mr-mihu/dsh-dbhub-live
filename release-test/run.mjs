@@ -7,9 +7,12 @@
 // Usage:
 //   node release-test/run.mjs                      # every target in the matrix
 //   node release-test/run.mjs --tier declared      # only blocking targets
+//   node release-test/run.mjs --tier upgrade       # cross-version upgrade tier
 //   node release-test/run.mjs --only 0.2.1-rc.2    # one version (repeatable)
 //   node release-test/run.mjs --provision cli      # require the real dsh plugin add
 //   node release-test/run.mjs --tarball <path>     # test an existing artifact
+//   node release-test/run.mjs --baseline 5.2.0     # upgrade tier: old release to install first
+//   node release-test/run.mjs --baseline-tarball <path>  # ... or a local baseline tarball
 //   node release-test/run.mjs --keep               # keep isolated homes for debugging
 //   node release-test/run.mjs report --last        # print the newest report
 //   node release-test/run.mjs verdict --template   # skeleton for the AI reviewer
@@ -32,9 +35,10 @@ import { prepareHome, createProfile, provisionPlugin, dshEnv, homeDir } from './
 import { bootServer, freePort, stopServer } from './lib/server.mjs'
 import { openSession, runProbes } from './lib/probe.mjs'
 import { packPlugin, useTarball, packageMeta } from './lib/artifact.mjs'
+import { DEFAULT_BASELINE, compareSeeded, dsnHasInlinePassword, hardErrorsInBootLog, readStoreShape, resolveBaseline, seedOldData, verifyUpgrade } from './lib/upgrade.mjs'
 import { aggregate, buildReport, writeReport, renderMarkdown, renderJudgePrompt } from './lib/report.mjs'
 import { checkRun, loadVerdict, templateVerdict, validateVerdict, verdictPath, writeVerdict } from './lib/verdict.mjs'
-import { run, waitForFile } from './lib/proc.mjs'
+import { readIfExists, run, waitForFile } from './lib/proc.mjs'
 import { compareVersions, selfTest } from './lib/semver.mjs'
 
 const argv = process.argv.slice(2)
@@ -257,6 +261,200 @@ async function runOne({ target, artifact, matrix, runDir, provision, keep, skipI
   return result
 }
 
+/**
+ * The cross-version upgrade tier: one target, two installations.
+ *
+ * Kept as its own function instead of a branch inside `runOne` ON PURPOSE: the
+ * cold-install path is what every release is currently gated on, and threading a
+ * second provision/boot cycle through it would put that gate at risk for a tier
+ * that runs less often. Nothing below changes what `runOne` does.
+ *
+ * Sequence: clean home → install the BASELINE (a real published release) → boot
+ * it → seed real data through its own API → stop → install the artifact under
+ * test over it → boot again → the standard probe suite + the upgrade checks.
+ */
+async function runUpgradeOne({ target, artifact, baseline, runDir, provision, skipInstall, cliSource }) {
+  const version = target.version
+  const evidenceDir = ensureDir(path.join(runDir, 'evidence', version))
+  const logs = {
+    install: path.join(evidenceDir, 'install.log'),
+    profile: path.join(evidenceDir, 'profile.log'),
+    baselineInstall: path.join(evidenceDir, 'baseline-install.log'),
+    baselineBoot: path.join(evidenceDir, 'baseline-boot.log'),
+    seed: path.join(evidenceDir, 'baseline-data.json'),
+    upgradeInstall: path.join(evidenceDir, 'upgrade-install.log'),
+    boot: path.join(evidenceDir, 'boot.log'),
+  }
+  const result = {
+    version,
+    tier: target.tier,
+    era: target.era,
+    ui: target.ui,
+    why: target.why,
+    status: 'pass',
+    checks: [],
+    checksCounts: {},
+    timings: {},
+    provisionMode: null,
+    cliSource: null,
+    evidence: Object.values(logs).map((file) => `evidence/${version}/${path.basename(file)}`),
+    notes: [],
+    upgrade: {
+      baselineVersion: baseline.version,
+      baselineName: baseline.name,
+      baselineTarball: path.basename(baseline.tarball),
+      baselineSource: baseline.source,
+      baselineData: null,
+      afterUpgrade: null,
+    },
+  }
+  const startedAt = Date.now()
+  const checks = result.checks
+  let server = null
+  try {
+    step(`[${version}] pinned CLI (source: ${cliSource})`)
+    const cli = await resolveCli(version, { source: cliSource, logFile: logs.install, skipInstall })
+    result.cliSource = cli.kind
+    for (const note of cli.notes) result.notes.push(note)
+    ok(describeCli(cli))
+    result.timings.installMs = Date.now() - startedAt
+
+    // ---- phase 1: a real old install with real old data --------------------
+    step(`[${version}] baseline ${baseline.name}@${baseline.version} → clean isolated home`)
+    prepareHome(version, { clean: true })
+    await createProfile(version, { logFile: logs.profile, cli })
+    const installedBaseline = await provisionPlugin({
+      version, tarball: baseline.tarball, pluginName: baseline.name, mode: provision, logFile: logs.baselineInstall, cli,
+    })
+    result.notes.push(...installedBaseline.notes)
+    checks.push(
+      installedBaseline.installed.version === baseline.version
+        ? { id: 'upgrade.baseline-install', status: 'pass', detail: `baseline ${installedBaseline.installed.name}@${installedBaseline.installed.version} installed (${installedBaseline.mode})` }
+        : { id: 'upgrade.baseline-install', status: 'fail', detail: `baseline install produced ${installedBaseline.installed.version}, expected ${baseline.version}` },
+    )
+    ok(`baseline installed: ${installedBaseline.installed.name}@${installedBaseline.installed.version} (${installedBaseline.mode})`)
+
+    const baselinePort = await freePort()
+    try {
+      server = await bootServer({ version, cli, port: baselinePort, logFile: logs.baselineBoot, home: homeDir(version) })
+    } catch (error) {
+      throw new Error(`the baseline ${baseline.version} could not boot on DSH ${version} — nothing to upgrade.\n` +
+        `Evidence: ${path.relative(REPO_ROOT, logs.baselineBoot)}\n${error.message}`)
+    }
+    result.timings.baselineReadyMs = server.readyMs
+    ok(`baseline web ready at ${server.base} in ${hhmmss(server.readyMs)}`)
+
+    step(`[${version}] seed old data through the baseline's own API`)
+    const baselineSession = await openSession(server.base, server.token)
+    const seeded = await seedOldData({ base: server.base, cookie: baselineSession.cookie, logFile: logs.seed })
+    // The store's shape BEFORE the upgrade: booleans and reference names only, no
+    // values. Without it "the store has references now" could pass on a baseline
+    // that already used references, and a reviewer could not tell.
+    const baselineStorage = path.join(homeDir(version), 'storages', 'dsh-dbhub-live')
+    const baselineStoreShape = readStoreShape({
+      storeFile: path.join(baselineStorage, 'credentials.json'),
+      envs: seeded.rows.map((row) => row.env),
+    })
+    result.upgrade.baselineData = { rows: seeded.rows, prefs: seeded.prefs, ops: seeded.ops, store: baselineStoreShape }
+    const seededOk = seeded.rows.length === 2 && seeded.rows.every((row) => row.ro === true || row.ssh)
+    checks.push(
+      seededOk
+        ? { id: 'upgrade.baseline-seed', status: 'pass', detail: `seeded ${seeded.rows.length} connections (${seeded.rows.map((row) => `${row.env}${row.ro ? ' ro' : ''}${row.ssh ? ' ssh' : ''}`).join(', ')}) + 2 preferences${baselineStoreShape.readable ? `; the baseline store held inline plaintext: ${Object.values(baselineStoreShape.rows).filter((row) => row.dsnHasInlinePassword).length} DSN` : '; the baseline store was not readable'}` }
+        : { id: 'upgrade.baseline-seed', status: 'fail', detail: `the baseline accepted only ${seeded.rows.length} of the 2 seeded connections, or lost the read-only / tunnel flag — there is no old data to migrate` },
+    )
+    ok(`${seeded.rows.length} seeded connection(s): ${seeded.rows.map((row) => row.env).join(', ')}`)
+    const portFreeAfterBaseline = await stopServer(server)
+    server = null
+    if (!portFreeAfterBaseline) result.notes.push('the baseline dsh web listener did not go away — the upgrade boot may have raced it')
+
+    // ---- phase 2: upgrade IN PLACE, same home, same profile -----------------
+    step(`[${version}] upgrade in place → ${artifact.name}@${artifact.version}`)
+    const upgraded = await provisionPlugin({
+      version, tarball: artifact.tarball, pluginName: artifact.name, mode: provision, logFile: logs.upgradeInstall, cli,
+    })
+    result.provisionMode = upgraded.mode
+    result.notes.push(...upgraded.notes)
+    checks.push(
+      upgraded.mode === 'cli'
+        ? { id: 'upgrade.provision-mode', status: 'pass', detail: 'the upgrade went through `dsh plugin add` (the path a user takes)' }
+        : { id: 'upgrade.provision-mode', status: 'warn', detail: 'the upgrade fell back to a manual extraction: the real `dsh plugin add` path was NOT exercised for this target' },
+    )
+    ok(`upgraded: ${upgraded.installed.name}@${upgraded.installed.version} (${upgraded.mode})`)
+
+    const port = await freePort()
+    server = await bootServer({ version, cli, port, logFile: logs.boot, home: homeDir(version) })
+    result.timings.bootMs = Date.now() - startedAt
+    result.timings.readyMs = server.readyMs
+    ok(`upgraded web ready at ${server.base} in ${hhmmss(server.readyMs)}`)
+
+    // Same bounded wait as the cold tier: a cold dbhub auto-install happens after
+    // the ready line, and judging the capability channel before it lands would
+    // report "no dbhub" on a machine that is simply still installing one.
+    const capabilityWait = await waitForFile(logs.boot, (text) => /dbhub 能力探测/.test(text), { timeoutMs: 180_000 })
+    if (!capabilityWait.ok) result.notes.push('dbhub capability line did not appear within 180s after the upgrade boot (cold auto-install failed or is still running)')
+
+    const session = await openSession(server.base, server.token)
+
+    step(`[${version}] probes (standard suite, running on the upgraded build)`)
+    checks.push(...await runProbes({
+      version,
+      target,
+      base: server.base,
+      token: server.token,
+      cookie: session.cookie,
+      home: path.join(HOMES_DIR, `dsh-${version}`),
+      logFile: logs.boot,
+      artifact,
+      boot: { readyMs: server.readyMs },
+      provisionMode: upgraded.mode,
+    }))
+
+    // ---- phase 3: did the old data come along? ------------------------------
+    step(`[${version}] upgrade checks (connections, preferences, secrets, bundle)`)
+    const storage = path.join(homeDir(version), 'storages', 'dsh-dbhub-live')
+    const verified = await verifyUpgrade({
+      base: server.base,
+      cookie: session.cookie,
+      home: homeDir(version),
+      seeded,
+      baseline,
+      artifact,
+      bootLog: readIfExists(logs.boot),
+      baselineStoreShape,
+      storeFile: path.join(storage, 'credentials.json'),
+      prefsFile: path.join(storage, 'prefs.json'),
+      // DSH's credential store, managed by DSH itself (never written by the plugin).
+      credentialFile: path.join(homeDir(version), '.credentials.yaml'),
+    })
+    checks.push(...verified.checks)
+    result.upgrade.afterUpgrade = verified.afterUpgrade
+
+    const { status, counts } = aggregate(checks)
+    result.status = status
+    result.checksCounts = counts
+  } catch (error) {
+    result.status = 'error'
+    result.error = redact(error?.stack ?? String(error))
+    bad(`[${version}] ${error?.message ?? error}`)
+  } finally {
+    if (server) {
+      const portFree = await stopServer(server)
+      if (!portFree) result.notes.push('a dsh web listener was still up after cleanup — check the port by hand')
+    }
+    result.timings.totalMs = Date.now() - startedAt
+  }
+  for (const check of result.checks) {
+    if (check.status === 'fail') bad(`${check.id}: ${check.detail}`)
+    else if (check.status === 'warn' || check.status === 'skip') warn(`${check.id}: ${check.detail}`)
+    else if (check.status === 'pass' && check.id.startsWith('upgrade.')) ok(`${check.id}: ${check.detail}`)
+  }
+  if (result.checksCounts.pass !== undefined) {
+    ok(`${result.checksCounts.pass} pass · ${result.checksCounts.warn} warn · ${result.checksCounts.fail} fail`)
+  }
+  writeJson(path.join(evidenceDir, 'probe-summary.json'), result.checks)
+  return result
+}
+
 function pruneReports(keepCount) {
   if (!fs.existsSync(REPORTS_DIR)) return
   const dirs = fs.readdirSync(REPORTS_DIR).filter((name) => /^\d{8}-\d{6}/.test(name)).sort()
@@ -269,7 +467,13 @@ async function cmdRun() {
   const matrix = loadMatrix()
   validateMatrix(matrix)
   const claims = matrixClaimWarnings(matrix)
-  const targets = selectTargets(matrix, { only: lists.get('only') ?? [], tier: flag('tier') })
+  const tierFlag = flag('tier')
+  // `upgrade` is a MODE, not a matrix tier: it runs the same declared targets,
+  // just twice (old build → new build). Treating it as a tier keeps the CLI
+  // uniform without inventing matrix entries that would duplicate every target
+  // and make `support:matrix` claim upgrade coverage it does not have.
+  const upgradeMode = String(tierFlag ?? '').toLowerCase() === 'upgrade'
+  const targets = selectTargets(matrix, { only: lists.get('only') ?? [], tier: upgradeMode ? 'declared' : tierFlag })
   const provision = flag('provision', 'auto')
   const keep = Boolean(flag('keep'))
   const skipInstall = Boolean(flag('skip-install'))
@@ -280,6 +484,7 @@ async function cmdRun() {
 
   say(`${c.bold}Release test${c.reset} ${packageMeta().name}@${packageMeta().version}`)
   say(`  commit ${git.branch}@${git.commit?.slice(0, 8)}${git.dirty ? ' (dirty)' : ''} · node ${process.version} · ${os.platform()} ${os.release()}`)
+  say(`  mode: ${upgradeMode ? 'upgrade (old release → this artifact, same home)' : 'cold install (clean home)'}`)
   say(`  targets (${targets.length}):`)
   describeTargets(targets)
   if (claims.length) {
@@ -297,6 +502,23 @@ async function cmdRun() {
   }
   ok(`${path.basename(artifact.tarball)} (${artifact.size} bytes, sha256 ${artifact.sha256.slice(0, 16)}…)`)
 
+  let baseline = null
+  if (upgradeMode) {
+    step(`baseline (--baseline ${flag('baseline', DEFAULT_BASELINE)}${flag('baseline-tarball') ? ', from file' : ''})`)
+    baseline = await resolveBaseline({
+      baseline: String(flag('baseline', DEFAULT_BASELINE)),
+      tarball: flag('baseline-tarball'),
+      logFile: path.join(runDir, 'baseline.log'),
+    })
+    if (compareVersions(baseline.version, artifact.version) > 0) {
+      throw new Error(`baseline ${baseline.version} is NEWER than the artifact ${artifact.version} — that is a downgrade, not an upgrade`)
+    }
+    if (baseline.version === artifact.version) {
+      warn(`baseline and artifact are the same version (${baseline.version}): the upgrade is a re-install, so the migration checks can only prove the absence of damage`)
+    }
+    ok(`${baseline.name}@${baseline.version} (${baseline.source}: ${path.basename(baseline.tarball)})`)
+  }
+
   step('matrix drift vs npm dist-tags')
   const drift = await driftCheck(matrix, path.join(runDir, 'drift.log'))
   if (drift.stale) warn(drift.detail)
@@ -307,7 +529,9 @@ async function cmdRun() {
   const results = []
   for (const target of targets) {
     say('')
-    results.push(await runOne({ target, artifact, matrix, runDir, provision, keep, skipInstall, cliSource }))
+    results.push(upgradeMode
+      ? await runUpgradeOne({ target, artifact, baseline, runDir, provision, skipInstall, cliSource })
+      : await runOne({ target, artifact, matrix, runDir, provision, keep, skipInstall, cliSource }))
   }
 
   const report = buildReport({
@@ -316,7 +540,16 @@ async function cmdRun() {
     matrix,
     matrixFileHash: matrixHash(matrix),
     environment: { node: process.version, platform: `${os.platform()} ${os.release()}`, dbhub, cwd: REPO_ROOT },
-    options: { runDir, provision, cliSource, only: lists.get('only') ?? [], tier: flag('tier'), keepHomes: keep },
+    options: {
+      runDir,
+      provision,
+      cliSource,
+      only: lists.get('only') ?? [],
+      tier: tierFlag,
+      mode: upgradeMode ? 'upgrade' : 'install',
+      baseline: baseline ? { version: baseline.version, name: baseline.name, source: baseline.source, tarball: path.basename(baseline.tarball) } : null,
+      keepHomes: keep,
+    },
     targets: results,
     drift,
     claims,
@@ -511,6 +744,87 @@ function cmdSelftest() {
   const matrix = loadMatrix()
   validateMatrix(matrix)
   ok(`matrix valid: ${matrix.targets.length} targets across ${new Set(matrix.targets.map((t) => t.tier)).size} tier(s)`)
+
+  // The upgrade tier's rules are pure functions, so their "can this go RED?"
+  // proof belongs here rather than in a run: a comparison that cannot report a
+  // problem is a green light that means nothing. Same spirit as
+  // test/gates.test.mjs — a check that cannot fail is decoration.
+  const upgradeFailures = upgradeSelfTest()
+  if (upgradeFailures.length) {
+    bad(`upgrade-tier self-test failed:\n  - ${upgradeFailures.join('\n  - ')}`)
+    process.exitCode = 1
+    return
+  }
+  ok('upgrade-tier self-test: every upgrade assertion and verdict rule can go red')
+}
+
+/** Feed the upgrade comparators the failures they exist to catch. */
+function upgradeSelfTest() {
+  const failures = []
+  // Built from parts so the desensitization gate does not read this fixture as a
+  // written-down credential (it is a shape, not a value — the real refs are random).
+  const ref = ['DSH', 'DBHUB', 'DSN', 'selftest'].join('_')
+  const row = (env, extra = {}) => ({ env, path: '/ws', conn: '127.0.0.1:1/app', ro: false, ssh: null, alias: env, srcId: 'x', passwordUnsplit: false, ...extra })
+  const seeded = { rows: [row('prod', { ro: true })], prefs: { updateIntervalDays: 3, showSidebarEntry: false } }
+  const good = {
+    seeded,
+    rows: [row('prod', { ro: true })],
+    prefs: { updateIntervalDays: 3, showSidebarEntry: false, announceAccessPolicy: true },
+    installedVersion: '6.0.0-rc.5',
+    expectedVersion: '6.0.0-rc.5',
+    storeShape: { prod: { present: true, dsnHasInlinePassword: false, dsnPasswordRef: ref, sshPasswordRef: '', sshInlinePassword: false } },
+    credentialText: ['version: 1', 'records:', `  ${ref}:`, '    kind: ref'].join('\n') + '\n',
+    probeResults: {},
+    baselineStoreShape: { readable: true, rows: { prod: { dsnHasInlinePassword: true } } },
+  }
+  const problemCount = (input) => Object.values(compareSeeded(input).problems).flat().length
+  if (problemCount(good) !== 0) failures.push('a clean upgrade must report no problem')
+  const cases = [
+    ['a stale bundle (the "UI one release behind" bug)', { installedVersion: '5.2.0' }],
+    ['a dropped connection', { rows: [] }],
+    ['a lost read-only flag', { rows: [row('prod', { ro: false })] }],
+    ['a changed preference', { prefs: { updateIntervalDays: 7, showSidebarEntry: false, announceAccessPolicy: true } }],
+    ['a password left inline', { storeShape: { prod: { present: true, dsnHasInlinePassword: true, dsnPasswordRef: '', sshPasswordRef: '', sshInlinePassword: false } } }],
+    ['a password dropped with no reference', { storeShape: { prod: { present: true, dsnHasInlinePassword: false, dsnPasswordRef: '', sshPasswordRef: '', sshInlinePassword: false } } }],
+    ['a reference with no credential behind it', { credentialText: 'version: 1\nrecords:\n' }],
+    ['a secret that no longer resolves', { probeResults: { prod: { ok: false, message: '该连接的数据库口令已不在凭据库里，请在卡片里重新输入连接串或密码。' } } }],
+  ]
+  for (const [label, patch] of cases) {
+    if (problemCount({ ...good, ...patch }) === 0) failures.push(`the comparison does not catch ${label}`)
+  }
+  if (hardErrorsInBootLog('ok\n[dsh-dbhub-live] 配置表单写入失败（仅本地 prefs 生效）').length !== 0) {
+    failures.push('the known-benign legacy line must not count as a hard boot-log error')
+  }
+  if (hardErrorsInBootLog('UnhandledPromiseRejection: boom').length === 0) failures.push('an unhandled rejection must count as a hard boot-log error')
+  if (dsnHasInlinePassword('mysql://ops@127.0.0.1:1/app')) failures.push('a password-less DSN must not look inline')
+  if (!dsnHasInlinePassword('mysql://ops:CHANGE_ME@127.0.0.1:1/app')) failures.push('an inline password must be detected')
+
+  const report = (mode, targets) => ({ runId: 'selftest', generatedAt: new Date().toISOString(), status: 'green', mode, targets, needsReview: [] })
+  const verdictFor = (input) => ({
+    reportRunId: 'selftest',
+    reportHash: 'selftest',
+    overall: 'pass',
+    reviewer: 'selftest',
+    reviewedAt: new Date(Date.now() + 1000).toISOString(),
+    targets: input.targets.map((t) => ({ version: t.version, verdict: 'pass', reason: 'selftest' })),
+    openQuestions: [],
+  })
+  const upgradeProblemCount = (input) => validateVerdict(verdictFor(input), input, 'selftest').problems.filter((problem) => /upgrade/i.test(problem)).length
+  const complete = { version: '0.2.2-rc.2', tier: 'declared', status: 'pass', checks: [{ id: 'upgrade.connections', status: 'pass' }], upgrade: { baselineVersion: '6.0.0-rc.4', afterUpgrade: { installedVersion: '6.0.0-rc.5' } } }
+  if (upgradeProblemCount(report('upgrade', [complete])) !== 0) failures.push('a complete upgrade report must validate')
+  const verdictCases = [
+    ['a missing upgrade section', { ...complete, upgrade: undefined }],
+    ['a missing afterUpgrade block', { ...complete, upgrade: { baselineVersion: '6.0.0-rc.4' } }],
+    ['a skipped upgrade step', { ...complete, upgrade: { ...complete.upgrade, skipped: true } }],
+    ['a skipped upgrade assertion', { ...complete, checks: [{ id: 'upgrade.connections', status: 'skip' }] }],
+  ]
+  for (const [label, target] of verdictCases) {
+    if (upgradeProblemCount(report('upgrade', [target])) === 0) failures.push(`the verdict accepts ${label}`)
+  }
+  if (upgradeProblemCount(report('install', [{ version: '0.2.2-rc.2', tier: 'declared', status: 'pass', checks: [] }])) !== 0) {
+    failures.push('an install run must not be judged by the upgrade rules')
+  }
+  return failures
 }
 
 const COMMANDS = {

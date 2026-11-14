@@ -16,6 +16,14 @@ import { fileURLToPath } from 'node:url'
 
 const CLIENT = fileURLToPath(new URL('../lib/client.js', import.meta.url))
 
+// The bundle's own build id. The page compares it with the Host's pluginVersion;
+// a stale page (an upgrade without an app restart) is the state the badge exists
+// for. `test/client-format.test.mjs` pins it to package.json.
+const CLIENT_BUILD_FROM_SOURCE = (() => {
+  const m = /var CLIENT_BUILD = "([^"]+)";/.exec(readFileSync(CLIENT, 'utf8'))
+  return m ? m[1] : ''
+})()
+
 // Every poll interval the client opens is tracked, so "no interval outlives the
 // page" becomes an explicit check instead of the process silently hanging. (The
 // client's write watchdogs are setTimeout-based and are simply cut off by the
@@ -624,6 +632,22 @@ function typeWithin(node, cls, index, value) {
  * `.dbh-srow-input` boxes (0 = interval, 1 = concurrency, 2 = row limit) and
  * `dbh-input-dir` is the export directory.
  */
+/**
+ * Change a settings field for real, then commit it. Since a blur of an UNCHANGED
+ * box is a no-op (that was the bug), a fixture that wants a write has to type
+ * something different first — and re-render, because onBlur closes over the
+ * draft of the render it was created in.
+ */
+function editFieldAt(mount, value, index = 0, via = 'blur') {
+  const input = classed(mount.tree, 'dbh-srow-input')[index]
+  if (!input || typeof input.props.onChange !== 'function') {
+    throw new Error('no .dbh-srow-input[' + index + '] in the tree')
+  }
+  input.props.onChange({ target: { value: String(value) } })
+  mount.tree = mount.renderAgain()
+  commitFieldAt(mount.tree, index, via)
+}
+
 function commitFieldAt(node, index = 0, via = 'blur') {
   const input = classed(node, 'dbh-srow-input')[index]
   // Prefer the real gesture, whichever one this build implements.
@@ -1762,7 +1786,7 @@ console.log('\n[31] a refused write is VISIBLE and never claims "已保存" (P1-
   await flush()
   p.tree = p.renderAgain()
   const beforeFail = p.setCalls.length
-  commitFieldAt(p.tree)
+  editFieldAt(p, 5)
   await flush()
   p.tree = p.renderAgain()
   let html = toHtml(p.tree)
@@ -1777,12 +1801,12 @@ console.log('\n[31] a refused write is VISIBLE and never claims "已保存" (P1-
     p.setCalls.length === beforeFail, JSON.stringify(p.setCalls.slice(beforeFail)))
   // Retry is just another click: no lock, no "already failed" state.
   refuseWrites = false
-  commitFieldAt(p.tree)
+  editFieldAt(p, 5)
   await flush()
   p.tree = p.renderAgain()
   html = toHtml(p.tree)
   check('retrying the same click saves for real',
-    p.setCalls.slice(beforeFail).some(([k, v]) => k === 'options' && v.updateIntervalDays === 7),
+    p.setCalls.slice(beforeFail).some(([k, v]) => k === 'options' && v.updateIntervalDays === 5),
     JSON.stringify(p.setCalls.slice(beforeFail)))
   check('a successful retry clears the alert and shows the tick',
     count(p.tree, 'dbh-writefail') === 0 && html.includes('已保存'))
@@ -2263,7 +2287,7 @@ console.log('\n[40] a mangled host value keeps the view and reports an error (R3
   check('the layout flags survive (still modern)', count(p.tree, 'dbh-modern') === 1)
   badRead = false
   badWrite = true
-  commitFieldAt(p.tree)
+  editFieldAt(p, 5)
   await flush()
   p.tree = p.renderAgain()
   const html = toHtml(p.tree)
@@ -2298,7 +2322,7 @@ console.log('\n[41] a non-JSON answer is localized, never a parser trace (R4)')
   check('the read error quotes no parser text',
     !html.includes('Unexpected token') && !html.includes('SyntaxError') && !html.includes('DOCTYPE'),
     html.slice(0, 300))
-  commitFieldAt(p.tree)
+  editFieldAt(p, 5)
   await flush()
   p.tree = p.renderAgain()
   html = toHtml(p.tree)
@@ -2387,7 +2411,7 @@ console.log('\n[44] a later failure suppresses the older 已保存 tick (R7-3)')
   })
   await flush()
   p.tree = p.renderAgain()
-  commitFieldAt(p.tree)
+  editFieldAt(p, 5)
   await flush()
   p.tree = p.renderAgain()
   check('the successful save shows the tick', toHtml(p.tree).includes('已保存'), toHtml(p.tree).slice(0, 300))
@@ -2574,6 +2598,22 @@ check('the top level leaks no scheme, DSN, credential or local path',
   atTopLeak.indexOf('://') < 0 && atTopLeak.indexOf('D:/work') < 0 && !/password|passwd|secret|token/i.test(atTopLeak),
   atTopLeak)
 check('the candidate VALUE is the immutable source handle', atProd.value === 'app_1a2b3c_prod', JSON.stringify(atProd.value))
+// "开发" and "其他工作区" alone were unreadable in the menu: the label now says
+// WHAT the row is, while the name (what a chip will read) stays a bare env name.
+check('a connection row is labelled "<env> · 连接" and its name stays the bare env',
+  atProd.label === 'prod · 连接' && atProd.name === 'prod',
+  JSON.stringify({ name: atProd.name, label: atProd.label }))
+check('the folder row says what it holds: 其他工作区的连接',
+  atFolder.label === '其他工作区的连接', JSON.stringify(atFolder.label))
+// ENTER on a folder must never insert. It used to put an `@db:` chip with an
+// EMPTY handle in the composer — the model received a reference that does not
+// exist, and the user could not tell what the `@` had done.
+const atFolderPick = atSrc.onPick({
+  action: 'pick', candidate: atFolder, session: AT_SESSION, position: 0, via: 'menu', span: { start: 0, end: 0 },
+})
+check('ENTER on the folder drills instead of inserting a reference',
+  !!atFolderPick && !atFolderPick.insert && atFolderPick.text === '@其他工作区' && atFolderPick.continue === true,
+  JSON.stringify(atFolderPick))
 
 // ③ Drilling: the folder row rewrites the DRAFT to our marker and keeps the menu
 // open (`execute()` only honours `text`, so a drill must not return `insert`).
@@ -2590,6 +2630,8 @@ check('the second level lists only the other workspaces, as "workspace · env"',
   && atOthers[0].description === '127.0.0.1:5432/bill'
   && atOthers[0].section === '其他工作区',
   JSON.stringify(atOthers))
+check('…and the drilled row adds the workspace and the kind: "工作区 · 环境 · 连接"',
+  atOthers[0].label === 'billing · prod · 连接', JSON.stringify(atOthers[0].label))
 check('the second level keeps the immutable handle as the value',
   atOthers[0].value === 'billing_1a2b3c_prod', JSON.stringify(atOthers[0].value))
 const atFilteredOut = await atSrc.candidates(AT_SESSION, { query: '其他工作区 app', drilled: true })
@@ -2640,6 +2682,11 @@ check('pick inserts a reference routed back to this source',
 check('the insert carries the HANDLE and shows the menu name (the alias stays the copy spelling)',
   !!atInsert && atInsert.ref === 'app_1a2b3c_prod' && atInsert.label === 'prod' && atInsert.clipboardText === '@app_prod',
   JSON.stringify(atInsert))
+// The chip must read the plain environment name. The menu now says
+// "prod · 连接", and that decoration must not travel into the conversation.
+check('the inserted chip reads the bare environment name, not the menu label',
+  !!atInsert && atInsert.label === 'prod' && atInsert.label.indexOf('连接') < 0,
+  JSON.stringify(atInsert && atInsert.label))
 
 // ⑧ A kitchen-sink check on the whole second level too: no scheme/path/credential.
 const atOthersLeak = JSON.stringify(atOthers)
@@ -2755,6 +2802,42 @@ console.log('\n[48] global settings: test concurrency / row limit / export direc
     String((inputs[2] || { props: {} }).props.placeholder || '').includes('默认位置'),
     JSON.stringify((inputs[2] || {}).props))
 
+  // ⓪ A blur with NOTHING changed is not a write. The `?` help sits right beside
+  // the export box, so clicking it blurs the box — and a "保存中…" for a value the
+  // store already holds reads as "I accidentally hit some other button".
+  const postsIdle = p.posts.length
+  commitFieldAt(p.tree, 1) // concurrency box, untouched ('2' is what the Host holds)
+  p.tree = p.renderAgain()
+  check('blurring an unchanged box sends no request', p.posts.length === postsIdle,
+    JSON.stringify(p.posts.slice(postsIdle)))
+  check('…and shows neither 保存中… nor 已保存 ✓',
+    count(p.tree, 'dbh-saving') === 0 && count(p.tree, 'dbh-saved') === 0,
+    JSON.stringify({ saving: count(p.tree, 'dbh-saving'), saved: count(p.tree, 'dbh-saved') }))
+  // The `?` is the reported click: it sits INSIDE the row, so it blurs the field.
+  const help = classed(p.tree, 'dbh-helpbtn')[0]
+  const postsHelp = p.posts.length
+  if (help && typeof help.props.onClick === 'function') help.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  p.tree = p.renderAgain()
+  commitDir(p.tree) // the export box it belongs to, still empty (= the Host value)
+  p.tree = p.renderAgain()
+  check('clicking the `?` and blurring the box writes nothing', p.posts.length === postsHelp,
+    JSON.stringify(p.posts.slice(postsHelp)))
+  // Close the explanation again: ⑥ below starts from a closed one.
+  const helpAgain = classed(p.tree, 'dbh-helpbtn')[0]
+  if (helpAgain && typeof helpAgain.props.onClick === 'function') helpAgain.props.onClick({ stopPropagation() {}, preventDefault() {} })
+  p.tree = p.renderAgain()
+  // A NUMERIC box is compared by VALUE: "02" is the stored 2, so it must not write
+  // (a real change still does — that is ①, right below).
+  const postsEquiv = p.posts.length
+  typeWithin(p.tree, 'dbh-barline2', 0, '02')
+  p.tree = p.renderAgain()
+  commitFieldAt(p.tree, 1)
+  p.tree = p.renderAgain()
+  check('a numerically equal value ("02" vs 2) sends no request', p.posts.length === postsEquiv,
+    JSON.stringify(p.posts.slice(postsEquiv)))
+  typeWithin(p.tree, 'dbh-barline2', 0, '2')
+  p.tree = p.renderAgain()
+
   // ① A field commits on BLUR: there is no 保存 button any more, so the write has
   // to happen where the edit ended. One field, one request — the old form-wide
   // button re-sent every setting on every click.
@@ -2765,6 +2848,8 @@ console.log('\n[48] global settings: test concurrency / row limit / export direc
   await flush()
   p.tree = p.renderAgain()
   const blurPost = (p.posts[postsBefore] || {}).body || {}
+  check('a REAL change writes exactly one request',
+    p.posts.length === postsBefore + 1, `${p.posts.length - postsBefore} post(s)`)
   check('blurring the concurrency box writes THAT field only',
     blurPost.batchConcurrency === 5 && blurPost.updateIntervalDays === undefined
     && blurPost.defaultMaxRows === undefined && blurPost.exportDir === undefined, JSON.stringify(blurPost))
@@ -3695,6 +3780,20 @@ console.log('\n[52] the update check spins, then says what it found (then gets o
   check('the header is quiet at rest (no status line, no spinner)',
     stateText() === '' && classed(p.tree, 'dbh-spin').length === 0,
     JSON.stringify({ state: stateText(), spin: classed(p.tree, 'dbh-spin').length }))
+  // An upgraded HOST with a stale PAGE: /state reports the new plugin version while
+  // this bundle is still the previous build (the desktop app was not restarted).
+  // The chip must name BOTH, and a badge must appear — otherwise "plugin v6.0.0"
+  // reads as "everything is current".
+  const staleBadge = classed(p.tree, 'dbh-stale')[0]
+  check('a host newer than this bundle shows the 界面待重启 badge',
+    !!staleBadge && toHtml(staleBadge).includes('界面待重启')
+    && String(staleBadge.props.title || '').includes('5.2.0-dev.1')
+    && String(staleBadge.props.title || '').includes(CLIENT_BUILD_FROM_SOURCE),
+    JSON.stringify(staleBadge ? { text: toHtml(staleBadge), title: staleBadge.props.title } : null))
+  check('…and the version chip names both builds',
+    String((classed(p.tree, 'dbh-ver')[0] || { props: {} }).props.title || '').includes('5.2.0-dev.1')
+    && String((classed(p.tree, 'dbh-ver')[0] || { props: {} }).props.title || '').includes(CLIENT_BUILD_FROM_SOURCE),
+    String((classed(p.tree, 'dbh-ver')[0] || { props: {} }).props.title || ''))
 
   clickClass(p.tree, 'dbh-vercheck')
   p.tree = p.renderAgain()
@@ -3754,6 +3853,23 @@ console.log('\n[52] the update check spins, then says what it found (then gets o
     String(button().props.title || '').includes('检查更新失败') && String(button().props.title || '').includes('连接超时'),
     JSON.stringify(button().props.title))
   p.dispose()
+
+  // A page that MATCHES its host must not cry wolf.
+  viewport(1440)
+  const same = await page(TILED, {
+    slot: 'main',
+    snapshot: Object.assign({}, MODERN_DEFAULTS, { pluginVersion: CLIENT_BUILD_FROM_SOURCE }),
+    props: { useWorkspaces: wsSnap('D:/work/app') },
+  })
+  await flush()
+  same.tree = same.renderAgain()
+  check('a page that matches its host shows no stale badge',
+    classed(same.tree, 'dbh-stale').length === 0, toHtml(same.tree).slice(0, 400))
+  check('…while the chip still names both builds explicitly',
+    String((classed(same.tree, 'dbh-ver')[0] || { props: {} }).props.title || '').includes('插件 v' + CLIENT_BUILD_FROM_SOURCE)
+    && String((classed(same.tree, 'dbh-ver')[0] || { props: {} }).props.title || '').includes('界面 ' + CLIENT_BUILD_FROM_SOURCE),
+    String((classed(same.tree, 'dbh-ver')[0] || { props: {} }).props.title || ''))
+  same.dispose()
   viewport(1440)
 }
 

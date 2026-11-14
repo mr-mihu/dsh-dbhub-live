@@ -1,9 +1,10 @@
 # release-test — 每个声明版本都实测一遍 web 端
 
-这套东西回答两个问题，且只回答这两个：
+这套东西回答三个问题，且只回答这三个：
 
 1. **这次改动还能装、能跑吗？** —— 对每个声明支持的 DSH 版本，真的装一份钉版 CLI、建隔离 `DSH_HOME`、把 `npm pack` 的产物装进 profile、起 `dsh web`、用 HTTP 与日志探针验一遍。
-2. **我们到底声明支持哪些版本？** —— `matrix.json` 是唯一声明，`doc/SUPPORT-MATRIX.md` 是生成的证据表，`release:preflight` 保证两者与 manifest 不打架。
+2. **从旧版升上来的机器会不会坏？** —— `--tier upgrade` 档先装一个真实旧版、用它造真实数据，再就地升级到被测产物，验数据/凭据/客户端包是否被正确接管。
+3. **我们到底声明支持哪些版本？** —— `matrix.json` 是唯一声明，`doc/SUPPORT-MATRIX.md` 是生成的证据表，`release:preflight` 保证两者与 manifest 不打架。
 
 它**不**替代单测与 `check:ui`：那些验的是逻辑与渲染，这里验的是"在真实宿主里装得上、起得来、接口通"。
 
@@ -15,6 +16,8 @@ npm run test:release          # ② declared 矩阵（阻塞发版的那批）
 npm run test:release:all      # 加上 advisory 观察项
 npm run support:matrix        # ③ 重新生成 doc/SUPPORT-MATRIX.md + mise.toml + README 版本段
 npm run release:preflight     # ④ 发版闸门（报告新鲜 + AI 判定通过才放行）
+
+node release-test/run.mjs --tier upgrade   # ⑤ 跨版本升级档（正式版前必跑，见下文）
 ```
 
 单个版本调试（**不能**作为发版依据）：
@@ -59,6 +62,43 @@ node release-test/run.mjs --tarball ..\dsh-dbhub-live-5.1.0.tgz   # 测一个已
 - `report.json` —— 机器读（preflight、support-matrix 都吃它）
 - `judge-prompt.md` —— **给 AI 复核的请求**（事实、open questions、输出 schema、校验命令）
 - `history.jsonl` —— 每次运行一行，用于看趋势
+
+## 跨版本升级档（`--tier upgrade`）
+
+`declared` 档测的是**全新安装**（干净 home）。真实用户的机器是「装过旧版、有数据」，升级到新版会不会丢东西、会不会还在跑旧包，只有**真升级一次**才知道：
+
+```powershell
+node release-test/run.mjs --tier upgrade                        # 全部声明版本，基线默认 5.2.0
+node release-test/run.mjs --tier upgrade --only 0.2.2-rc.2 `
+  --tarball .qa/dsh-dbhub-live-6.0.0-rc.6.tgz --baseline 6.0.0-rc.5
+```
+
+每个 target 两段（`--baseline <version>` 从 npm 拉并缓存到 `.release-test/cache/artifacts/baselines/`；`--baseline-tarball <file>` 用本地包）：
+
+| 步骤 | 细节 | 产物 |
+| --- | --- | --- |
+| 1. 装旧版 | 干净 home → `dsh plugin add <baseline>` → boot，**用旧版自己的 `POST /op` 造数据**：`prod`（只读）+ `tunnel`（SSH 口令），DSN 里都带明文口令；再改 `updateIntervalDays` / `showSidebarEntry` | `baseline-install.log`、`baseline-boot.log`、`baseline-data.json` |
+| 2. 就地升级 | 同一个 home 上再 `dsh plugin add <新 tarball>`，重新 boot（不重建 profile，这才是用户路径） | `upgrade-install.log`、`boot.log` |
+| 3. 两套断言 | 既有全套探针 + 升级专属：连接/设置/凭据引用/`node_modules` 版本/boot 日志 | `probe-summary.json`（含 `upgrade.*`） |
+
+升级专属检查（`upgrade.` 前缀）约定：
+
+- `upgrade.connections` / `upgrade.prefs`：旧数据还在、没被改；
+- `upgrade.bundle-version`：profile 里跑的是**新**版本（防「升级了但界面还是上一版」）；
+- `upgrade.store-migrated`：旧明文口令搬进 DSH 凭据库、引用真实存在。**主机没有 `credentials` 服务时判 `warn`**（文档化降级，迁移没被测到）；而「boot 时说不可用、之后写入却能拿到引用」判 `fail`（迁移跳过且不重试）；
+- `upgrade.secret-resolve`：迁移后连接仍能解析口令（探针报「连不上库」是正常的，种子指向关闭端口；报「口令已不在凭据库」才是问题）；
+- `upgrade.boot-log`：升级后的 boot 日志没有 uncaught / unhandled rejection / fatal。
+
+`verdict --check` 对升级档额外要求：每个 target 必须有 `upgrade.baselineVersion` 与 `upgrade.afterUpgrade`，升级步骤与 `upgrade.*` 检查**都不允许 skip**（跳过的升级断言证明不了任何事）。
+
+**还没覆盖的跨版本场景**（要新增就在这里加，别塞进 `declared` 档）：
+
+1. **跳版升级**：`5.1.0` → `6.0.x`（跨两个大版本，中间版本的存储格式没人验证过）；
+2. **多工作区**：现在是单工作区两个环境；跨工作区的旧 store、以及 `move`/`copy` 迁移后的顺序；
+3. **旧客户端缓存**：浏览器里上一次的 bundle 与新宿主半混用（需要真浏览器，harness 只取 bundle 文本）；
+4. **升级中途失败**：`dsh plugin add` 崩在中间、home 里新旧两半并存时的可恢复性；
+5. **桌面端 profile**：现在只跑 web profile；
+6. **从 npm 安装路径升级**（`dsh plugin up`）与 tarball 升级的差异。
 
 ## 判定：机器负责证据，AI 负责判断
 

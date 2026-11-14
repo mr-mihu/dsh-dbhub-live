@@ -72,7 +72,7 @@ The full statement lives in [the policy section](https://github.com/mr-mihu/dsh-
 <!-- release-test:versions:begin -->
 ## Supported version range
 
-**From DSH 0.2.1 (lines 0.2.1 / 0.2.2, prereleases included)** — 4 declared versions verified (last verified 2026-11-13).
+**From DSH 0.2.1 (lines 0.2.1 / 0.2.2, prereleases included)** — 4 declared versions verified (last verified 2026-11-14).
 
 <details>
 <summary>Per-version verification details (expand)</summary>
@@ -82,7 +82,7 @@ The full statement lives in [the policy section](https://github.com/mr-mihu/dsh-
 | `0.2.1-rc.2` | modern | 4.4s | 21 | ✅ pass | 2026-11-13 · 53ba00c1 |
 | `0.2.1-rc.5` | modern | 4.3s | 21 | ✅ pass | 2026-11-13 · 53ba00c1 |
 | `0.2.2-rc.1` | modern | 4.3s | 21 | ✅ pass | 2026-11-13 · 53ba00c1 |
-| `0.2.2-rc.2` | modern | 4.7s | 21 | ✅ pass | 2026-11-13 · 53ba00c1 |
+| `0.2.2-rc.2` | modern | 4.9s | 21 | ✅ pass | 2026-11-14 · 81ca9d15 |
 
 </details>
 

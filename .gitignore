@@ -30,3 +30,6 @@ doc/PLAN-*.md
 doc/implementation-notes.md
 # Local release-notes drafts (GitHub release body source, never tracked).
 doc/RELEASE-NOTES-*.md
+
+# local QA scratch (tarballs, npm cache, scripts)
+.qa/

@@ -83,6 +83,30 @@ export function validateVerdict(verdict, report, reportHash) {
     else if (!answer.answer || !String(answer.answer).trim()) problems.push(`open question ${item.id} has no answer text`)
   }
 
+  // An upgrade run must actually carry its upgrade evidence. This tier's whole
+  // point is the migration, so "the target ran but the upgrade half is missing or
+  // was skipped" is not a pass with notes — it is a run that did not test what it
+  // claims to test. Checked here (not only in the report) because the verdict is
+  // what the release gate reads.
+  if (report.mode === 'upgrade') {
+    for (const target of report.targets ?? []) {
+      const up = target.upgrade
+      if (!up) {
+        problems.push(`${target.version}: upgrade run, but the target has no \`upgrade\` section — the cross-version path was not exercised`)
+        continue
+      }
+      if (up.skipped === true) problems.push(`${target.version}: the upgrade step was skipped — that is not evidence`)
+      if (!up.baselineVersion) problems.push(`${target.version}: the upgrade section does not record which baseline was installed`)
+      if (!up.afterUpgrade) problems.push(`${target.version}: the upgrade section has no post-upgrade data — nothing was verified after the upgrade`)
+      const upgradeChecks = (target.checks ?? []).filter((check) => String(check.id).startsWith('upgrade.'))
+      if (!upgradeChecks.length) problems.push(`${target.version}: no \`upgrade.*\` checks were recorded`)
+      const skippedChecks = upgradeChecks.filter((check) => check.status === 'skip')
+      if (skippedChecks.length) {
+        problems.push(`${target.version}: ${skippedChecks.length} upgrade check(s) were skipped (${skippedChecks.map((c) => c.id).join(', ')}) — a skipped upgrade assertion proves nothing`)
+      }
+    }
+  }
+
   // Overall verdict must be consistent with the per-target verdicts.
   const targetVerdicts = (verdict.targets ?? []).map((t) => t.verdict)
   if (verdict.overall === 'pass') {
