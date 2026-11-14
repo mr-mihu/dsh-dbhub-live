@@ -285,8 +285,21 @@ test('cap + 1 rows is trimmed, marked and counted', () => {
   assert.equal(lines[1], HEADER)
 })
 
-test('cap = 1 keeps exactly one row', () => {
-  const out = capExecuteSqlText(receipt([stmt(rowsOf(5))]), 1)
+// dbhub 1.5+ wraps the payload: `{"success":true,"data":{"statements":[…]}}`.
+// Reading only the flat shape made capping AND export fail soft (badResult),
+// because parse returned null and the receipt came back untouched.
+test('the success envelope is unwrapped, and capping still mutates it in place', () => {
+  const text = HEADER + '\n' + JSON.stringify({ success: true, data: { statements: [stmt(rowsOf(4), 999)] } })
+  const out = capExecuteSqlText(text, 3)
+  const parsed = bodyOf(out)
+  assert.equal(parsed.success, true, 'the envelope survives')
+  assert.equal(parsed.data.statements[0].rows.length, 3)
+  assert.equal(parsed.data.statements[0].truncated, true)
+  assert.equal(parsed.data.statements[0].shown, 3)
+  assert.equal(parsed.data.statements[0].count, 999)
+})
+
+test('cap = 1 keeps exactly one row', () => {  const out = capExecuteSqlText(receipt([stmt(rowsOf(5))]), 1)
   const parsed = bodyOf(out)
   assert.equal(parsed.statements[0].rows.length, 1)
   assert.deepEqual(parsed.statements[0].rows, [{ id: 1 }])

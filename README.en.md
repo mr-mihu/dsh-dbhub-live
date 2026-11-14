@@ -82,7 +82,7 @@ The full statement lives in [the policy section](https://github.com/mr-mihu/dsh-
 | `0.2.1-rc.2` | modern | 3.7s | 29 | ❌ fail | 2026-11-14 · ec8fc900 |
 | `0.2.1-rc.5` | modern | 3.9s | 29 | ❌ fail | 2026-11-14 · ec8fc900 |
 | `0.2.2-rc.1` | modern | 3.9s | 29 | ❌ fail | 2026-11-14 · ec8fc900 |
-| `0.2.2-rc.2` | modern | 4.1s | 29 | ❌ fail | 2026-11-14 · ec8fc900 |
+| `0.2.2-rc.2` | modern | 4.9s | 29 | ❌ fail | 2026-11-14 · 3a4951c5 |
 
 </details>
 

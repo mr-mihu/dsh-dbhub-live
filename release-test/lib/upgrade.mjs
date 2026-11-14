@@ -15,6 +15,7 @@ import path from 'node:path'
 import { ARTIFACTS_DIR, ensureDir, readJson, sleep } from './util.mjs'
 import { run } from './proc.mjs'
 import { cliEnv, npmInvocation } from './cli-install.mjs'
+import { readTarballPackage } from './artifact.mjs'
 import { httpGet, httpPost, safeParse } from './probe.mjs'
 
 /** The release most likely still installed in the wild when this repo upgrades. */
@@ -87,24 +88,8 @@ export async function resolveBaseline({ baseline = DEFAULT_BASELINE, tarball = n
  * two is NOT silently accepted: the caller asserts the installed version anyway.
  */
 async function readTarballManifest(tarball, logFile) {
-  const scratchLog = logFile ?? path.join(BASELINES_DIR, 'tar-manifest.log')
-  ensureDir(path.dirname(scratchLog))
-  const result = await run('tar', ['-xzOf', tarball, 'package/package.json'], {
-    logFile: scratchLog,
-    timeoutMs: 60_000,
-    label: 'tar -xzOf tarball package/package.json',
-  })
-  if (result.code === 0) {
-    try {
-      const text = fs.readFileSync(scratchLog, 'utf8')
-      const start = text.lastIndexOf('{\n  "name"')
-      const end = text.lastIndexOf('}')
-      const pkg = JSON.parse(text.slice(start, end + 1))
-      if (pkg?.name && pkg?.version) return { name: pkg.name, version: pkg.version }
-    } catch {
-      // fall through to the file name
-    }
-  }
+  const manifest = await readTarballPackage(tarball, { logFile })
+  if (manifest?.name && manifest?.version) return { name: manifest.name, version: manifest.version }
   const match = /^(.+)-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\.tgz$/.exec(path.basename(tarball))
   if (!match) throw new Error(`cannot read name/version from ${path.basename(tarball)} — pass a proper npm tarball`)
   return { name: match[1], version: match[2] }
@@ -288,6 +273,8 @@ export function compareSeeded({ seeded, rows, prefs, installedVersion, expectedV
   const after = rows.map(rowSignature)
   const byEnv = new Map(after.map((row) => [row.env, row]))
   const preserved = {}
+  // Rows whose /state entry still claims `passwordUnsplit` (see below).
+  const viewUnsplit = []
 
   // Nothing seeded = nothing verified. A vacuous pass here would be the worst
   // possible outcome: a green "upgrade" that never carried any data.
@@ -307,12 +294,13 @@ export function compareSeeded({ seeded, rows, prefs, installedVersion, expectedV
       && now.ro === before.ro
       && JSON.stringify(now.ssh) === JSON.stringify(before.ssh)
     if (!same) problems.connections.push(`connection "${before.env}" changed: ${JSON.stringify({ before, after: now })}`)
-    // The unsplit flag is about the SECRET, not about the row: it belongs to the
-    // store group, where "plaintext is acceptable on a host without a credential
-    // service" can be judged instead of failing the data-preservation check.
-    if (now.passwordUnsplit) {
-      problems.store.push(`connection "${before.env}" reports passwordUnsplit (its password is still in the connection file)`)
-    }
+    // The view's `passwordUnsplit` flag is deliberately NOT a problem here: it is
+    // computed from the LAST DISCOVERY WALK's cached rows, so it can still carry
+    // the pre-migration value after the store has been rewritten. The store on
+    // disk is the authority for the secret layout (see verifyUpgrade); the flag is
+    // recorded as an observation so a stale marker stays visible without failing
+    // a migration that actually happened.
+    if (now.passwordUnsplit) viewUnsplit.push(before.env)
     preserved[before.env] = same
   }
 
@@ -399,6 +387,7 @@ export function compareSeeded({ seeded, rows, prefs, installedVersion, expectedV
     facts: {
       preserved,
       prefs: prefsAfter,
+      viewUnsplit,
       migration,
       migrationNote: movedCount
         ? `${movedCount} inline secret(s) moved into the DSH credential store`
@@ -424,6 +413,73 @@ export function hardErrorsInBootLog(text) {
   return String(text).split(/\r?\n/)
     .filter((line) => !BENIGN_ERROR_RE.test(line))
     .filter((line) => HARD_ERROR_RE.test(line))
+}
+
+/**
+ * Wait until the boot-time secret migration has actually landed.
+ *
+ * `migrateSecrets` is an ASYNC boot action, not a synchronous one: the host
+ * mounts the `credentials` service a beat after the plugin starts, and the plugin
+ * retries with backoff (500ms, 1s, 2s …) until it can write. Reading the store the
+ * instant `/state` answers therefore catches a *healthy* migration mid-flight and
+ * reports it as a failure — a two-second window judged as a bug. That is why the
+ * assertions that care about the secret layout poll from disk (cheap, no HTTP)
+ * and only judge what is still true when the window closes.
+ *
+ * "Settled" means: every row the baseline stored a secret for no longer carries it
+ * inline AND points at a reference. A row the baseline already stored as a
+ * reference keeps its reference. Anything else keeps us waiting until the budget
+ * runs out.
+ *
+ * @returns {Promise<{ settled: boolean, attempts: number, waitedMs: number, storeShape: object, pending: string[] }>}
+ */
+export async function settleMigration({
+  storeFile,
+  baselineStoreShape,
+  envs,
+  workspacePath,
+  timeoutMs = 15_000,
+  intervalMs = 500,
+}) {
+  const started = Date.now()
+  let attempts = 0
+  let storeShape = {}
+  let pending = []
+  for (;;) {
+    attempts += 1
+    storeShape = describeStore(readJsonSafe(storeFile), { workspacePath, envs })
+    pending = envs.filter((env) => {
+      const shape = storeShape[env]
+      if (!shape?.present) return true
+      const before = baselineStoreShape?.rows?.[env]
+      // Only require what the baseline actually had: a baseline that never used a
+      // reference cannot be asked to produce one out of nothing.
+      if (before?.dsnHasInlinePassword === true || before?.dsnPasswordRef) {
+        if (shape.dsnHasInlinePassword || !shape.dsnPasswordRef) return true
+      }
+      if (before?.sshInlinePassword === true || before?.sshPasswordRef) {
+        if (shape.sshInlinePassword || !shape.sshPasswordRef) return true
+      }
+      return false
+    })
+    const waitedMs = Date.now() - started
+    if (!pending.length) return { settled: true, attempts, waitedMs, storeShape, pending }
+    if (waitedMs >= timeoutMs) return { settled: false, attempts, waitedMs, storeShape, pending }
+    await sleep(intervalMs)
+  }
+}
+
+/**
+ * Boot-log lines an upgrade reader needs when a secret check fails: the plugin's
+ * own accounting of the migration, including the retry diagnostics the library
+ * prints while it waits for the service.
+ */
+export function migrationLogTail(bootLog, lines = 12) {
+  return String(bootLog ?? '')
+    .split(/\r?\n/)
+    .filter((line) => line.includes('[dsh-dbhub-live]'))
+    .slice(-lines)
+    .join('\n')
 }
 
 const checkOf = (id, status, detail, evidence) => ({ id, status, detail, ...(evidence ? { evidence } : {}) })
@@ -472,14 +528,29 @@ export async function verifyUpgrade(ctx) {
   // Same wait as the seed: the upgraded host re-walks its workspaces, and reading
   // /state one tick after the ready line would compare against an empty view.
   const rows = await waitForRows({ base, cookie, expected: seeded.rows.length })
+  const workspacePath = rows[0]?.path ?? seeded.rows[0]?.path ?? ''
+
+  // Everything below reads the post-migration state, so the migration is awaited
+  // FIRST (see settleMigration): the secret layout is written asynchronously
+  // after boot, and a one-shot read here used to fail a two-second window.
+  const migration = await settleMigration({
+    storeFile: ctx.storeFile,
+    baselineStoreShape,
+    envs: seeded.rows.map((row) => row.env),
+    workspacePath,
+  })
+  const storeShape = migration.storeShape
+  // The rows are re-read after the settle: `passwordUnsplit` and the tunnel flags
+  // come from the view, and the first read above happened while the migration was
+  // still in flight.
+  const settledRows = await waitForRows({ base, cookie, expected: seeded.rows.length })
   const prefs = readJsonSafe(ctx.prefsFile)
-  const store = readJsonSafe(ctx.storeFile)
   const credentialText = readTextSafe(ctx.credentialFile)
   const installedVersion = readJsonSafe(path.join(home, 'profiles', 'web', 'node_modules', artifact.name, 'package.json'))?.version ?? ''
 
-  const workspacePath = rows[0]?.path ?? seeded.rows[0]?.path ?? ''
-  const storeShape = describeStore(store, { workspacePath, envs: seeded.rows.map((row) => row.env) })
-
+  // The connection probes come after the same settle: before it they can observe
+  // a row whose reference has just been minted (or not yet), which is exactly the
+  // intermediate state a user never sees.
   const probeResults = {}
   for (const [index, row] of seeded.rows.entries()) {
     probeResults[row.env] = await probeConnection({ base, cookie, env: row.env, nonce: `upgrade-${index}-${Date.now()}` })
@@ -491,7 +562,7 @@ export async function verifyUpgrade(ctx) {
 
   const { problems, facts } = compareSeeded({
     seeded,
-    rows,
+    rows: settledRows,
     prefs,
     installedVersion,
     expectedVersion: artifact.version,
@@ -523,30 +594,39 @@ export async function verifyUpgrade(ctx) {
   const serviceUsable = serviceProbe.available === true
   const credentialBootLines = String(bootLog ?? '').split(/\r?\n/)
     .filter((line) => /凭据服务不可用|credentials service is unavailable/i.test(line))
-  const storeEvidence = JSON.stringify({ before: baselineStoreShape, after: storeShape, serviceProbe, credentialBootLines }, null, 2)
+  const waitNote = migration.settled
+    ? `migration settled after ${migration.attempts} poll(s) / ${migration.waitedMs} ms`
+    : `no migration after ${migration.attempts} poll(s) / ${migration.waitedMs} ms (still pending: ${migration.pending.join(', ') || '—'})`
+  const storeEvidence = JSON.stringify({
+    before: baselineStoreShape,
+    after: storeShape,
+    serviceProbe,
+    migration: { settled: migration.settled, attempts: migration.attempts, waitedMs: migration.waitedMs },
+    credentialBootLines,
+  }, null, 2)
   const storeCheck = !problems.store.length
-    ? checkOf('upgrade.store-migrated', 'pass', `secrets are references now, not inline values — ${facts.migrationNote}`, JSON.stringify({ before: baselineStoreShape, after: storeShape, migration: facts.migration }, null, 2))
+    ? checkOf('upgrade.store-migrated', 'pass', `secrets are references now, not inline values — ${facts.migrationNote}; ${waitNote}`, JSON.stringify({ before: baselineStoreShape, after: storeShape, migration: facts.migration }, null, 2))
     : plaintextOnly && serviceProbe.available === false
       ? checkOf(
         'upgrade.store-migrated',
         'warn',
-        `this host offers no \`credentials\` service to the plugin (${serviceProbe.detail}), so the secret migration could not run: the plaintext layout was kept and warned once, as documented. Re-run on a host whose credential service works to exercise the migration.`,
+        `this host offers no \`credentials\` service to the plugin (${serviceProbe.detail}), so the secret migration could not run: the plaintext layout was kept and warned once, as documented. Re-checked for ${migration.attempts} poll(s) / ${migration.waitedMs} ms before concluding. Re-run on a host whose credential service works to exercise the migration.`,
         storeEvidence,
       )
       : plaintextOnly && serviceProbe.available === null
-        ? checkOf('upgrade.store-migrated', 'warn', `the old password(s) stayed in the connection file and the credential service could not be probed (${serviceProbe.detail}) — judge this by hand`, storeEvidence)
+        ? checkOf('upgrade.store-migrated', 'warn', `the old password(s) stayed in the connection file and the credential service could not be probed (${serviceProbe.detail}) — judge this by hand. ${waitNote}`, storeEvidence)
         : checkOf(
           'upgrade.store-migrated',
           'fail',
           serviceUsable
-            ? `the old plaintext password(s) stayed in the connection file: the plugin saw the credentials service as unavailable when it ran its boot migration, but a connection written afterwards DID get a reference — the migration skipped these rows and nothing retried it in that process, so users get a mixed store plus a \`passwordUnsplit\` marker.${credentialBootLines.length ? ` Boot log: ${credentialBootLines[0].trim().slice(0, 120)}` : ''}`
-            : problems.store.join(' | '),
+            ? `the old plaintext password(s) were still in the connection file after waiting for the boot migration: ${waitNote}. The service IS usable (a connection written afterwards got a reference), so the migration is not landing — the store still looks like ${JSON.stringify(storeShape)}.${credentialBootLines.length ? ` Boot log: ${credentialBootLines[0].trim().slice(0, 120)}` : ''}\nBoot log tail:\n${migrationLogTail(bootLog)}`
+            : `${problems.store.join(' | ')} (${waitNote})\nBoot log tail:\n${migrationLogTail(bootLog)}`,
           storeEvidence,
         )
 
   const checks = [
     problems.connections.length
-      ? checkOf('upgrade.connections', 'fail', problems.connections.join(' | '), JSON.stringify({ seeded: seeded.rows, after: rows.map(rowSignature) }, null, 2))
+      ? checkOf('upgrade.connections', 'fail', problems.connections.join(' | '), JSON.stringify({ seeded: seeded.rows, after: settledRows.map(rowSignature) }, null, 2))
       : checkOf('upgrade.connections', 'pass', `${seeded.rows.length} seeded connection(s) survived with read-only flag and tunnel intact (${seeded.rows.map((r) => r.env).join(', ')})`),
     problems.prefs.length
       ? checkOf('upgrade.prefs', 'fail', problems.prefs.join(' | '), JSON.stringify({ seeded: seeded.prefs, after: prefs }, null, 2))
@@ -561,18 +641,25 @@ export async function verifyUpgrade(ctx) {
     hardErrors.length
       ? checkOf('upgrade.boot-log', 'fail', `${hardErrors.length} hard error line(s) in the upgrade boot log`, hardErrors.slice(0, 10).join('\n'))
       : checkOf('upgrade.boot-log', 'pass', 'no uncaught error / unhandled rejection / fatal line in the upgrade boot log'),
+    // Informational, never a verdict: the view's marker comes from the last
+    // discovery walk, so it can lag the store by one walk. Saying so keeps a
+    // cosmetic staleness visible without turning a completed migration red.
+    facts.viewUnsplit?.length
+      ? checkOf('upgrade.view-marker', 'info', `${facts.viewUnsplit.join(', ')} still carries \`passwordUnsplit\` in /state although the connection store is migrated — the card keeps the old tooltip until its next discovery walk (cosmetic; the connection itself works)`)
+      : checkOf('upgrade.view-marker', 'pass', 'no row claims passwordUnsplit'),
   ]
 
   return {
     checks,
     afterUpgrade: {
-      rows: rows.map(rowSignature),
+      rows: settledRows.map(rowSignature),
       prefs,
       installedVersion,
       storeShape,
       probes: probeSummary,
       hardErrors,
       migrationNote: facts.migrationNote,
+      migration: { settled: migration.settled, attempts: migration.attempts, waitedMs: migration.waitedMs, pending: migration.pending },
       credentialService: serviceProbe,
     },
     facts,

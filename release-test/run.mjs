@@ -428,6 +428,16 @@ async function runUpgradeOne({ target, artifact, baseline, runDir, provision, sk
     })
     checks.push(...verified.checks)
     result.upgrade.afterUpgrade = verified.afterUpgrade
+    const settle = verified.afterUpgrade.migration
+    if (settle) {
+      // The migration is asynchronous after boot; say so out loud, so a reader of
+      // the console does not think the numbers were read instantly.
+      const text = settle.settled
+        ? `secret migration settled after ${settle.attempts} poll(s) / ${settle.waitedMs} ms`
+        : `secret migration did NOT settle within ${settle.waitedMs} ms (${settle.attempts} poll(s); pending: ${(settle.pending ?? []).join(', ') || '—'})`
+      if (settle.settled) ok(text)
+      else warn(text)
+    }
 
     const { status, counts } = aggregate(checks)
     result.status = status
@@ -496,9 +506,13 @@ async function cmdRun() {
   say('')
 
   say(`${c.cyan}▶${c.reset} artifact`)
-  const artifact = flag('tarball') ? useTarball(flag('tarball')) : await packPlugin({ logFile: path.join(runDir, 'artifact.log') })
+  const artifact = flag('tarball')
+    ? await useTarball(flag('tarball'), { logFile: path.join(runDir, 'artifact.log') })
+    : await packPlugin({ logFile: path.join(runDir, 'artifact.log') })
   if (artifact.version !== packageMeta().version) {
-    warn(`artifact version ${artifact.version} ≠ package.json ${packageMeta().version}`)
+    // Usually deliberate (testing a release asset), but it must never be silent:
+    // the report would otherwise attribute the tarball's behaviour to this commit.
+    warn(`artifact version ${artifact.version} ≠ package.json ${packageMeta().version} — this run tests the TARBALL, not the working tree`)
   }
   ok(`${path.basename(artifact.tarball)} (${artifact.size} bytes, sha256 ${artifact.sha256.slice(0, 16)}…)`)
 
