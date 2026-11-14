@@ -16,7 +16,7 @@ import { run } from '../release-test/lib/proc.mjs'
 import { packageMeta } from '../release-test/lib/artifact.mjs'
 import { gitInfoAsync, dirtyFilesAsync } from '../release-test/lib/git.mjs'
 import { loadMatrix, matrixClaimWarnings, matrixHash } from '../release-test/lib/matrix.mjs'
-import { latestRun, runPath } from '../release-test/lib/runs.mjs'
+import { latestRun, latestRunOfMode, runPath } from '../release-test/lib/runs.mjs'
 import { checkRun } from '../release-test/lib/verdict.mjs'
 import fs from 'node:fs'
 
@@ -72,7 +72,9 @@ async function main() {
 
   // 1. A run must exist at all.
   const explicit = arg('run')
-  const resolved = explicit ? runPath(String(explicit)) : latestRun()?.dir ?? null
+  // Prefer the newest COLD-INSTALL run: an upgrade run starts from an older
+  // artifact and can never justify releasing this version (see the rule below).
+  const resolved = explicit ? runPath(String(explicit)) : (latestRunOfMode('install') ?? latestRun())?.dir ?? null
   if (!resolved) {
     evidence('没有找到任何发布测试报告 —— 先跑 `npm run test:release`')
     return finish()
