@@ -1,83 +1,80 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-14T16:01:18.657Z",
-  "pluginVersion": "6.0.0-rc.6",
+  "generatedAt": "2026-11-14T16:08:37.535Z",
+  "pluginVersion": "6.0.0-rc.7",
   "matrixHash": "34be607694e6f525fb529409a749224aaaef8a1c95afbe41ad3babd5617ea947",
   "fullRun": {
-    "runId": "20261114-012637-34be60",
-    "generatedAt": "2026-11-13T17:28:49.041Z",
-    "status": "green"
+    "runId": "20261115-000526-34be60",
+    "generatedAt": "2026-11-14T16:07:38.288Z",
+    "status": "red"
   },
   "verdict": {
-    "state": "complete",
-    "overall": "pass",
-    "reviewer": "dsh-agent (lead)",
-    "reviewedAt": "2026-11-13T17:29:01.935Z"
+    "state": "none"
   },
   "targets": {
     "0.2.1-rc.2": {
-      "runId": "20261114-012637-34be60",
-      "generatedAt": "2026-11-13T17:28:49.041Z",
-      "status": "pass",
+      "runId": "20261115-000526-34be60",
+      "generatedAt": "2026-11-14T16:07:38.288Z",
+      "status": "fail",
       "provisionMode": "cli",
       "cliSource": "mise",
-      "readyMs": 4359,
-      "pluginVersion": "6.0.0-rc.5",
-      "commit": "53ba00c1",
+      "readyMs": 3688,
+      "pluginVersion": "6.0.0-rc.6",
+      "commit": "ec8fc900",
       "counts": {
-        "pass": 21,
-        "fail": 0,
+        "pass": 29,
+        "fail": 1,
         "warn": 0,
         "skip": 0,
         "info": 2
       }
     },
     "0.2.1-rc.5": {
-      "runId": "20261114-012637-34be60",
-      "generatedAt": "2026-11-13T17:28:49.041Z",
-      "status": "pass",
+      "runId": "20261115-000526-34be60",
+      "generatedAt": "2026-11-14T16:07:38.288Z",
+      "status": "fail",
       "provisionMode": "cli",
       "cliSource": "mise",
-      "readyMs": 4308,
-      "pluginVersion": "6.0.0-rc.5",
-      "commit": "53ba00c1",
+      "readyMs": 3891,
+      "pluginVersion": "6.0.0-rc.6",
+      "commit": "ec8fc900",
       "counts": {
-        "pass": 21,
-        "fail": 0,
+        "pass": 29,
+        "fail": 1,
         "warn": 0,
         "skip": 0,
         "info": 2
       }
     },
     "0.2.2-rc.1": {
-      "runId": "20261114-012637-34be60",
-      "generatedAt": "2026-11-13T17:28:49.041Z",
-      "status": "pass",
+      "runId": "20261115-000526-34be60",
+      "generatedAt": "2026-11-14T16:07:38.288Z",
+      "status": "fail",
       "provisionMode": "cli",
       "cliSource": "mise",
-      "readyMs": 4303,
-      "pluginVersion": "6.0.0-rc.5",
-      "commit": "53ba00c1",
+      "readyMs": 3855,
+      "pluginVersion": "6.0.0-rc.6",
+      "commit": "ec8fc900",
       "counts": {
-        "pass": 21,
-        "fail": 0,
+        "pass": 29,
+        "fail": 1,
         "warn": 0,
         "skip": 0,
         "info": 2
       }
     },
     "0.2.2-rc.2": {
-      "runId": "20261114-235528-34be60",
-      "generatedAt": "2026-11-14T15:55:59.913Z",
-      "status": "pass",
+      "runId": "20261115-000526-34be60",
+      "generatedAt": "2026-11-14T16:07:38.288Z",
+      "status": "fail",
       "provisionMode": "cli",
       "cliSource": "mise",
-      "readyMs": 4912,
-      "pluginVersion": "6.0.0-rc.5",
-      "commit": "81ca9d15",
+      "readyMs": 4113,
+      "pluginVersion": "6.0.0-rc.6",
+      "commit": "ec8fc900",
       "counts": {
-        "pass": 21,
-        "fail": 0,
+        "pass": 29,
+        "fail": 1,
         "warn": 0,
         "skip": 0,
         "info": 2
