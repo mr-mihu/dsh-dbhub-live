@@ -55,11 +55,12 @@ node release-test/run.mjs --tier upgrade --only 0.2.2-rc.2 `
 | `upgrade.connections` | 两条连接都还在，`ro` / 隧道描述、`conn` 元数据、工作区路径逐项不变 | 升级把连接丢了或改坏了 |
 | `upgrade.prefs` | 三项设置值不变（`announceAccessPolicy` 也必须保持默认 true） | 设置被重置 |
 | `upgrade.bundle-version` | `node_modules/<包>/package.json` 的版本 == 新产物 | **"升级了但界面还是上一版"**（pnpm 没换包） |
-| `upgrade.store-migrated` | 旧版写在连接文件里的明文口令搬进 DSH 凭据库、只留引用；引用在凭据库里真实存在 | 口令没迁移，或引用悬空（口令丢失） |
-| `upgrade.secret-resolve` | 用插件的 `{op:'test'}` 探一次：报的是**连不上库**（正常，种子指向关闭端口），不是「口令已不在凭据库」 | 迁移后连接不可用 |
+| `upgrade.store-migrated` | **有界等待**「连接文件里已无内联口令、且该行有引用」（最多 15s，每 500ms 读一次 store），等到才判 pass | 口令没迁移，或引用悬空（口令丢失） |
+| `upgrade.secret-resolve` | 在同一个等待窗口结束后再探（否则会读到迁移中间态）：报的是**连不上库**（正常，种子指向关闭端口），不是「口令已不在凭据库」 | 迁移后连接不可用 |
 | `upgrade.boot-log` | 升级后的 boot 日志里没有 uncaught / unhandled rejection / fatal | 升级后宿主半崩过 |
 
-- **结果怎么读**：`upgrade.store-migrated` 有一条**主机能力分支**——如果这台 DSH 的 `credentials` 服务对插件根本不可用（boot 日志有「凭据服务不可用」），明文是**文档化的降级**，该检查判 `warn` 而不是 `fail`（迁移没被测到，不代表它坏了）。反过来，**boot 时说不可用、之后写入却能拿到引用**，就说明迁移跳过了旧行且没有重试——那是真问题，判 `fail`。
+- **结果怎么读**：`upgrade.store-migrated` 有两条**主机能力分支**。① 这台 DSH 的 `credentials` 服务对插件根本不可用（boot 后写入也拿不到引用）→ 明文是**文档化的降级**，判 `warn`（迁移没被测到，不代表它坏了）。② 服务可用但 15 秒窗口内迁移一直没发生 → 判 `fail`，detail 里带**最后一次读到的 store 形状 + boot 日志尾部**（含插件的迁移重试诊断）。**迁移是 boot 之后的异步动作**（宿主延迟挂载 `credentials`，插件按 500ms 起指数退避重试），所以这条检查必须等窗口，不能一次读定生死——一次读只会把一个正常的一两秒窗口判成 bug。
+- **`/state` 的 `passwordUnsplit` 不算硬失败**：它是「上一次发现遍历」缓存的旗标，可能比 store 晚；store 迁移已完成而视图还挂着旧标记时，`upgrade.view-marker` 记一条 `info`（卡片 tooltip 仍是旧提示，纯显示问题），不改变判定。
 - **为什么不用 `skip`**：`verdict --check` 把「升级段缺失 / 升级步骤被跳过 / `upgrade.*` 被判 skip」一律视为**未通过**——这一档的意义就是必须真跑，跳过等于没测。
 - **什么时候跑**：**每次正式版前必跑**（与 `declared` 矩阵一起构成发版依据）；预发布可以只在与上一版的差异涉及存储/凭据/设置/客户端包时跑。它比较慢（每个目标两次启动），所以不进 `prepublishOnly`。
 - **它还测不到什么**：跨多个大版本（如 `5.1.0` → `6.0.0`）的跳版、多个工作区之间的数据、导入他人 profile、以及**旧版客户端缓存**（浏览器里上一次的 bundle）——这几类需要额外造场景，见 `release-test/README.md` 的待补清单。

@@ -85,9 +85,12 @@ node release-test/run.mjs --tier upgrade --only 0.2.2-rc.2 `
 
 - `upgrade.connections` / `upgrade.prefs`：旧数据还在、没被改；
 - `upgrade.bundle-version`：profile 里跑的是**新**版本（防「升级了但界面还是上一版」）；
-- `upgrade.store-migrated`：旧明文口令搬进 DSH 凭据库、引用真实存在。**主机没有 `credentials` 服务时判 `warn`**（文档化降级，迁移没被测到）；而「boot 时说不可用、之后写入却能拿到引用」判 `fail`（迁移跳过且不重试）；
-- `upgrade.secret-resolve`：迁移后连接仍能解析口令（探针报「连不上库」是正常的，种子指向关闭端口；报「口令已不在凭据库」才是问题）；
+- `upgrade.store-migrated`：旧明文口令搬进 DSH 凭据库、引用真实存在。**迁移是 boot 后的异步动作**（宿主延迟挂载 `credentials`，插件退避重试），所以这条**有界等待**（最多 15s / 每 500ms 读一次 store），等到「已无内联口令且该行有引用」才 pass；超时才判 `fail`，detail 带最后一次读到的形状 + boot 日志尾部。**主机没有 `credentials` 服务时判 `warn`**（文档化降级，迁移没被测到）；
+- `upgrade.secret-resolve`：在同一个等待窗口**之后**才探（否则会读到迁移中间态）；探针报「连不上库」是正常的，种子指向关闭端口；报「口令已不在凭据库」才是问题；
 - `upgrade.boot-log`：升级后的 boot 日志没有 uncaught / unhandled rejection / fatal。
+- `upgrade.view-marker`：`/state` 里是否还有 `passwordUnsplit` 旗标；store 已迁移而旗标还在时记 `info`（视图来自上一次发现遍历，纯显示滞后），不参与判定。
+
+`--tarball` 现在读**包自己的 `package.json`** 取版本（不再用工作树的版本给它贴标签）：拿旧包冒充新包跑，会在 `provision.version` / `upgrade.bundle-version` 上立刻红，而不是静默测错东西；tarball 版本 ≠ 工作树版本时控制台还会明说「这次测的是 tarball，不是工作树」。
 
 `verdict --check` 对升级档额外要求：每个 target 必须有 `upgrade.baselineVersion` 与 `upgrade.afterUpgrade`，升级步骤与 `upgrade.*` 检查**都不允许 skip**（跳过的升级断言证明不了任何事）。
 
