@@ -818,7 +818,11 @@ test('client bundle contributes the composer `@` source (one message, many refer
   assert.match(source, /ctx\.inject\(\["inputTriggers"\], function \(scope\) \{/)
   assert.match(source, /scope\.inputTriggers\.registerSource\(dbhubInputSource\);/)
   assert.match(source, /name: "dbhub",\s*\n\s*trigger: "@",/)
-  assert.match(source, /serialize: function \(ref\) \{ return "@db:" \+ String\(ref \|\| ""\); \},/)
+  // The message marker is `@<alias>` (readable, same shape as a file reference),
+  // falling back to `@db:<handle>` only when no alias is known.
+  assert.match(source, /serialize: function \(ref\) \{/)
+  assert.match(source, /var alias = aliasOfHandle\(handle\);/);
+  assert.match(source, /return alias && alias !== handle \? "@" \+ alias : "@db:" \+ handle;/);
   assert.match(source, /clipboardText: function \(ref\) \{ return "@" \+ aliasOfHandle\(ref\); \},/)
   assert.match(source, /insert: \{\s*\n\s*source: "dbhub",/)
   assert.match(source, /appearance: "file",/)
@@ -880,11 +884,20 @@ test('the toolbar is text-first: a search box with a prefix, one plain sort cont
 })
 
 test('the export directory can be chosen through the platform, never through the plugin', () => {
-  // The dropdown service is reached through the OPTIONAL, waiting injection form —
-  // never through the exported `inject` (a missing service must not leave the whole
-  // browser half pending).
-  assert.match(source, /ctx\.inject\(\["remote\.directoryPicker"\], function \(scope\) \{/)
-  assert.match(source, /var svc = scope && scope\.remote \? scope\.remote\.directoryPicker : null;/)
+  // The picker is reached through the OPTIONAL, waiting injection form — never
+  // through the exported `inject` (a missing service must not leave the whole
+  // browser half pending). TWO injections, because the names are not equivalent:
+  // `remote` is the first-class service (the picker is a property of it) and
+  // `remote.directoryPicker` is only cordis's pseudo name — injecting THAT does
+  // not populate `scope.remote`, which is why the button never appeared on a real
+  // host while every mocked page showed it.
+  assert.match(source, /wirePicker\(\["remote"\], "remote"\);/)
+  assert.match(source, /wirePicker\(\["remote\.directoryPicker"\], "pseudo"\);/)
+  assert.match(source, /function probePicker\(scope\) \{/)
+  assert.match(source, /scope\.remote\.directoryPicker/)
+  assert.match(source, /scope\.get\("remote\.directoryPicker"\)/)
+  assert.match(source, /scope\.get\("remote"\)/)
+  assert.match(source, /typeof hit\.svc\.pick !== "function"/)
   assert.doesNotMatch(source, /var inject = \[[^\]]*directoryPicker/)
   // The card consumes the platform's answer and nothing else: no fs API, no path
   // guessing. A cancelled pick (null / no value) changes NOTHING.

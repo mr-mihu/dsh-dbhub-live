@@ -388,6 +388,11 @@ function mount(snapshot, opts = {}) {
   // scenario supplies one — that is exactly what a host without the service looks
   // like (the card must then hide the 选择 button).
   const directoryPicker = opts.directoryPicker || null
+  // The OWNER service (`remote`), which is where a real host hangs the picker:
+  // `remote.directoryPicker` is only cordis's pseudo service name. Either shape may
+  // arrive, and the bundle must find both.
+  const remoteSvc = opts.remote === undefined ? null : opts.remote
+  const getOnlyRemote = opts.getOnlyRemote === true
   // The optional `sessions` service (a real client service: `ctx.get('sessions')`
   // whose `list.getSnapshot()` carries `byId[sessionId].cwd`). The `@` menu uses it
   // to pin the CURRENT workspace's group on top; without the service the menu still
@@ -405,6 +410,14 @@ function mount(snapshot, opts = {}) {
     get(name) {
       if (name === 'configForms') return opts.configForms ? configForms : undefined
       if (name === 'sessions') return sessions || undefined
+      // The picker has TWO addresses on a real host: the owner service `remote`
+      // (with the picker as a property) and the pseudo service name. `get` answers
+      // both, exactly like cordis does.
+      if (name === 'remote') return remoteSvc || undefined
+      // The pseudo service name resolves ONLY when the host actually registers it
+      // under that name — it is not a view onto `remote`'s property (a host that
+      // mounts `remote` alone does not answer it).
+      if (name === 'remote.directoryPicker') return directoryPicker || undefined
       if (name !== 'locale') return undefined
       return {
         getLocale: () => ({ active: lang }),
@@ -448,13 +461,23 @@ function mount(snapshot, opts = {}) {
     // the callback never runs — that is how an optional, waiting dependency
     // behaves on a host that does not provide it (the plugin half still loads;
     // only the feature that needs the service stays away).
+    //
+    // The scope models a REAL host: injecting the pseudo name `remote.directoryPicker`
+    // gives a scope whose `remote` property is ABSENT (that shape is exactly what
+    // made the 选择 button invisible in production while the old fake — which
+    // populated `scope.remote` — kept it green). `scope.get(name)` is available on
+    // every scope, like a real Cordis scope.
     inject(names, cb) {
       const wanted = Array.isArray(names) ? names : [names]
       const wantsTriggers = wanted.indexOf('inputTriggers') >= 0
       const wantsPicker = wanted.indexOf('remote.directoryPicker') >= 0
-      const satisfied = (wantsTriggers ? !!inputTriggers : true) && (wantsPicker ? !!directoryPicker : true)
+      const wantsRemote = wanted.indexOf('remote') >= 0
+      const satisfied = (wantsTriggers ? !!inputTriggers : true)
+        && (wantsPicker ? !!directoryPicker : true)
+        && (wantsRemote ? !!remoteSvc : true)
       if (!satisfied) return () => {}
       const scope = {
+        get: (name) => ctx.get(name),
         effect(fn) {
           const cleanup = fn()
           ctx.effect(() => cleanup)
@@ -462,7 +485,9 @@ function mount(snapshot, opts = {}) {
         },
       }
       if (wantsTriggers) scope.inputTriggers = inputTriggers
-      if (wantsPicker) scope.remote = { directoryPicker }
+      // A scope that only answers `get` models a host where the service is
+      // reachable but not mounted as a scope property (probe ③).
+      if (wantsRemote && !getOnlyRemote) scope.remote = remoteSvc
       cb(scope)
       return () => {}
     },
@@ -2695,15 +2720,19 @@ check('the second level leaks nothing either',
 
 // ⑨ Codec: each chip serializes on its own — that is what makes SEVERAL
 // references in one message work.
-check('serialize turns a reference into the model marker @db:<handle>',
-  atSrc.codec.serialize('app_1a2b3c_prod') === '@db:app_1a2b3c_prod', atSrc.codec.serialize('app_1a2b3c_prod'))
+// The MESSAGE text is @<alias>, the same shape as a file reference: a raw
+// handle (j_1hq2m8w_env-1p62l4b) is unreadable and the model could only guess.
+check('serialize writes the readable alias with an @, not the raw handle',
+  atSrc.codec.serialize('app_1a2b3c_prod') === '@app_prod', atSrc.codec.serialize('app_1a2b3c_prod'))
+check('an alias-less handle falls back to @db:<handle> (it must still resolve)',
+  atSrc.codec.serialize('gone_zzzz') === '@db:gone_zzzz', atSrc.codec.serialize('gone_zzzz'))
 check('clipboardText resolves the CURRENT alias of the handle',
   atSrc.codec.clipboardText('app_1a2b3c_prod') === '@app_prod', atSrc.codec.clipboardText('app_1a2b3c_prod'))
 check('an UNKNOWN handle falls back to the handle, never to a guess',
   atSrc.codec.clipboardText('gone_zzzz') === '@gone_zzzz', atSrc.codec.clipboardText('gone_zzzz'))
 const atTwoRefs = [atProd.value, atOthers[0].value].map((r) => atSrc.codec.serialize(r))
 check('one message can carry several references, each serialized on its own',
-  atTwoRefs.join(' ') === '@db:app_1a2b3c_prod @db:billing_1a2b3c_prod', JSON.stringify(atTwoRefs))
+  atTwoRefs.join(' ') === '@app_prod @billing_prod', JSON.stringify(atTwoRefs))
 check('the lexicon lists every alias',
   JSON.stringify(atSrc.lexicon(null).slice().sort()) === JSON.stringify(['app_prod', 'billing_prod', 'default']),
   JSON.stringify(atSrc.lexicon(null)))
@@ -2974,6 +3003,72 @@ console.log('\n[48] global settings: test concurrency / row limit / export direc
     String((classed(r.tree, 'dbh-input-dir')[0] || { props: {} }).props.value || '') === 'D:/kept/exports',
     String((classed(r.tree, 'dbh-input-dir')[0] || { props: {} }).props.value || ''))
   r.dispose()
+
+  // ⑩ THE PRODUCTION SHAPE: `remote` is the service and the picker is a property
+  // of it (`remote.directoryPicker` is only the pseudo NAME). Injecting the pseudo
+  // name leaves `scope.remote` undefined, which is why the 选择 button never
+  // appeared after an upgrade while every mocked page showed it.
+  const shapedPicks = []
+  const shaped = { pick: () => { shapedPicks.push(1); return Promise.resolve({ ok: true, value: 'D:/shaped/out' }) } }
+  const warns = []
+  const realWarn = console.warn
+  console.warn = (...args) => { warns.push(args.join(' ')) }
+  try {
+    const s = await page(TILED, { slot: 'main', remote: { directoryPicker: shaped }, props: { useWorkspaces: wsSnap('D:/work/app') } })
+    await flush()
+    s.tree = s.renderAgain()
+    const shapedBtn = classed(s.tree, 'dbh-pickbtn')[0]
+    check('a host that hangs the picker off `remote` shows the 选择 button', !!shapedBtn,
+      toHtml(s.tree).slice(0, 400))
+    const sPosts = s.posts.length
+    if (shapedBtn && typeof shapedBtn.props.onClick === 'function') shapedBtn.props.onClick({ stopPropagation() {}, preventDefault() {} })
+    await flush()
+    await flush()
+    s.tree = s.renderAgain()
+    check('…and clicking it really calls the platform picker', shapedPicks.length === 1, String(shapedPicks.length))
+    check('…and the returned path is committed through the normal write',
+      String((classed(s.tree, 'dbh-input-dir')[0] || { props: {} }).props.value || '') === 'D:/shaped/out'
+      && ((s.posts[sPosts] || {}).body || {}).exportDir === 'D:/shaped/out',
+      JSON.stringify({ value: String((classed(s.tree, 'dbh-input-dir')[0] || { props: {} }).props.value || ''), post: (s.posts[sPosts] || {}).body }))
+    s.dispose()
+
+    // ⑪ A host that only registers the PSEUDO service name: still found (probe ②).
+    const onlyPseudo = { pick: () => Promise.resolve({ ok: true, value: 'D:/pseudo/out' }) }
+    const pseudoMount = await page(TILED, { slot: 'main', directoryPicker: onlyPseudo, props: { useWorkspaces: wsSnap('D:/work/app') } })
+    await flush()
+    pseudoMount.tree = pseudoMount.renderAgain()
+    check('a host that only registers `remote.directoryPicker` also shows the button',
+      !!classed(pseudoMount.tree, 'dbh-pickbtn')[0], toHtml(pseudoMount.tree).slice(0, 400))
+    pseudoMount.dispose()
+
+    // ⑫ Probe ③: the scope carries no `.remote` property and no pseudo service,
+    // but `get('remote')` still owns the picker.
+    const getOnly = { pick: () => Promise.resolve({ ok: true, value: 'D:/getonly/out' }) }
+    const getMount = await page(TILED, {
+      slot: 'main', remote: { directoryPicker: getOnly }, getOnlyRemote: true,
+      props: { useWorkspaces: wsSnap('D:/work/app') },
+    })
+    await flush()
+    getMount.tree = getMount.renderAgain()
+    check('a scope that only answers get("remote") is probed too',
+      !!classed(getMount.tree, 'dbh-pickbtn')[0], toHtml(getMount.tree).slice(0, 400))
+    getMount.dispose()
+
+    // ⑬ No picker anywhere: no dead button, and the host log says so ONCE.
+    const noneMount = await page(TILED, {
+      slot: 'main', remote: {}, directoryPicker: {}, props: { useWorkspaces: wsSnap('D:/work/app') },
+    })
+    await flush()
+    noneMount.tree = noneMount.renderAgain()
+    check('without any picker service there is no 选择 button',
+      classed(noneMount.tree, 'dbh-pickbtn').length === 0, toHtml(noneMount.tree).slice(0, 400))
+    const missingWarns = warns.filter((w) => w.includes('未找到目录选择器服务'))
+    check('…and the host log reports the missing service exactly once',
+      missingWarns.length === 1, JSON.stringify(warns))
+    noneMount.dispose()
+  } finally {
+    console.warn = realWarn
+  }
 
   // ⑩ A picker that reports "cancelled" changes nothing at all.
   const cancelling = { pick: () => Promise.resolve(null) }

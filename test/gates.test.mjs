@@ -216,9 +216,10 @@ test('check:secrets — a config file nobody registered is still covered (D1 sco
 })
 test('check:ui — a broken `@` reference contract fails the client gate (G7)', () => {
   // The composer source is a CONTRACT, not decoration: `codec.serialize` must
-  // hand the model the immutable handle. A bundle that emitted a bare `@ref`
-  // still renders the page perfectly, so only a dedicated assertion can catch
-  // it — and that assertion has to be proven able to fail.
+  // hand the model a reference the Host can resolve (`@<alias>`, falling back to
+  // `@db:<handle>`). A bundle that emitted a bare handle still renders the page
+  // perfectly, so only a dedicated assertion can catch it — and that assertion
+  // has to be proven able to fail.
   const dir = stageRepo()
   try {
     const clean = run('scripts/render-check.mjs', [], dir)
@@ -227,8 +228,8 @@ test('check:ui — a broken `@` reference contract fails the client gate (G7)', 
     const original = readFileSync(clientFile, 'utf8')
     try {
       const mutated = original.replace(
-        'return "@db:" + String(ref || "");',
-        'return "@" + String(ref || "");',
+        'return alias && alias !== handle ? "@" + alias : "@db:" + handle;',
+        'return handle;',
       )
       assert.notEqual(mutated, original, 'the bad sample must actually change the bundle')
       writeFileSync(clientFile, mutated)

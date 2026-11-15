@@ -18,7 +18,10 @@
 //      one scope), and is a silent no-op where that service is absent
 //      (older dsh deployments);
 //   5. the text stays inside its token budget and stays zero-knowledge
-//      (no DSN-looking string, no `{{variable}}` that assembly would reject).
+//      (no DSN-looking string, no `{{variable}}` that assembly would reject);
+//   6. the `@` reference section documents BOTH spellings the composer may emit
+//      (`@<alias>` and `@db:<handle>`) and states that either one works
+//      directly as the tool's `source` argument.
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -116,6 +119,24 @@ test('the section explains the @db:<handle> marker and one-message-many-referenc
   assert.match(text, /一条消息可以出现多个标记/)
   assert.match(text, /按标记出现的顺序/)
   assert.match(text, /source 参数/)
+})
+
+test('the section covers BOTH reference forms: @<alias> and @db:<handle>', () => {
+  state.setEnabled(true)
+  options.applyPatch({ announceAccessPolicy: true })
+  const text = policy.dbhubPolicyText()
+  // The composer now inserts the readable alias (`@本地-技能树`); older drafts and
+  // hand-written text still carry `@db:<handle>`. The model must be told that
+  // both name a configured connection, that the alias can be converted through
+  // the catalog in this same section, and that either spelling works directly as
+  // the tool's `source` argument.
+  assert.match(text, /@<别名>/)
+  assert.match(text, /@db:<句柄>/)
+  assert.match(text, /两种写法/)
+  assert.match(text, /「别名→句柄」目录/)
+  assert.match(text, /source 参数/)
+  // Documenting the second form must not blow the prose budget (catalog aside).
+  assert.ok(text.length <= 900, 'token budget: ' + String(text.length) + ' chars')
 })
 
 test('the catalog lists alias→handle only, and truncates with a pointer to dbhub_list_sources', () => {
