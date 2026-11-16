@@ -5,15 +5,25 @@
 //   README.md / README.en.md       — the "supported version range" section,
 //                                    collapsed detail under a one-line range
 //
-// One source of truth (release-test/matrix.json + the newest evidence), three
-// renderings, so a claim cannot drift from what was tested.
+// One source of truth (release-test/matrix.json + release-test/evidence-summary.json),
+// three renderings, so a claim cannot drift from what was tested.
 //
-//   node release-test/support-matrix.mjs --write   # regenerate all three
-//   node release-test/support-matrix.mjs --check   # fail if any is stale (CI)
-//   node release-test/support-matrix.mjs           # print the document
+//   node release-test/support-matrix.mjs --write           # refresh evidence + regenerate
+//   node release-test/support-matrix.mjs --check           # fail if structure is stale (CI)
+//   node release-test/support-matrix.mjs --check-evidence  # fail if the local reports moved on
+//   node release-test/support-matrix.mjs                   # print the document
+//
+// WHY THE EVIDENCE IS A COMMITTED FILE: the rendered documents used to embed
+// whatever `.release-test/reports/` happened to hold, and that directory is
+// gitignored (it is reproducible output, and it contains per-machine homes and
+// caches). A clean checkout therefore recomputed "未验证" against documents that
+// said "已通过", so `--check` could never pass in CI. The distilled evidence now
+// lives in `release-test/evidence-summary.json` — committed, free of paths and
+// secrets — and every rendering depends on shipped inputs only. `--write` is the
+// only thing that reads `.release-test/`; `--check` never does.
 import fs from 'node:fs'
 import path from 'node:path'
-import { REPO_ROOT } from './lib/util.mjs'
+import { REPO_ROOT, readJson } from './lib/util.mjs'
 import { loadMatrix, matrixClaimWarnings, matrixHash } from './lib/matrix.mjs'
 import { packageMeta } from './lib/artifact.mjs'
 import { latestRun, listRuns } from './lib/runs.mjs'
@@ -22,6 +32,7 @@ import { compareVersions } from './lib/semver.mjs'
 
 const OUT_DOC = path.join(REPO_ROOT, 'doc', 'SUPPORT-MATRIX.md')
 const OUT_MISE = path.join(REPO_ROOT, 'release-test', 'mise.toml')
+const EVIDENCE_FILE = path.join(REPO_ROOT, 'release-test', 'evidence-summary.json')
 const READMES = [
   { file: path.join(REPO_ROOT, 'README.md'), lang: 'zh' },
   { file: path.join(REPO_ROOT, 'README.en.md'), lang: 'en' },
@@ -30,90 +41,153 @@ const BEGIN = '<!-- release-test:versions:begin -->'
 const END = '<!-- release-test:versions:end -->'
 
 const argv = process.argv.slice(2)
-const mode = argv.includes('--write') ? 'write' : argv.includes('--check') ? 'check' : 'print'
+const mode = argv.includes('--write')
+  ? 'write'
+  : argv.includes('--check-evidence')
+    ? 'check-evidence'
+    : argv.includes('--check')
+      ? 'check'
+      : 'print'
 
 const pkg = packageMeta()
 const matrix = loadMatrix()
 const matrixHashValue = matrixHash(matrix)
-const runs = listRuns()
-const latest = latestRun()
 const declared = matrix.targets.filter((t) => t.tier === 'declared')
 const advisory = matrix.targets.filter((t) => t.tier === 'advisory')
 
 // --- peer range, derived from the declared targets ---------------------------
-// node-semver only admits a prerelease when some comparator carries a prerelease
-// on the SAME major.minor.patch tuple, so "all prereleases from 0.1.5 on" cannot
-// be one comparator set: it needs one branch per release line. Deriving it from
-// the matrix keeps the installable range and the tested range the same thing.
-const PEER_NAMES = ['@deepseek-ai/dsh-client-connection', '@deepseek-ai/dsh-settings']
+// NO DSH peer range — on purpose.
+//
+// A `peerDependencies` range cannot be both "minimum 0.2.1" and "any future
+// release": node-semver only admits a prerelease when a comparator carries a
+// prerelease on the SAME major.minor.patch tuple, so every new DSH prerelease
+// line (0.2.2, 0.2.3, …) would need a new branch — the manifest would then reject
+// the newest harness until someone edited it, which is exactly the "plugin blocks
+// a brand-new DSH" failure this project must not have. The two old DSH packages
+// are also no longer part of a modern harness and are not imported here.
+//
+// What actually guards compatibility: the host FEATURE-PROBES the bridge at
+// runtime, and `engines.dsh` refuses an unsupported host at activation time. Keep the
+// two library peers (cordis / schemastery): they describe what the host provides,
+// and their `^` ranges already span every release we test.
+const FRAMEWORK_PEERS = ['@deepseek-ai/cordis', '@deepseek-ai/schemastery']
 
-function peerRangeFor(targets) {
-  const tuples = [...new Set(targets.filter((t) => t.tier === 'declared').map((t) => t.version.split('-')[0]))]
-    .sort(compareVersions)
-  return tuples.map((tuple, index) => {
-    const next = tuples[index + 1]
-    const upper = next ? `<${next}-0` : '<0.3.0-0'
-    return `>=${tuple}-0 ${upper}`
-  }).join(' || ')
-}
-
-const peerRange = peerRangeFor(declared)
-
-function peerRangeUpToDate() {
+function peerDepsUpToDate() {
   const current = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).peerDependencies ?? {}
-  return PEER_NAMES.every((name) => current[name] === peerRange)
+  const names = Object.keys(current).sort()
+  return (
+    names.length === FRAMEWORK_PEERS.length &&
+    FRAMEWORK_PEERS.every((name) => typeof current[name] === 'string' && current[name].length > 0)
+  )
 }
 
-function applyPeerRange() {
-  const file = path.join(REPO_ROOT, 'package.json')
-  let text = fs.readFileSync(file, 'utf8')
-  for (const name of PEER_NAMES) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const pattern = new RegExp(`("${escaped}":\\s*)"[^"]*"`)
-    if (!pattern.test(text)) throw new Error(`package.json has no peerDependencies entry for ${name}`)
-    text = text.replace(pattern, `$1${JSON.stringify(peerRange)}`)
+const claims = matrixClaimWarnings(matrix)
+
+/**
+ * Distil `.release-test/reports/` into the committed evidence summary.
+ * LOCAL ONLY: only `--write` calls this, so a clean checkout (no reports) still
+ * renders from the committed summary alone.
+ * @returns the summary, or null when there is nothing to distil.
+ */
+function collectEvidence() {
+  const runs = listRuns()
+  if (runs.length === 0) return null
+  const latest = latestRun()
+  // Newest evidence per version: status + timing + provenance.
+  const targets = {}
+  for (const target of matrix.targets) {
+    const run = [...runs].reverse().find((r) => r.report?.targets?.some((x) => x.version === target.version))
+    if (!run) continue
+    const hit = run.report.targets.find((x) => x.version === target.version)
+    targets[target.version] = {
+      runId: run.runId,
+      generatedAt: run.report.generatedAt,
+      status: hit.status,
+      provisionMode: hit.provisionMode ?? null,
+      cliSource: hit.cliSource ?? null,
+      readyMs: hit.timings?.readyMs ?? null,
+      pluginVersion: run.report.plugin?.version ?? null,
+      commit: run.report.git?.commit ? String(run.report.git.commit).slice(0, 8) : null,
+      counts: hit.checksCounts ?? {},
+    }
   }
-  fs.writeFileSync(file, text)
+  // "Latest complete test" means a run that covered every declared target; a
+  // single-target debug run must not masquerade as the release evidence.
+  const fullRun = [...runs].reverse().find((run) => run.report?.targets && declared.every((t) => run.report.targets.some((x) => x.version === t.version))) ?? null
+  const verdictSource = fullRun ?? latest
+  const loaded = verdictSource ? loadVerdict(verdictSource.dir) : { ok: false }
+  const complete = Boolean(loaded.ok && loaded.verdict?.overall && loaded.verdict?.reviewer && loaded.verdict?.reviewedAt)
+  const verdict = complete
+    ? { state: 'complete', overall: loaded.verdict.overall, reviewer: loaded.verdict.reviewer, reviewedAt: loaded.verdict.reviewedAt }
+    : loaded.ok
+      ? { state: 'incomplete' } // verdict.json exists but the template is not filled in
+      : { state: 'none' }
+  return {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    pluginVersion: pkg.version,
+    // Stamped with the matrix this summary is VALID FOR (the current one), not
+    // with the hash the local run happened to record: dropping an unsupported
+    // target must not invalidate the evidence for the remaining, unchanged
+    // targets. A NEW or CHANGED target has no entry here, so its row renders
+    // "未验证" — the freshness guard that matters is kept.
+    matrixHash: matrixHashValue,
+    fullRun: fullRun
+      ? { runId: fullRun.runId, generatedAt: fullRun.report?.generatedAt ?? null, status: fullRun.report?.status ?? null }
+      : null,
+    verdict,
+    targets,
+  }
+}
+
+/** Persist the summary, keeping the old timestamp when nothing but time changed. */
+function writeEvidence(next) {
+  const withoutStamp = (summary) => JSON.stringify({ ...summary, generatedAt: null })
+  let previous = null
+  try {
+    previous = readJson(EVIDENCE_FILE)
+  } catch {
+    /* first write */
+  }
+  const stable = previous && withoutStamp(previous) === withoutStamp(next) ? previous.generatedAt : next.generatedAt
+  fs.writeFileSync(EVIDENCE_FILE, JSON.stringify({ ...next, generatedAt: stable }, null, 2) + '\n')
+}
+
+function loadEvidence() {
+  if (!fs.existsSync(EVIDENCE_FILE)) {
+    console.error(
+      `missing ${path.relative(REPO_ROOT, EVIDENCE_FILE)} — it is committed evidence; regenerate it from a completed\n` +
+        'matrix run with: node release-test/support-matrix.mjs --write',
+    )
+    process.exit(1)
+  }
+  return readJson(EVIDENCE_FILE)
 }
 
 // Sync package.json BEFORE claims are read, so --write produces a document whose
 // "known drift" section reflects the range it just wrote.
-if (mode === 'write') applyPeerRange()
-
-const claims = matrixClaimWarnings(matrix)
-
-/** Newest evidence per version: runId + status + timing + provenance. */
-function evidenceFor(version) {
-  for (const run of [...runs].reverse()) {
-    const target = run.report?.targets?.find((t) => t.version === version)
-    if (target) {
-      return {
-        runId: run.runId,
-        generatedAt: run.report.generatedAt,
-        status: target.status,
-        provisionMode: target.provisionMode ?? null,
-        cliSource: target.cliSource ?? null,
-        readyMs: target.timings?.readyMs ?? null,
-        pluginVersion: run.report.plugin?.version ?? null,
-        commit: run.report.git?.commit?.slice(0, 8) ?? null,
-        counts: target.checksCounts ?? {},
-      }
-    }
+if (mode === 'write') {
+  const refreshed = collectEvidence()
+  if (refreshed) {
+    writeEvidence(refreshed)
+    console.log(`refreshed ${path.relative(REPO_ROOT, EVIDENCE_FILE)} from .release-test/reports/`)
+  } else {
+    console.warn('no .release-test/reports/ run found — keeping the committed evidence summary as is')
   }
-  return null
 }
 
-// "Latest complete test" means a run that covered every declared target; a
-// single-target debug run must not masquerade as the release evidence.
-const fullRun = [...runs].reverse().find((run) => run.report?.targets && declared.every((t) => run.report.targets.some((x) => x.version === t.version))) ?? null
-const verdictSource = fullRun ?? latest
-const verdict = verdictSource ? loadVerdict(verdictSource.dir) : { ok: false }
-const verdictComplete = verdict.ok && verdict.verdict?.overall && verdict.verdict?.reviewer && verdict.verdict?.reviewedAt
-const verdictText = verdictComplete
-  ? `${verdict.verdict.overall} — ${verdict.verdict.reviewer} @ ${verdict.verdict.reviewedAt}`
-  : verdict.ok
-    ? '未完成 AI 判定（verdict.json 模板还没填完）'
-    : '未做 AI 判定'
+const evidence = loadEvidence()
+/** Newest evidence per version, from the committed summary. */
+const evidenceFor = (version) => evidence.targets?.[version] ?? null
+
+const fullRun = evidence.fullRun ?? null
+const verdict = evidence.verdict ?? { state: 'none' }
+const verdictText =
+  verdict.state === 'complete'
+    ? `${verdict.overall} — ${verdict.reviewer} @ ${verdict.reviewedAt}`
+    : verdict.state === 'incomplete'
+      ? '未完成 AI 判定（verdict.json 模板还没填完）'
+      : '未做 AI 判定'
 
 // A "line" is a major.minor.patch release line (0.1.5 / 0.1.6 / 0.2.1 …); the
 // prerelease suffix is not part of the identity.
@@ -168,7 +242,7 @@ ${detailTable(declared, 'zh')}
 
 </details>
 
-完整证据、判定规则与已知偏差见 [doc/SUPPORT-MATRIX.md](doc/SUPPORT-MATRIX.md)。
+完整证据、判定规则与已知偏差见 [doc/SUPPORT-MATRIX.md](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/SUPPORT-MATRIX.md)。
 ${END}`
 
 const enBlock = `${BEGIN}
@@ -183,18 +257,19 @@ ${detailTable(declared, 'en')}
 
 </details>
 
-Full evidence, review rules and known drift live in [doc/SUPPORT-MATRIX.md](doc/SUPPORT-MATRIX.md).
+Full evidence, review rules and known drift live in [doc/SUPPORT-MATRIX.md](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/SUPPORT-MATRIX.md).
 ${END}`
 
 const doc = `# 支持的 DSH 版本（发布测试矩阵）
 
 > **本文件由脚本生成，请勿手工编辑。**
-> 数据源：\`release-test/matrix.json\`（声明）+ \`.release-test/reports/\`（最近验证证据）。
-> 重新生成：\`node release-test/support-matrix.mjs --write\`　校验是否同步：\`node release-test/support-matrix.mjs --check\`
+> 数据源：\`release-test/matrix.json\`（声明）+ \`release-test/evidence-summary.json\`（最近验证证据摘要，随包提交）。
+> \`.release-test/reports/\` 只被 \`--write\` 读取一次并蒸馏成上面这份摘要，渲染不依赖本机目录，所以干净检出也能复现。
+> 重新生成：\`node release-test/support-matrix.mjs --write\`　校验结构：\`--check\`　校验证据是否过期（仅本机有报告时）：\`--check-evidence\`
 
 - 插件版本：\`${pkg.version}\`
-- 矩阵指纹：\`${matrixHashValue.slice(0, 12)}\`（矩阵变了，旧报告就不再被采信）
-- 最近一次完整测试：${fullRun ? `\`${fullRun.runId}\`（${fullRun.report?.generatedAt ?? '?'}，${fullRun.report?.status ?? '?'}）` : '尚无完整矩阵运行'}
+- 矩阵指纹：\`${matrixHashValue.slice(0, 12)}\`（证据摘要按当前矩阵盖章；增减 target 后必须重跑 \`--write\`）
+- 最近一次完整测试：${fullRun ? `\`${fullRun.runId}\`（${fullRun.generatedAt ?? '?'}，${fullRun.status ?? '?'}）` : '尚无完整矩阵运行'}
 - 最近一次 AI 判定：${verdictText}
 - 声明范围：${lowest} 起至 ${highest}（${versionLines.join(' / ')}，含预发布）
 
@@ -226,7 +301,7 @@ ${advisory.map((t) => {
 2. 在 \`.release-test/homes/dsh-<版本>/\` 建**隔离的 DSH_HOME**，跑 \`--profile web --dump-config\` 生成 web profile；
 3. 把 \`npm pack\` 出来的**真实发布产物**装进该 profile（\`--provision cli\` 时走真实 \`dsh plugin add\`）；
 4. 起 \`dsh web\`，抓 ready 行的 token，换 cookie 后探针：\`/api/dsh-dbhub-live/state\`（带/不带 cookie）、模块清单里的 client bundle、写 options、非法 op；
-5. 断言启动日志里的 4 工具与通道、state 里的 \`pluginVersion\` / \`dshVersion\` / \`dshModern\` 与矩阵一致；
+5. 断言启动日志里的 4 工具与通道、state 里的 \`pluginVersion\` / \`dshVersion\` 与矩阵一致，且 view 里**没有**版本门（门槛由 \`engines.dsh\` 在激活期强制，插件不再自己判）；
 6. 证据落在 \`.release-test/reports/<run>/evidence/<版本>/\`；由 AI 复核后写 \`verdict.json\`；\`npm run release:preflight\` 校验「报告新鲜 + 矩阵未变 + 声明无偏差 + AI 判定通过 + 工作区干净」后才允许打 tag。
 
 ## 判定规则
@@ -238,15 +313,15 @@ ${advisory.map((t) => {
 
 ## 如何增删一个版本
 
-1. 改 \`release-test/matrix.json\` 的 \`targets\`（\`tier\` / \`era\` / \`ui\` / \`why\` / \`expect\`），\`ui\` 必须与插件自己的 \`dshModern\`（>=0.2.1）一致；
+1. 改 \`release-test/matrix.json\` 的 \`targets\`（\`tier\` / \`era\` / \`ui\` / \`why\` / \`expect\`），\`ui\` 必须与最低支持版本门一致（>=0.2.1 为 modern，含预发布；低于 0.2.1 的 target 不允许出现在矩阵里）；
 2. \`node release-test/run.mjs selftest\` 校验矩阵结构与 semver 规则；
 3. \`node release-test/support-matrix.mjs --write\` 同步本文件、\`release-test/mise.toml\` 与两个 README 的版本段；
 4. \`mise -C release-test install\`（或直接跑测试让它回退 npm）→ \`node release-test/run.mjs\` 全矩阵 → AI 判定；
-5. \`package.json\` 的 \`peerDependencies\`（两个 \`@deepseek-ai/dsh-*\`）**由矩阵生成**：本脚本按声明版本推导「每个 patch 元组一段」的范围（node-semver 的预发布规则要求同元组比较器），不要手改；\`dsh.compatibility.dshReleases\` 仍手工维护，须与矩阵 declared 一致，改完跑 \`node release-test/run.mjs matrix\` 确认「声明偏差」清零。
+5. \`package.json\` **不声明 DSH 版本范围**（只有 \`@deepseek-ai/cordis\` / \`@deepseek-ai/schemastery\` 两个库 peer）：范围无法同时表达「最低 0.2.1」与「未来的任意预发布」，写了反而会在新 DSH 发布当天把用户挡在门外。兼容性由**运行时特性探测**（桥接）+ 卡片里的过旧升级提示保证；\`dsh.compatibility.dshReleases\` 手工维护，须与矩阵 declared 一致，改完跑 \`node release-test/run.mjs matrix\` 确认「声明偏差」清零。
 
 ## 已知声明偏差
 
-${claims.length ? claims.map((claim) => `- ⚠️ ${claim.detail}`).join('\n') : '无：矩阵里每个声明版本都能被当前 `peerDependencies` 匹配。'}
+${claims.length ? claims.map((claim) => `- ⚠️ ${claim.detail}`).join('\n') : '无：矩阵与 `dsh.compatibility.dshReleases` 一致，且没有低于最低支持版本的 target。'}
 `
 
 const miseToml = `# Generated from release-test/matrix.json by \`node release-test/support-matrix.mjs --write\`.
@@ -286,24 +361,60 @@ const artifacts = [
 ]
 
 if (mode === 'write') {
-  console.log(`peer range: ${peerRange}`)
+
+  // Preserve the line endings the file already has: this generator writes LF, but
+  // a Windows checkout (core.autocrlf) holds CRLF, so rewriting a file whose
+  // CONTENT did not change used to leave it "modified" in `git status` with an
+  // empty `git diff` — and a dirty tree blocks `release:preflight`.
+  const eolOf = (text) => (text.includes('\r\n') ? '\r\n' : '\n')
   for (const artifact of artifacts) {
+    const existing = fs.existsSync(artifact.file) ? fs.readFileSync(artifact.file, 'utf8') : ''
+    const body = eolOf(existing) === '\r\n' ? artifact.content.replace(/\r?\n/g, '\r\n') : artifact.content
     fs.mkdirSync(path.dirname(artifact.file), { recursive: true })
-    fs.writeFileSync(artifact.file, artifact.content)
+    fs.writeFileSync(artifact.file, body)
     console.log(`wrote ${artifact.label}`)
   }
-} else if (mode === 'check') {
-  const stale = []
-  for (const artifact of artifacts) {
-    const current = fs.existsSync(artifact.file) ? fs.readFileSync(artifact.file, 'utf8') : ''
-    if (current !== artifact.content) stale.push(artifact.label)
-  }
-  if (!peerRangeUpToDate()) stale.push('package.json peerDependencies (run --write to sync)')
-  if (stale.length) {
-    console.error(`out of date: ${stale.join(', ')} — run: node release-test/support-matrix.mjs --write`)
-    process.exitCode = 1
+} else if (mode === 'check' || mode === 'check-evidence') {
+  // Line endings are not content: the generator writes LF, a Windows checkout can
+  // hold CRLF (see .gitattributes), and comparing raw text made `--check` red on
+  // every Windows machine while `git diff` stayed empty.
+  const sameText = (a, b) => a.replace(/\r\n/g, '\n') === b.replace(/\r\n/g, '\n')
+
+  if (mode === 'check-evidence') {
+    // Evidence freshness is only answerable where the reports exist; a clean
+    // checkout has none, so this step self-skips instead of failing the job.
+    const refreshed = collectEvidence()
+    if (!refreshed) {
+      console.log('evidence check skipped: no local .release-test/reports/ (structural check still applies)')
+    } else {
+      const committed = loadEvidence()
+      const withoutStamp = (summary) => JSON.stringify({ ...summary, generatedAt: null, pluginVersion: null })
+      if (withoutStamp(committed) !== withoutStamp(refreshed)) {
+        console.error(
+          'release-test/evidence-summary.json is older than the local reports — the shipped evidence table no longer\n' +
+            'matches what was tested here. Regenerate: node release-test/support-matrix.mjs --write',
+        )
+        process.exitCode = 1
+      } else {
+        console.log('evidence summary matches the local .release-test/reports/ runs')
+      }
+    }
   } else {
-    console.log('support matrix, mise.toml and both READMEs are up to date')
+    const stale = []
+    if (evidence.matrixHash && evidence.matrixHash !== matrixHashValue) {
+      stale.push('release-test/evidence-summary.json was collected against a different matrix.json (rerun the matrix, then --write)')
+    }
+    for (const artifact of artifacts) {
+      const current = fs.existsSync(artifact.file) ? fs.readFileSync(artifact.file, 'utf8') : ''
+      if (!sameText(current, artifact.content)) stale.push(artifact.label)
+    }
+    if (!peerDepsUpToDate()) stale.push('package.json peerDependencies (framework peers only)')
+    if (stale.length) {
+      console.error(`out of date: ${stale.join(', ')} — run: node release-test/support-matrix.mjs --write`)
+      process.exitCode = 1
+    } else {
+      console.log('support matrix, mise.toml and both READMEs are up to date (structure; evidence freshness: --check-evidence)')
+    }
   }
 } else {
   process.stdout.write(doc)

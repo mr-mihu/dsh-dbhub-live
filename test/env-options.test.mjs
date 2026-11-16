@@ -206,7 +206,7 @@ test('renameWorkspaceEnv carries the options to the new name', async () => {
   const ws = 'D:/ws/rename'
   const dsn = 'mysql://u:CHANGE_ME@127.0.0.1:3306/r'
   c.setWorkspaceEnv(ws, 'old', dsn, 'collected', { readOnly: true, ssh: SSH_KEY })
-  assert.equal(c.renameWorkspaceEnv(ws, 'old', 'new'), 'new')
+  assert.deepEqual(c.renameWorkspaceEnv(ws, 'old', 'new'), { name: 'new', collided: false, renamed: true })
   const envs = readStore()[ws].environments
   assert.equal(Object.hasOwn(envs, 'old'), false)
   assert.equal(envs.new.dsn, dsn)
@@ -301,6 +301,7 @@ test('describeEnvOptions never leaks a password', async () => {
   })
   assert.deepEqual(described, {
     ro: true,
+    maxRows: 0,
     ssh: {
       host: 'bastion.example.com', port: 22, user: 'deploy', authKind: 'password',
       hasPassword: true, hasPassphrase: false, keyReady: false, proxyJump: '',
@@ -317,6 +318,7 @@ test('describeEnvOptions reports key readiness without leaking the key path', as
   })
   assert.deepEqual(described, {
     ro: false,
+    maxRows: 0,
     ssh: {
       host: 'bastion.example.com', port: 2222, user: 'deploy', authKind: 'key',
       hasPassword: false, hasPassphrase: true, keyReady: false, proxyJump: 'jump.example.com',
@@ -374,7 +376,7 @@ test('applyOptionsOp on an existing row patches options and never adds a row', a
     ws,
     async () => { throw new Error('lookupAuto must not run for a persisted row') },
   )
-  assert.deepEqual(res.patches, [{ op: 'options', path: ws.path, env: 'prod', ro: true, ssh: null }])
+  assert.deepEqual(res.patches, [{ op: 'options', path: ws.path, env: 'prod', ro: true }])
   assert.equal(res.patches.some((p) => p.op === 'add'), false)
   const entry = readStore()[ws.path].environments.prod
   assert.equal(entry.readOnly, true)
@@ -396,9 +398,12 @@ test('applyOptionsOp promotes an auto-discovered environment through lookupAuto'
     return { env: envName, dsn }
   })
   assert.deepEqual(seen, ['default'])
+  // Metadata-only patches: the promoted row's DSN and the resolved tunnel block
+  // never ride the patch (it is serialized to the browser); the mirror re-reads
+  // them from the store through index.mirrorPatchOf.
   assert.deepEqual(res.patches, [
-    { op: 'add', path: ws.path, title: ws.title, env: 'default', dsn, source: 'promoted', ro: true, ssh: null },
-    { op: 'options', path: ws.path, env: 'default', ro: true, ssh: null },
+    { op: 'add', path: ws.path, title: ws.title, env: 'default', source: 'promoted', ro: true },
+    { op: 'options', path: ws.path, env: 'default', ro: true },
   ])
   const entry = readStore()[ws.path].environments.default
   assert.equal(entry.dsn, dsn)
@@ -416,6 +421,51 @@ test('applyOptionsOp without a row and without an auto discovery writes nothing'
   const res = await index.applyOptionsOp({ op: 'options', env: 'default', readOnly: true }, ws, async () => undefined)
   assert.deepEqual(res, { patches: [], error: 'needConnFirst' })
   assert.equal(readFileSync(storePath, 'utf8'), before, 'nothing was written')
+})
+
+test('applyOptionsOp with no option field and no rename is a zero-write no-op', async () => {
+  // `{op:'options', env}` with no readOnly and no ssh used to call
+  // `setWorkspaceEnvOptions(path, env, {})`: the file was rewritten and
+  // `updatedAt` moved, so a click that changed nothing looked exactly like an
+  // edit (and could push a row's stamp past a real change).
+  const ws = { path: 'D:/ws/noop', title: 'noop' }
+  seedBase({
+    [ws.path]: {
+      environments: {
+        prod: { dsn: 'mysql://u:CHANGE_ME@127.0.0.1:3306/p', source: 'user', updatedAt: 111, readOnly: true },
+      },
+    },
+  })
+  const before = readFileSync(storePath, 'utf8')
+  const res = await index.applyOptionsOp({ op: 'options', env: 'prod' }, ws, async () => {
+    throw new Error('lookupAuto must not run when nothing was asked for')
+  })
+  assert.deepEqual(res.patches, [], 'no patch to mirror')
+  assert.equal(res.noop, true)
+  assert.equal(res.error, undefined)
+  assert.equal(readFileSync(storePath, 'utf8'), before, 'the store file is byte-identical')
+  const row = readStore()[ws.path].environments.prod
+  assert.equal(row.updatedAt, 111, 'updatedAt must not move for an empty patch')
+  assert.equal(row.readOnly, true, 'the existing options are untouched')
+})
+
+test('applyOptionsOp with a rename but no option field does not write an empty patch', async () => {
+  const ws = { path: 'D:/ws/renameonly', title: 'renameonly' }
+  seedBase({
+    [ws.path]: {
+      environments: {
+        old: { dsn: 'mysql://u:CHANGE_ME@127.0.0.1:3306/r', source: 'user', updatedAt: 5, readOnly: true, ssh: SSH_KEY },
+      },
+    },
+  })
+  const res = await index.applyOptionsOp({ op: 'options', env: 'old', newEnv: 'new' }, ws, async () => undefined)
+  assert.deepEqual(res.patches, [{ op: 'rename', path: ws.path, env: 'new', from: 'old' }],
+    'the rename is the only change: no options patch for an empty patch')
+  assert.equal(res.noop, true)
+  const row = readStore()[ws.path].environments.new
+  assert.equal(Object.hasOwn(readStore()[ws.path].environments, 'old'), false)
+  assert.equal(row.readOnly, true, 'the moved row keeps its options')
+  assert.equal(row.ssh.user, SSH_KEY.user, 'and its tunnel')
 })
 
 test('applyOptionsOp rejects an invalid ssh block before writing anything', async () => {
@@ -442,15 +492,16 @@ test('applyOptionsOp renames and applies options in one call', async () => {
   )
   assert.deepEqual(res.patches, [
     { op: 'rename', path: ws.path, env: 'new', from: 'old' },
-    {
-      op: 'options', path: ws.path, env: 'new', ro: true,
-      ssh: { host: 'bastion.example.com', port: 2222, user: 'deploy', auth: 'key', keyPath: '/home/deploy/.ssh/id_ed25519' },
-    },
+    { op: 'options', path: ws.path, env: 'new', ro: true },
   ])
   assert.equal(res.patches.some((p) => p.op === 'rename'), true)
+  // The stored tunnel still moves with the name; it is simply not in the patch.
   const envs = readStore()[ws.path].environments
   assert.equal(Object.hasOwn(envs, 'old'), false)
   assert.equal(envs.new.dsn, dsn, 'the connection travels with the name')
   assert.equal(envs.new.readOnly, true)
   assert.equal(envs.new.ssh.host, 'bastion.example.com', 'the tunnel travels with the name')
+  const forMirror = index.mirrorPatchOf(res.patches[1])
+  assert.equal(forMirror.ssh.host, 'bastion.example.com', 'the mirror gets the tunnel back from the store')
+  assert.equal(forMirror.ro, true)
 })

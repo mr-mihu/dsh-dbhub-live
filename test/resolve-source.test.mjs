@@ -17,7 +17,14 @@ process.env.DSH_HOME = home
 // A workspace registry file (listWorkspaces file fallback) + a store with
 // default AND demo environments for one workspace. Written BEFORE the modules
 // are imported: config.mjs binds the store singleton at import time.
+//
+// The SECOND workspace deliberately owns a `default` environment as well: that
+// is the case where `assignConnectionAliases` must disambiguate across
+// workspaces (`testapp_default` / `otherapp_default`), and the only alias that
+// is NOT already a display-form key (`<title>_<env>` is only generated for
+// non-default environments).
 const WS_PATH = 'C:\\ws\\testapp'
+const WS2_PATH = 'C:\\ws\\otherapp'
 const storeDir = join(home, 'storages')
 const wsFile = join(storeDir, 'workspace.json')
 mkdirSync(join(storeDir, 'dsh-dbhub-live'), { recursive: true })
@@ -25,6 +32,7 @@ writeFileSync(wsFile, JSON.stringify({
   tables: {
     workspaces: {
       w1: { path: WS_PATH, title: 'TestApp' },
+      w2: { path: WS2_PATH, title: 'OtherApp' },
     },
   },
 }, null, 2))
@@ -34,6 +42,11 @@ writeFileSync(cfgFile, JSON.stringify({
     environments: {
       default: { dsn: 'mysql://u:p@h/main', source: 'user' },
       demo: { dsn: 'mysql://u:p@h/demo', source: 'user' },
+    },
+  },
+  [WS2_PATH]: {
+    environments: {
+      default: { dsn: 'mysql://u:p@h/other', source: 'user' },
     },
   },
 }, null, 2))
@@ -79,4 +92,98 @@ test('unknown source resolves to undefined', async () => {
   assert.equal(await mcp.resolveSource(ctx, subprocess, 'nope_nope_nope'), undefined)
   assert.equal(await mcp.resolveSource(ctx, subprocess, ''), undefined)
   assert.equal(await mcp.resolveSource(ctx, subprocess, undefined), undefined)
+})
+
+test('a MISSING handle never falls back to the base row (no substring match)', async () => {
+  // The old `wanted.includes(k.id)` fallback was a prefix match: a handle that
+  // merely CONTAINED a real id resolved to that row — so `testapp_1nb1w50_dmeo`
+  // (the demo env, misspelled) sent the query to the DEFAULT connection's DSN.
+  // A near miss must be "not found", never "whichever row it resembles".
+  const wrongEnv = await mcp.resolveSource(ctx, subprocess, baseId + '_dmeo')
+  assert.equal(wrongEnv, undefined, 'a misspelled environment suffix must not resolve')
+  const wrongId = await mcp.resolveSource(ctx, subprocess, 'testap_' + cfg.shortHash(WS_PATH) + '_demo')
+  assert.equal(wrongId, undefined, 'a misspelled workspace slug must not resolve')
+  const noSuchEnv = await mcp.resolveSource(ctx, subprocess, baseId + '_staging')
+  assert.equal(noSuchEnv, undefined, 'a suffix naming a nonexistent environment must not resolve')
+  const suffixedDefault = await mcp.resolveSource(ctx, subprocess, baseId + '_default')
+  assert.equal(suffixedDefault, undefined, '`default` has no slug suffix, so `<base>_default` names nothing')
+  // A trailing fragment, an extra segment and a truncated hash are all near
+  // misses: none of them is the row it resembles.
+  assert.equal(await mcp.resolveSource(ctx, subprocess, baseId + '_demo_extra'), undefined)
+  assert.equal(await mcp.resolveSource(ctx, subprocess, baseId.slice(0, -1)), undefined)
+  assert.equal(await mcp.resolveSource(ctx, subprocess, baseId + '_DEMO2'), undefined)
+  // Exact handles still work, including the case-insensitive form the resolver
+  // has always accepted (handles are lowercase ASCII by construction): a model
+  // echoing the title's original casing is not a different connection.
+  const exact = await mcp.resolveSource(ctx, subprocess, demoId)
+  assert.equal(exact.row.env, 'demo')
+  const cased = await mcp.resolveSource(ctx, subprocess, 'TESTAPP_' + cfg.shortHash(WS_PATH).toUpperCase() + '_DEMO')
+  assert.equal(cased.row.env, 'demo', 'case-only variants of a REAL handle stay resolvable')
+})
+
+// ── the composer's alias is a source reference too ──────────────────────────
+//
+// The `@` menu inserts the readable alias (`@testapp_default`), and a model that
+// echoes the user's message passes it as `source`. The alias is one more EXACT
+// key: it must hit exactly one row, agree with the canonical handle, and never
+// become a prefix/substring fallback.
+
+const otherDefaultId = cfg.slugify('OtherApp') + '_' + cfg.shortHash(WS2_PATH)
+
+test('a workspace-disambiguated alias resolves to exactly one row', async () => {
+  // `default` exists in BOTH workspaces, so neither keeps the bare name:
+  // `assignConnectionAliases` produces `testapp_default` / `otherapp_default`.
+  const ours = await mcp.resolveSource(ctx, subprocess, 'testapp_default')
+  assert.ok(ours, 'the current workspace alias resolves')
+  assert.equal(ours.id, baseId)
+  assert.equal(ours.row.wsPath, WS_PATH)
+  assert.equal(ours.row.env, 'default')
+  assert.equal(ours.row.dsn, 'mysql://u:p@h/main')
+
+  const other = await mcp.resolveSource(ctx, subprocess, 'otherapp_default')
+  assert.ok(other, 'the other workspace alias resolves')
+  assert.equal(other.id, otherDefaultId)
+  assert.equal(other.row.wsPath, WS2_PATH)
+  assert.equal(other.row.dsn, 'mysql://u:p@h/other')
+  // Two different rows — the aliases did not collapse into one another.
+  assert.notEqual(ours.id, other.id)
+
+  // An unambiguous environment name is still the bare alias (`demo`).
+  const demo = await mcp.resolveSource(ctx, subprocess, 'demo')
+  assert.equal(demo.row.env, 'demo')
+
+  // The EXACT menu text (`@alias`) is a literal alias key too: a model copying
+  // the user's message verbatim must not need to know to strip the `@`.
+  const sigil = await mcp.resolveSource(ctx, subprocess, '@testapp_default')
+  assert.ok(sigil, 'the @-prefixed menu text resolves')
+  assert.equal(sigil.id, baseId)
+})
+
+test('an alias and the canonical handle name the SAME row', async () => {
+  const byAlias = await mcp.resolveSource(ctx, subprocess, 'testapp_default')
+  const byHandle = await mcp.resolveSource(ctx, subprocess, baseId)
+  assert.equal(byAlias.id, byHandle.id)
+  assert.equal(byAlias.row.wsPath, byHandle.row.wsPath)
+  assert.equal(byAlias.row.env, byHandle.row.env)
+  assert.equal(byAlias.row.dsn, byHandle.row.dsn)
+  // Same for the second workspace.
+  const byAlias2 = await mcp.resolveSource(ctx, subprocess, 'otherapp_default')
+  const byHandle2 = await mcp.resolveSource(ctx, subprocess, otherDefaultId)
+  assert.equal(byAlias2.id, byHandle2.id)
+  assert.equal(byAlias2.row.dsn, byHandle2.row.dsn)
+  // Alias lookup is case-insensitive, like every other key.
+  const cased = await mcp.resolveSource(ctx, subprocess, 'TESTAPP_DEFAULT')
+  assert.equal(cased.id, baseId)
+})
+
+test('a near-miss alias is UNKNOWN, never a fallback', async () => {
+  // One wrong character, an extra suffix, a truncation, a separator variant:
+  // all "not found". The alias must not reopen the prefix/substring loophole
+  // the handle resolver deliberately closed (`app_ab12_dmeo` hit the base row).
+  assert.equal(await mcp.resolveSource(ctx, subprocess, 'testapp_defaul'), undefined)
+  assert.equal(await mcp.resolveSource(ctx, subprocess, 'testapp_defaults'), undefined)
+  assert.equal(await mcp.resolveSource(ctx, subprocess, 'testapp_default-2'), undefined)
+  assert.equal(await mcp.resolveSource(ctx, subprocess, 'other_app_default'), undefined)
+  assert.equal(await mcp.resolveSource(ctx, subprocess, 'testapp_def'), undefined)
+  assert.equal(await mcp.resolveSource(ctx, subprocess, '@testapp_defaul'), undefined)
 })

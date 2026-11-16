@@ -1,7 +1,8 @@
 // Unit tests for the Host's version metadata (lib/meta.mjs): semver parsing and
 // precedence, the "is an update newer?" question the update checker asks, the
-// dsh >= 0.2.1 compatibility gate, and the runtime probes (plugin version from
-// package.json, dsh version from an installed package layout).
+// declared supported range (package.json `engines.dsh` — DSH enforces it), and the
+// runtime probes (plugin version from package.json, dsh version from an installed
+// package layout).
 //
 // The discovery walk is driven against a temp layout with a fake argv entry, so
 // these tests never touch the real dsh installation; no DSH_HOME / store paths
@@ -14,19 +15,19 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import {
-  DSH_MODERN_BASE,
   DSH_PACKAGE_NAMES,
   PLUGIN_NAME,
-  atLeastBase,
   compareSemver,
   detectDshRuntime,
-  dshIsModern,
   isNewer,
   parseSemver,
   readPluginVersion,
   versionMeta,
   walkDshVersion,
 } from '../lib/meta.mjs'
+// The whole namespace, so "this export is gone" is assertable without tripping
+// over a missing named import at load time.
+import * as metaNamespace from '../lib/meta.mjs'
 
 // ── semver primitives ─────────────────────────────────────────────────────
 
@@ -101,27 +102,34 @@ test('isNewer is prerelease-aware for this repo dev builds', () => {
   assert.equal(isNewer('5.2.0-dev.1', '5.2.0-dev.1'), false)
 })
 
-// ── the dsh >= 0.2.1 gate ─────────────────────────────────────────────────
+// ── the supported range lives in package.json `engines.dsh` ────────────────
+//
+// 6.0 removed the Host-side minimum-version judgement (`DSH_MIN_SUPPORTED` /
+// `dshTooOld` / `atLeastBase`) together with its warning card: `engines.dsh`
+// declares the range and DSH enforces it BEFORE loading the plugin, so a second,
+// softer opinion here could only duplicate — or contradict — the platform's own
+// check. `dshVersion` remains, for display only.
 
-test('atLeastBase compares the numeric triplet and ignores prerelease', () => {
-  assert.equal(atLeastBase('0.2.1-rc.2', DSH_MODERN_BASE), true, 'a 0.2.1 prerelease counts as 0.2.1')
-  assert.equal(atLeastBase('0.2.1', DSH_MODERN_BASE), true)
-  assert.equal(atLeastBase('0.2.2', DSH_MODERN_BASE), true)
-  assert.equal(atLeastBase('1.0.0', DSH_MODERN_BASE), true)
-  assert.equal(atLeastBase('0.2.0-rc.2', DSH_MODERN_BASE), false)
-  assert.equal(atLeastBase('0.1.9', DSH_MODERN_BASE), false)
-  assert.equal(atLeastBase('', DSH_MODERN_BASE), false)
-  assert.equal(atLeastBase('unknown', DSH_MODERN_BASE), false)
+test('package.json declares the supported dsh range, prereleases included', () => {
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(pkg.engines && pkg.engines.dsh, '>=0.2.1-0')
+  // The `-0` suffix is load-bearing, not cosmetic: without it semver EXCLUDES
+  // prereleases of the minimum, and this plugin is verified against 0.2.1-rc.2.
+  // Pin the precedence the range relies on instead of trusting the string alone.
+  assert.equal(compareSemver('0.2.1-rc.2', '0.2.1-0'), 1, '0.2.1-rc.2 is inside >=0.2.1-0')
+  assert.equal(compareSemver('0.2.1-rc.2', '0.2.1'), -1, '…and below the plain 0.2.1 release, which is why -0 exists')
+  assert.equal(compareSemver('0.2.0', '0.2.1-0'), -1, '0.2.0 stays outside the range')
 })
 
-test('dshIsModern: resolved version wins; unresolvable is modern only on desktop', () => {
-  assert.equal(dshIsModern({ version: '0.2.1-rc.2', desktop: false }), true)
-  assert.equal(dshIsModern({ version: '0.2.1-rc.2', desktop: true }), true)
-  assert.equal(dshIsModern({ version: '0.1.6-alpha.2', desktop: true }), false, 'an old resolved version is old even on desktop')
-  assert.equal(dshIsModern({ version: '', desktop: true }), true, 'desktop with an unresolvable version stays modern')
-  assert.equal(dshIsModern({ version: '', desktop: false }), false, 'unknown web version => legacy UI')
-  assert.equal(dshIsModern({}), false)
-  assert.equal(dshIsModern(undefined), false)
+test('the Host no longer judges the dsh version (engines.dsh owns the gate)', () => {
+  const metaSource = readFileSync(new URL('../lib/meta.mjs', import.meta.url), 'utf8')
+  for (const gone of ['DSH_MIN_SUPPORTED', 'dshTooOld', 'atLeastBase']) {
+    assert.equal(Object.prototype.hasOwnProperty.call(metaNamespace, gone), false, gone + ' must not be exported')
+    assert.doesNotMatch(metaSource, new RegExp(gone), gone + ' must not be referenced anywhere in meta.mjs')
+  }
+  // The version is still resolved and published — as DISPLAY data only.
+  assert.match(metaSource, /dshVersion: runtime\.version,/)
+  assert.match(metaSource, /export function detectDshRuntime\(\)/)
 })
 
 // ── runtime discovery ─────────────────────────────────────────────────────
@@ -211,6 +219,21 @@ test('readPluginVersion equals this package.json version and is cached', () => {
   assert.ok(parseSemver(readPluginVersion()), 'package.json version must be semver')
 })
 
+test('the ad-hoc dbhub MCP handshake reports the INSTALLED plugin version', () => {
+  // `initialize` used to hard-code `version: '3.0.0'` — a version this plugin
+  // never shipped. dbhub puts the clientInfo into its own diagnostics, so a user
+  // reporting a problem on 5.2 sent the maintainer looking at 3.0.0's code. The
+  // value now comes from meta (a LEAF module, so `adhoc → meta` cannot cycle);
+  // a detached copy without a readable package.json degrades to '0.0.0'.
+  const source = readFileSync(new URL('../lib/adhoc.mjs', import.meta.url), 'utf8')
+  assert.match(source, /clientInfo: \{ name: 'dsh-dbhub-adhoc', version: readPluginVersion\(\) \|\| '0\.0\.0' \}/)
+  assert.doesNotMatch(source, /version: '3\.0\.0'/, 'the hard-coded version must stay gone')
+  assert.match(source, /import \{ readPluginVersion \} from '\.\/meta\.mjs'/)
+  // …and the value it reads is this package's version (not the dsh runtime's).
+  const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
+  assert.equal(readPluginVersion(), pkg.version)
+})
+
 test('detectDshRuntime reports a coherent runtime (never throws)', () => {
   const runtime = detectDshRuntime()
   assert.equal(typeof runtime.version, 'string')
@@ -224,11 +247,14 @@ test('detectDshRuntime reports a coherent runtime (never throws)', () => {
   if (runtime.version) assert.ok(parseSemver(runtime.version), 'a resolved version is always semver')
 })
 
-test('versionMeta publishes the four view fields', () => {
+test('versionMeta publishes the three view fields (no version-gate verdict)', () => {
   const meta = versionMeta()
-  assert.deepEqual(Object.keys(meta).sort(), ['dshModern', 'dshVersion', 'pluginVersion', 'runtime'])
+  assert.deepEqual(Object.keys(meta).sort(), ['dshVersion', 'pluginVersion', 'runtime'])
   assert.equal(meta.pluginVersion, readPluginVersion())
   assert.ok(meta.runtime === 'web' || meta.runtime === 'desktop')
-  assert.equal(meta.dshModern, dshIsModern({ version: meta.dshVersion, desktop: meta.runtime === 'desktop' }))
-  assert.equal(typeof meta.dshModern, 'boolean')
+  // The removed gate must not creep back into the published view: the card has no
+  // warning line to render and DSH already refused an unsupported host.
+  assert.equal('dshTooOld' in meta, false)
+  assert.equal('dshMinVersion' in meta, false)
+  assert.equal(typeof meta.dshVersion, 'string')
 })

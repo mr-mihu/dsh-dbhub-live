@@ -26,6 +26,18 @@ export function latestRun() {
   return listRuns().at(-1) ?? null
 }
 
+/**
+ * Newest run of one tier (`report.mode`; cold-install runs predate the field and
+ * read as `declare`). The upgrade tier is complementary evidence — it starts
+ * from an older artifact, so it can never be the report that justifies releasing
+ * this version.
+ * @param mode - 'install' for cold installs, 'upgrade' for in-place upgrades.
+ */
+export function latestRunOfMode(mode) {
+  const runs = listRuns().reverse()
+  return runs.find((run) => (run.report?.mode ?? 'install') === mode) ?? null
+}
+
 /** Newest run whose report actually contains this target version. */
 export function latestRunFor(version) {
   const runs = listRuns().reverse()

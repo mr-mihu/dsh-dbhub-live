@@ -25,7 +25,7 @@ export function summarizeTargets(targets) {
  * a declared channel that behaved unexpectedly, a soft warning, a skipped
  * probe, or a matrix that no longer matches the registry's latest.
  */
-export function collectNeedsReview({ targets, drift, claims = [] }) {
+export function collectNeedsReview({ targets, drift, claims = [], mode = 'install' }) {
   const items = []
   for (const claim of claims) {
     items.push({ id: claim.id, target: '*', reason: `claim drift: ${claim.detail}` })
@@ -46,6 +46,12 @@ export function collectNeedsReview({ targets, drift, claims = [] }) {
     if (target.provisionMode === 'manual') {
       items.push({ id: `${target.version}:provision-mode`, target: target.version, reason: 'manual provisioning — the real install path was not exercised on this target' })
     }
+    // The upgrade tier's whole purpose is the migration, so an absent upgrade
+    // section is a review item even when nothing failed: it means the target ran
+    // as a cold install by accident, and its "pass" proves nothing about upgrading.
+    if (mode === 'upgrade' && !target.upgrade?.afterUpgrade) {
+      items.push({ id: `${target.version}:upgrade-missing`, target: target.version, reason: 'this is an upgrade run, but the target carries no post-upgrade data section' })
+    }
   }
   if (drift?.stale) {
     items.push({ id: 'matrix:drift', target: '*', reason: drift.detail })
@@ -55,7 +61,7 @@ export function collectNeedsReview({ targets, drift, claims = [] }) {
 
 export function buildReport({ artifact, git, matrix, matrixFileHash, environment, options, targets, drift, claims = [], startedAt, finishedAt }) {
   const summary = summarizeTargets(targets)
-  const needsReview = collectNeedsReview({ targets, drift, claims })
+  const needsReview = collectNeedsReview({ targets, drift, claims, mode: options.mode })
   const declared = targets.filter((t) => t.tier === 'declared')
   // red = something hard failed on a declared target; yellow = only judgement
   // calls (warnings, skips, claim drift, manual provisioning) are outstanding.
@@ -67,11 +73,24 @@ export function buildReport({ artifact, git, matrix, matrixFileHash, environment
     generatedAt: finishedAt,
     startedAt,
     status,
+    // `install` = the cold-install tier (clean home), `upgrade` = the cross-version
+    // tier (old release first, then this artifact over the same home). The mode is
+    // part of the report so a verdict can refuse an upgrade run that lost its
+    // upgrade evidence instead of silently treating it as a normal run.
+    mode: options.mode ?? 'install',
+    upgrade: options.baseline ?? null,
     plugin: { name: artifact.name, version: artifact.version, tarball: path.basename(artifact.tarball), size: artifact.size, sha256: artifact.sha256 },
     git,
     matrix: { hash: matrixFileHash, updatedAt: matrix.updatedAt, targetCount: matrix.targets.length },
     environment,
-    options: { provision: options.provision, only: options.only, tier: options.tier, keepHomes: options.keepHomes },
+    options: {
+      provision: options.provision,
+      only: options.only,
+      tier: options.tier,
+      mode: options.mode ?? 'install',
+      baseline: options.baseline ?? null,
+      keepHomes: options.keepHomes,
+    },
     drift,
     claims,
     summary,
@@ -112,6 +131,7 @@ export function renderMarkdown(report) {
   lines.push(`- Git: \`${report.git.branch}\` @ \`${report.git.commit}\`${report.git.dirty ? ' (dirty worktree)' : ''}`)
   lines.push(`- Node ${report.environment.node} · ${report.environment.platform} · dbhub ${report.environment.dbhub ?? 'not found'}`)
   lines.push(`- Matrix: ${report.matrix.targetCount} targets, hash \`${report.matrix.hash.slice(0, 16)}…\`, provision=${report.options.provision}`)
+  lines.push(`- Mode: **${report.mode ?? 'install'}**${report.upgrade ? ` (baseline ${report.upgrade.name}@${report.upgrade.version}, ${report.upgrade.source})` : ''}`)
   lines.push('')
   lines.push('| Target | Tier | Era / UI | Status | Provision | Ready | Checks (pass/warn/fail) |')
   lines.push('| --- | --- | --- | --- | --- | --- | --- |')
@@ -122,6 +142,25 @@ export function renderMarkdown(report) {
     )
   }
   lines.push('')
+  if (report.mode === 'upgrade') {
+    lines.push('## Cross-version upgrade')
+    lines.push('')
+    lines.push(`Baseline installed first: **${report.upgrade?.name ?? '?'}@${report.upgrade?.version ?? '?'}**${report.upgrade?.tarball ? ` (\`${report.upgrade.tarball}\`)` : ''}`)
+    lines.push('')
+    lines.push('| Target | Baseline | After upgrade | Connections | Preferences | Store |')
+    lines.push('| --- | --- | --- | --- | --- | --- |')
+    for (const target of report.targets) {
+      const up = target.upgrade ?? {}
+      const preserved = up.afterUpgrade?.rows?.length ?? 0
+      const seeded = up.baselineData?.rows?.length ?? 0
+      const prefs = up.afterUpgrade?.prefs ? Object.keys(up.afterUpgrade.prefs).length : 0
+      const refs = Object.values(up.afterUpgrade?.storeShape ?? {}).filter((shape) => shape.dsnPasswordRef).length
+      lines.push(
+        `| ${target.version} | ${up.baselineVersion ?? '—'} | ${up.afterUpgrade?.installedVersion ?? (target.status === 'error' ? 'not reached' : '—')} | ${seeded} seeded / ${preserved} after | ${prefs} kept | ${refs} credential ref(s) |`,
+      )
+    }
+    lines.push('')
+  }
   if (report.needsReview.length) {
     lines.push('## Needs review')
     lines.push('')
@@ -171,6 +210,7 @@ export function renderJudgePrompt(report, { reportHash }) {
   lines.push(`- Plugin: ${report.plugin.name}@${report.plugin.version} (artifact sha256 ${report.plugin.sha256})`)
   lines.push(`- Commit: ${report.git.branch} @ ${report.git.commit}${report.git.dirty ? ' — WARNING: worktree dirty, the artifact may not match HEAD' : ''}`)
   lines.push(`- Deterministic status: ${report.status} (${JSON.stringify(report.summary)})`)
+  lines.push(`- Mode: ${report.mode ?? 'install'}${report.upgrade ? ` — old release ${report.upgrade.name}@${report.upgrade.version} was installed first, then upgraded in place` : ' — clean home, cold install only'}`)
   lines.push(`- Matrix hash: ${report.matrix.hash}`)
   lines.push(`- Report hash: ${reportHash}`)
   lines.push('')
@@ -206,6 +246,10 @@ export function renderJudgePrompt(report, { reportHash }) {
   lines.push('3. If a claimed support version is missing from the run, or the matrix looks older than the registry\'s latest, say so under that target and set `pass-with-notes`.')
   lines.push('4. If the worktree was dirty, the artifact may not match the commit: rule `pass-with-notes` at best and name it.')
   lines.push('5. Never approve a target you did not see evidence for.')
+  if (report.mode === 'upgrade') {
+    lines.push('6. This is the UPGRADE tier: every target had an old release installed, was given real data, then upgraded in place. A target with no `upgrade.afterUpgrade` section, or whose `upgrade.*` checks were skipped, proves nothing about upgrading — rule it `fail` even if the ordinary probes passed.')
+    lines.push('7. Read the `upgrade.store-migrated` and `upgrade.secret-resolve` checks first: they are the ones that catch a lost password. A "connection failed" probe result is expected (the seed points at a closed port); what matters is that it is NOT the "re-enter your password" message.')
+  }
   lines.push('')
   lines.push('## Output')
   lines.push('')

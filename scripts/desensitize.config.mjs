@@ -182,7 +182,7 @@ export const SLOTS = [
   {
     id: 'host-copy',
     description: '宿主侧模型可见文案：工具描述、i18n 结果与标签（会打进 npm 包、直接进模型上下文）',
-    globs: ['lib/i18n.mjs', 'lib/tools.mjs', 'lib/policy.mjs', 'lib/index.mjs', 'lib/mcp.mjs', 'lib/state.mjs', 'lib/bridge.mjs'],
+    globs: ['lib/i18n.mjs', 'lib/tools.mjs', 'lib/export.mjs', 'lib/policy.mjs', 'lib/index.mjs', 'lib/mcp.mjs', 'lib/state.mjs', 'lib/bridge.mjs'],
     rules: ['password', 'dsn', 'host', 'name'],
   },
   {
@@ -217,8 +217,8 @@ export const SLOTS = [
   },
   {
     id: 'package-meta',
-    description: '包元数据与 bundle patch：description/keywords 不得含内部项目名或机器路径',
-    globs: ['package.json', 'cordis.patch.yml'],
+    description: '包元数据与发布配置：description/keywords/生成配置不得含内部项目名、机器路径或口令',
+    globs: ['package.json', 'cordis.patch.yml', 'release-test/mise.toml'],
     rules: ['password', 'host', 'name', 'localpath'],
   },
   {
@@ -239,7 +239,11 @@ export const SLOTS = [
 export const DENYLIST_VAR = 'DSH_DBHUB_DESENSITIZE_RE'
 
 /** Paths the walk never enters and files it never reads. */
-export const SKIP_DIRS = ['.git', 'node_modules', '.dsh-test', '.release-test', 'dist', 'coverage']
+// `.dsh-a` / `.dsh-b` / `.pnpm-store` are the isolated dev directories
+// doc/DEVELOPMENT.md tells you to create INSIDE the repo; they hold real local
+// credentials and package store content, so scanning them would report the
+// developer's own machine as a leak (and `.pnpm-store` makes the tree dirty).
+export const SKIP_DIRS = ['.git', 'node_modules', '.dsh-test', '.dsh-a', '.dsh-b', '.pnpm-store', '.release-test', 'dist', 'coverage']
 // The two local-dev documents are never committed and never published (see
 // package.json → files), so the gate has no reason to scan them: they legitimately
 // carry plan-era placeholders (`REAL_PASSWORD`, `host:port`) that are not shipped

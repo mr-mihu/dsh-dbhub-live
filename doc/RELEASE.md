@@ -12,17 +12,58 @@ mise -C release-test install  # 一次性预装矩阵里的全部 DSH 版本（�
 npm run test:release          # declared 矩阵：钉版 CLI + 隔离 DSH_HOME + 真实 dsh web + HTTP/日志探针
 npm run test:release:all      # 连 advisory 观察项一起跑
 node release-test/run.mjs --only 0.2.1-rc.2   # 只跑一个版本（调试用，不能当发版依据）
-npm run support:matrix        # 重新生成 doc/SUPPORT-MATRIX.md（矩阵或证据变了就重生成）
-npm run support:check         # 校验文档与 matrix/最近证据一致（CI 用）
+npm run support:matrix        # 重新生成 doc/SUPPORT-MATRIX.md（矩阵或证据变了就重生成；会先刷新证据摘要）
+npm run support:check         # 校验结构：生成物 vs 已提交的 matrix.json + evidence-summary.json（CI 用）
+npm run support:evidence      # 校验证据摘要是否落后于本机 .release-test/reports（没有报告就跳过）
 npm run release:preflight     # 闸门：报告新鲜 + tree 一致 + 矩阵未变 + 声明无偏差 + AI 判定通过 + 工作区干净
 ```
 
 - 产物：`.release-test/reports/<run>/` —— `report.md`（人看）、`report.json`（机器）、`judge-prompt.md`（给 AI）、`evidence/<版本>/`（安装/启动日志与探针回执）。**`.release-test/` 不进 git**（`.gitignore` 已排除，脱敏门禁 `SKIP_DIRS` 已跳过）。
+- **证据摘要随包，报告目录不随包**：`support:matrix` 把本机报告蒸馏成 `release-test/evidence-summary.json`（提交、无路径无秘密），`doc/SUPPORT-MATRIX.md` / 两个 README 只从它渲染。所以干净 checkout（CI）重算得到同一份文档，`support:check` 不会再因为「本机没有报告」变红。**矩阵或证据变了必须重跑 `npm run support:matrix` 并把摘要一起提交**。
+- `support:check` 只比**结构**，且比较前归一化行尾（生成器写 LF，Windows 检出可能是 CRLF）。`support:evidence` 才是「本机报告 vs 摘要」的新鲜度校验，CI 里自动跳过。
 - **AI 判定是流程的一步，不是可选项**：按 `judge-prompt.md` 复核证据 → `node release-test/run.mjs verdict --template --run <dir>` 生成骨架 → 逐版本写结论、逐条回答 open question → `npm run release:verdict`（即 `verdict --check`）校验（硬失败不能判成 pass，报告哈希必须对得上）。
 - 结果解读：`fail` = 硬失败，禁止发版；`warn`/`skip` = 进 open questions 由 AI 判定（例如沙箱里被迫手工装配）；`claim drift` = 声明与 manifest 矛盾（典型：peerDependencies 范围排除预发布版）——**报告照跑，但闸门会拦住发版**。
 - 增删支持版本：只改 `release-test/matrix.json`，再 `npm run support:matrix` 重生成文档；`package.json` 的 `dsh.compatibility.dshReleases` 必须与矩阵一致（`node release-test/run.mjs matrix` 会列出偏差）。
 - 隔离纪律：每个版本都在 `.release-test/homes/dsh-<版本>/` 里跑，**永不碰用户真实 profile**（主实例 fail-loud）。CLI 一律钉版。
 - **CLI 来源**：默认 `--cli-source auto`——mise 里预装了该版本就用 `mise x npm:@deepseek-ai/dsh@<版本> -- dsh …`（不激活），否则回退 `.release-test/cache/tools/` 的 npm 一次性安装；报告里记录每个 target 实际用了哪种。预装清单 `release-test/mise.toml` 由矩阵生成，勿手改。确认 mise 装齐后可 `node release-test/run.mjs clean --tools` 回收 npm 缓存（每版本约 470 MB）。
+
+## 跨版本升级实测（`--tier upgrade`，每次正式版前必跑）
+
+上面的 `declared` 矩阵测的是**全新安装**（干净 home）：它能证明「新包装上去能跑」，证明不了「用过旧版、有数据的机器升上来会不会坏」。商店里真实用户的机器都是后者，所以另有一个档位**模拟升级**：
+
+```powershell
+# 全部声明版本，基线默认 5.2.0（缺了就从 npm 拉一次并缓存）
+node release-test/run.mjs --tier upgrade
+
+# 上一版 → 这一版（上一版还没发也行：用 --baseline-tarball <file>）
+node release-test/run.mjs --tier upgrade --only 0.2.2-rc.2 `
+  --tarball .qa/dsh-dbhub-live-6.0.0-rc.6.tgz --baseline 6.0.0-rc.5
+```
+
+> 没有对应的 npm script，这是故意的：升级档只在发版前手动跑，不该出现在 `prepublishOnly` 的默认链路里（每个目标两次启动，很慢）。
+
+每个目标跑两段：
+
+1. **装旧版**（`--baseline <version>`，默认 `5.2.0`；也可 `--baseline-tarball <file>`）到隔离 home，boot 一次，**用旧版自己的 HTTP 接口造真实旧数据**：两条连接（一条只读、一条 SSH 隧道，DSN 里都带口令）+ 改两项设置（`updateIntervalDays` / `showSidebarEntry`）。
+2. **就地升级**到被测产物（同一条 `dsh plugin add` 路径，同一 home），再 boot 一次，然后跑**既有全套探针**（界面/通道是否还正常）+ 升级专属断言。
+
+升级专属断言（都在 `report.json` 的 `targets[].upgrade` 里）：
+
+| 检查 | 断言 | 失败意味着 |
+| --- | --- | --- |
+| `upgrade.baseline-install` / `upgrade.baseline-seed` | 旧版真的装上了、真的写下了两条连接和两项设置 | 前半段没成立，后面的结论一律不算 |
+| `upgrade.connections` | 两条连接都还在，`ro` / 隧道描述、`conn` 元数据、工作区路径逐项不变 | 升级把连接丢了或改坏了 |
+| `upgrade.prefs` | 三项设置值不变（`announceAccessPolicy` 也必须保持默认 true） | 设置被重置 |
+| `upgrade.bundle-version` | `node_modules/<包>/package.json` 的版本 == 新产物 | **"升级了但界面还是上一版"**（pnpm 没换包） |
+| `upgrade.store-migrated` | **有界等待**「连接文件里已无内联口令、且该行有引用」（最多 15s，每 500ms 读一次 store），等到才判 pass | 口令没迁移，或引用悬空（口令丢失） |
+| `upgrade.secret-resolve` | 在同一个等待窗口结束后再探（否则会读到迁移中间态）：报的是**连不上库**（正常，种子指向关闭端口），不是「口令已不在凭据库」 | 迁移后连接不可用 |
+| `upgrade.boot-log` | 升级后的 boot 日志里没有 uncaught / unhandled rejection / fatal | 升级后宿主半崩过 |
+
+- **结果怎么读**：`upgrade.store-migrated` 有两条**主机能力分支**。① 这台 DSH 的 `credentials` 服务对插件根本不可用（boot 后写入也拿不到引用）→ 明文是**文档化的降级**，判 `warn`（迁移没被测到，不代表它坏了）。② 服务可用但 15 秒窗口内迁移一直没发生 → 判 `fail`，detail 里带**最后一次读到的 store 形状 + boot 日志尾部**（含插件的迁移重试诊断）。**迁移是 boot 之后的异步动作**（宿主延迟挂载 `credentials`，插件按 500ms 起指数退避重试），所以这条检查必须等窗口，不能一次读定生死——一次读只会把一个正常的一两秒窗口判成 bug。
+- **`/state` 的 `passwordUnsplit` 不算硬失败**：它是「上一次发现遍历」缓存的旗标，可能比 store 晚；store 迁移已完成而视图还挂着旧标记时，`upgrade.view-marker` 记一条 `info`（卡片 tooltip 仍是旧提示，纯显示问题），不改变判定。
+- **为什么不用 `skip`**：`verdict --check` 把「升级段缺失 / 升级步骤被跳过 / `upgrade.*` 被判 skip」一律视为**未通过**——这一档的意义就是必须真跑，跳过等于没测。
+- **什么时候跑**：**每次正式版前必跑**（与 `declared` 矩阵一起构成发版依据）；预发布可以只在与上一版的差异涉及存储/凭据/设置/客户端包时跑。它比较慢（每个目标两次启动），所以不进 `prepublishOnly`。
+- **它还测不到什么**：跨多个大版本（如 `5.1.0` → `6.0.0`）的跳版、多个工作区之间的数据、导入他人 profile、以及**旧版客户端缓存**（浏览器里上一次的 bundle）——这几类需要额外造场景，见 `release-test/README.md` 的待补清单。
 
 ## 分支职责
 
@@ -74,6 +115,42 @@ gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> dsh-dbhu
 
 **给代理的默认行为**：本仓库里代理只往 `dev` 提交/推送；`main` 只通过 PR 合入。需要动 `main` 或发 npm 时先停下来向用户确认。
 
+## 预览版先发、后跑矩阵（`-rc` 专用）
+
+测试版（`6.0.0-rc.1` 这类）**允许在矩阵跑之前发布**，发到 `dev` tag，绝不覆盖 `latest`：
+
+1. 本地四门禁 + `test:unit` + 在**最新预发布 harness**（当前 `0.2.2-rc.x`）上跑一次真实浏览器回归；
+2. `npm publish --tag dev` —— `prepublishOnly` 会跑 `release:preflight`，证据类问题在预览版上只作警告；
+3. **发完立刻**用 npm 包安装到各声明版本上跑 `npm run test:release`，产出证据；
+4. 证据齐了再考虑 `x.y.z` 正式版（此时 `release:preflight` 对证据是硬阻断）。
+
+未跑矩阵就发正式版仍会被拦住，这条不能绕过。
+
+## 版本漂移监控
+
+`.github/workflows/version-watch.yml` 每周一 03:20 UTC（也支持 `workflow_dispatch`）跑一次 `node scripts/version-watch.mjs`，比较**本插件自己**的 `package.json` 版本与 **npm registry 的 `dist-tags`**，把两类事故变成一条可见的 issue：
+
+- 「代码写完了但没人记得发版」→ 仓库版本高于所有已发布的 tag；
+- 「发了版但仓库没同步」→ 仓库版本低于已发布的 tag。
+
+**只查本插件，不查 DSH 版本**：harness 的发布节奏不是本仓库的信息，混进来只会让红灯无法归因。
+
+判定（脚本里的纯函数 `classify()`，单测 `test/version-watch.test.mjs`）：
+
+| 状态 | 含义 | 退出码 |
+| --- | --- | --- |
+| `ok` | 仓库版本等于某个 dist-tag，或是**已发布基线上的预发布迭代**（`<已发布>-dev.N` / `-rc.N`，即上面「版本号策略」说的正常开发状态） | 0 |
+| `ahead` | 仓库版本高于**所有**已发布 tag = 版本号抬了但没发版 | 1 |
+| `behind` | 仓库版本低于参照 tag（有 `dev` 用 `dev`，否则用 `latest`）= 发布过的东西仓库里没有 | 1 |
+| `diverged` | 仓库版本夹在两个 tag 之间（不高于全部、也不低于参照 tag）= registry 与仓库对不上 | 1 |
+| `error` | registry 连不上 / 没有可用 dist-tags / 版本号不是 semver | 2 |
+
+- **网络失败不得当成 `ok`**：退出码 2 让 job 直接红（`::error::`）且**不建 issue**——连不上 registry 时谈版本漂移没有意义。
+- 非 `ok` 时开 issue，标题固定为 `chore: 版本待发布（<status>）`，正文含仓库版本、`dev`/`latest`、最近 5 条提交与下一步建议；**幂等**：同标题且 open 的 issue 已存在就只追一条带日期的评论，不重复开、也不自动关（处理完手动关）。
+- **标题与正文由脚本的纯函数生成**（`issueTitle` / `issueBody` / `issueComment`，单测 `test/version-watch.test.mjs` 断言措辞与「`ok` 绝不生成 issue」）：`--issue-dir` 把它们写成 `title.txt` / `body.md` / `comment.md`，workflow 只负责「搜标题 → 创建或评论」。这样措辞在本地就能验证，不必发一条真 issue 去试。
+- **为什么不会自动发布**：发布有硬约束（见上文「触发词与硬约束」）——测试版必须 `--tag dev` + `--prerelease`，正式版命令只输出给维护者手动执行，已发布的版本绝不移动。定时任务没有判断「升补丁 / 次版本 / 主版本」的能力，也不该握着发布凭据，它只负责提醒。
+- 收到 issue 时：`npm run release:preflight` 过闸门 → 按「阶段一 / 阶段二」发布，或把分支同步回已发布版本 → `workflow_dispatch` 重跑一次确认回到 `ok` → 关 issue。
+
 ## 版本号策略（测试版本 → 发布版本）
 
 - **基线 = 代码库当前版本**（`package.json` 版本，即最近一次发布）。测试/调试迭代一律在基线上挂 `-dev.<序号>`，序号从 1 递增、不复用，`pnpm pack` 产物随之换名。
@@ -88,6 +165,8 @@ gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> dsh-dbhu
 
 ## 包内容
 
-`package.json` 的 `files` 决定 npm 包内容：`lib`、`doc/REQUIREMENTS.md`、`doc/ARCHITECTURE.md`、`doc/DEVELOPMENT.md`、`doc/CLIENT.md`、`doc/RELEASE.md`、`doc/DESENSITIZE.md`、`doc/IMPACT-MATRIX.md`（七份文档供包内 AGENTS.md 链接）、`doc/images`、`test`、`scripts`、`cordis.patch.yml`、`README.md`、`README.en.md`、`AGENTS.md`、`LICENSE`。本地文档（`doc/PLAN-*.md`、`doc/implementation-notes.md`、`doc/RELEASE-NOTES-*.md`）被 `.gitignore` 排除，**永不进 git / npm 包**；`doc/SUPPORT-MATRIX.md` 是生成物，不随包分发。
+`package.json` 的 `files` **只放运行时**：`lib`（含浏览器半 `client.js`）、`cordis.patch.yml`、`LICENSE`、两份 README（npm 页要渲染）、`package.json` 本身——实测 22 个文件 / 约 186 kB。文档、测试、门禁脚本、`release-test`、`AGENTS.md` 与截图**都不进包**（它们是仓库的开发资料，不是用户运行需要的东西）；`test:release` / `support:*` / `release:preflight` 这些命令因此在 tarball 里不可用，只能在工作树里跑。
 
-`prepublishOnly` = `npm run check:docs && npm run check:secrets && npm run release:preflight`——发布前三道门自动跑。
+README 里指向文档的链接一律用 GitHub 绝对地址（`blob/dev/doc/...`），截图用 `raw.githubusercontent.com/...`，这样 npm 页面上也能点开、看到图——相对链接在 tarball 里会断。`doc/SUPPORT-MATRIX.md` 是生成物（输入只有 `release-test/matrix.json` 与提交的 `evidence-summary.json`），只在仓库里阅读。
+
+`prepublishOnly` = `npm run check && npm run check:ui && npm run test:unit && npm run check:docs && npm run check:secrets && npm run release:preflight`——发布前自动跑全套（语法 / 客户端离屏门禁 / 全部单测 / 文档 / 脱敏 / 发版闸门），不只是原来那三样。

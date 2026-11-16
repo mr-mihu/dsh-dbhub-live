@@ -2,249 +2,143 @@
 
 **简体中文** · [English](README.en.md)
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![DSH](https://img.shields.io/badge/DSH-plugin-blue.svg)](#安装)
-[![DBHub](https://img.shields.io/badge/Built_on-DBHub-22a05a)](https://github.com/bytebase/dbhub)
 [![npm version](https://img.shields.io/npm/v/dsh-dbhub-live)](https://www.npmjs.com/package/dsh-dbhub-live)
-[![Listed on dsh-plugin.org](https://img.shields.io/badge/dsh--plugin.org-listed-blue)](https://dsh-plugin.org/zh/plugins/mr-mihu/dsh-dbhub-live)
+[![npm downloads](https://img.shields.io/npm/dt/dsh-dbhub-live)](https://www.npmjs.com/package/dsh-dbhub-live)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Built on DBHub](https://img.shields.io/badge/Built_on-DBHub-22a05a)](https://github.com/bytebase/dbhub)
 
-> 让 [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 里的 AI 直接查你的数据库——**密码只在界面里输入，不作为工具参数交给模型**。
-
-装上它，你就能直接对 AI 说「查一下 orders 表最近 10 条」。AI 通过 [DBHub](https://dbhub.ai)（数据库 MCP 服务器）执行 SQL，但它只知道「哪个工作区的哪个环境」，以及 `mysql://host:3306/db` 这类元数据；**密码、账号、完整连接串始终留在你本机**，只在你面前的输入框里敲。
+[DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek-Harness) 的数据库插件：装上它，对话里的 AI 就能直接查你的库。**密码只在界面里输入，不作为工具参数交给模型**——模型只知道「哪个工作区的哪个环境」，以及类型 / 主机 / 端口 / 库名这类元数据。底层是 [DBHub](https://dbhub.ai)，支持 **MySQL · PostgreSQL · MariaDB · SQLite · SQL Server**。
 
 <details>
-<summary>📷 界面预览：设置 → DBHub 数据库工具</summary>
+<summary>📷 界面预览</summary>
 
-![DBHub 数据库工具宽屏页：状态行 + 一行设置条 + 按工作区分组的连接列表，以及一条「连接测试成功」回执](doc/images/test-success.png)
+![DBHub 数据库工具：按工作区分组的连接列表，以及一条连接测试回执](https://raw.githubusercontent.com/mr-mihu/dsh-dbhub-live/dev/doc/images/test-success.png)
 
 </details>
 
-## 为什么用它
+## 功能
 
-| | |
+| 功能 | 一句话 | 详情 |
+| --- | --- | --- |
+| 多连接 / 多工作区 | 一个工作区可挂多个环境（`default` / `prod` / `dev`…，名字支持中文），各自独立、不串库。 | [连接管理](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#三连接管理) |
+| 只读模式与 SSH 隧道 | 按环境开启：只读由 dbhub 原生拒绝写操作，隧道让跳板机后面的库也能连。 | [环境选项](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#十二环境选项与上游能力门槛) |
+| `@` 选数据源 | 输入框打 `@` 挑连接，一条消息可以选多个，各自落在自己的库上。 | [多选引用](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#十五输入框-数据源引用一条消息可多选) |
+| 结果行数上限 | 按环境限制每条语句返回多少行，免得一次 `select *` 把整张表灌进上下文。 | [上限与落点](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/CLIENT.md#环境选项的落点只读-ssh-结果行数上限) |
+| 结果导出 | 结果行多时写成 CSV / JSON 文件，对话里只回摘要和路径。 | [导出规则](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#二十查询结果导出csv-json) |
+| 连接列表与测试 | 连接多了能搜能排；单条或一键测试，测的是该环境真正生效的连接。 | [搜索 / 排序 / 批量测试](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#十七连接列表的搜索-排序-批量测试) |
+| 口令存 DSH 凭据库 | 数据库密码与 SSH 口令只存 DSH 凭据库，连接文件里只有引用名。 | [口令同源](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#十九数据库口令与-ssh-口令同源dsh-凭据库) |
+
+配置页适配 **弹窗 / 宽屏 / 小屏** 三种承载。
+
+<details>
+<summary>只读模式与 SSH 隧道（两张表）</summary>
+
+**只读模式 × 会话权限**——两者独立，同时生效：
+
+| 环境只读 | 会话权限 | 写语句 | 读语句 |
+| --- | --- | --- | --- |
+| 开 | 任意 | dbhub 直接拒绝（`READONLY_VIOLATION`） | 正常执行 |
+| 关 | 完全权限 | 直接执行 | 正常执行 |
+| 关 | 工作区内修改 | 每次写入弹窗确认 | 正常执行 |
+| 关 | 仅可查看 | 直接拒绝（不启动 dbhub） | 正常执行 |
+
+只读模式**只能由你关闭**，模型不能关。
+
+**SSH 隧道字段**——口令由 DSH 凭据库保管，只在界面输入、不回显：
+
+| 字段 | 说明 |
 | --- | --- |
-| 🔒 **凭据不进工具参数** | 模型只见类型 / 主机 / 端口 / 库名；密码与完整 DSN 不作为工具参数接收，只在界面输入 |
-| ⚡ **一次性进程** | 无常驻 dbhub 服务：每次调用一条独立进程、跑完即杀；一次查询失败只影响它自己，多实例并行不互杀 |
-| 🧮 **工具恒定 4 个** | 环境再多也不膨胀模型上下文 |
-| 🗂 **按工作区 × 环境管理** | 一个工作区可配 `default` / `prod` / `dev`…（环境名支持中文），用 `source` 区分，绝不串库 |
-| 🛡 **环境级只读** | 写操作由 dbhub 原生拒绝；**模型只能开、不能关**（关闭只由你在配置页操作） |
-| 🔐 **手动 SSH 隧道** | 跳板机后面的库也能连；SSH 密码 / 密钥口令只在界面输入 |
-| 📦 **开箱即用** | 没装 dbhub 就自动安装，之后按间隔自动更新 |
+| SSH 主机 | 域名或 IP；不要填 `~/.ssh/config` 里的别名 |
+| 端口 | 默认 `22` |
+| SSH 用户 | 登录跳板机用的账号 |
+| 认证方式 | 密钥（路径留空用 `~/.ssh/id_ed25519`）或密码 |
+| ProxyJump | 可选，只支持一跳，`[user@]host[:port]` |
 
-支持 **MySQL · PostgreSQL · MariaDB · SQLite · SQL Server**。
+连接串里的地址要写**从跳板机看过去**的地址——这是隧道连不上最常见的原因。
+
+</details>
+
+<details>
+<summary>模型侧访问策略（点开）</summary>
+
+- 本插件里配置过的库只走 `dbhub_*` 工具，不绕道命令行客户端、脚本或其它 MCP。
+- 只读被拒后不得换途径写入；本插件不支持的库（MongoDB / Redis / Oracle 等）交给你的其它插件。
+- 这是一条**提示词层面的软约束**；只读本身由 dbhub 硬拒绝。
+
+完整表述见 [访问策略](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#十四模型侧数据库访问策略提示词约束)。
+
+</details>
 
 <!-- release-test:versions:begin -->
 ## 支持的版本范围
 
-**DSH 0.1.5 起（0.1.5 / 0.1.6 / 0.1.7 / 0.2.0 / 0.2.1 共 5 条版本线，含预发布）** — 6 个声明版本已实测通过（最近验证 2026-10-24）。
+**DSH 0.2.1 起（0.2.1 / 0.2.2 共 2 条版本线，含预发布）** — 4 个声明版本已实测通过（最近验证 2026-11-16）。
 
 <details>
 <summary>逐版本实测明细（点开查看）</summary>
 
 | DSH 版本 | 界面 | 启动 | 硬检查 | 结论 | 最近验证 |
 | --- | --- | --- | --- | --- | --- |
-| `0.1.5-rc.3` | 旧版 | 39.8s | 19 | ⚠️ 通过（有告警） · 手工装配 | 2026-10-24 · 91642fa2 |
-| `0.1.6-alpha.2` | 旧版 | 13.1s | 19 | ⚠️ 通过（有告警） · 手工装配 | 2026-10-24 · 91642fa2 |
-| `0.1.7-rc.2` | 旧版 | 14.8s | 20 | ⚠️ 通过（有告警） · 手工装配 | 2026-10-24 · 91642fa2 |
-| `0.2.0-rc.2` | 旧版 | 14.8s | 20 | ⚠️ 通过（有告警） · 手工装配 | 2026-10-24 · 91642fa2 |
-| `0.2.1-alpha.1` | 新版 | 15.2s | 20 | ⚠️ 通过（有告警） · 手工装配 | 2026-10-24 · 91642fa2 |
-| `0.2.1-rc.2` | 新版 | 16.9s | 20 | ⚠️ 通过（有告警） · 手工装配 | 2026-10-24 · 91642fa2 |
+| `0.2.1-rc.2` | 新版 | 4.1s | 21 | ✅ 通过 | 2026-11-16 · b7097008 |
+| `0.2.1-rc.5` | 新版 | 4.1s | 21 | ✅ 通过 | 2026-11-16 · b7097008 |
+| `0.2.2-rc.1` | 新版 | 4.7s | 21 | ✅ 通过 | 2026-11-16 · b7097008 |
+| `0.2.2-rc.2` | 新版 | 4.3s | 21 | ✅ 通过 | 2026-11-16 · b7097008 |
 
 </details>
 
-完整证据、判定规则与已知偏差见 [doc/SUPPORT-MATRIX.md](doc/SUPPORT-MATRIX.md)。
+完整证据、判定规则与已知偏差见 [doc/SUPPORT-MATRIX.md](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/SUPPORT-MATRIX.md)。
 <!-- release-test:versions:end -->
 
 ## 安装
 
 ```bash
-# web 端（dsh web）
-dsh plugin --profile web add dsh-dbhub-live
-
-# 桌面端
-dsh plugin --profile desktop add dsh-dbhub-live
-
-# 没装 dsh（用 npx）：命令相同，前缀换成 npx @deepseek-ai/dsh
-npx @deepseek-ai/dsh plugin --profile web add dsh-dbhub-live
-npx @deepseek-ai/dsh plugin --profile desktop add dsh-dbhub-live
+dsh plugin --profile web add dsh-dbhub-live        # web 端
+dsh plugin --profile desktop add dsh-dbhub-live    # 桌面端
 ```
 
-桌面端也可以**全程用界面装**：**左侧菜单 → 插件 → 新增 → 输入 `dsh-dbhub-live`（或从插件市场搜索）→ 安装**。**同一个插件在 web profile 与 desktop profile 上都能用**，界面与行为一致；桌面端的安装 / 更新 / 卸载都可以在这张「插件」页里完成。
-
-装完 web 端**重启 `dsh web`**，打开 **设置 → DBHub 数据库工具** 即可看到配置页（也有左侧栏快捷入口和插件页那行的「配置」，三个入口是同一个页面）。
-
-> 环境要求：`dsh` 0.1.5 起的全部版本线（含 0.2.x）；**新界面需要 0.2.1+**（含 0.2.1 的预发布版）——宽屏整页、页头版本与升级提示、行内只读开关都只在 0.2.1 及以上出现；**0.1.x 仍受支持，但保持旧版布局与行为**。建议本机有 Node.js ≥ 18（用于自动安装 dbhub）。**只读模式与 SSH 隧道需要 dbhub 1.4.0+**，插件会自动检测并给出升级指引。每个版本的实测记录见 [doc/SUPPORT-MATRIX.md](doc/SUPPORT-MATRIX.md)（由发布测试自动生成，发版前必跑）。
-
-## 更新
-
-**Web 端**（命令行）：
-
-```bash
-dsh plugin --profile web up dsh-dbhub-live@<最新版本号>
-```
-
-然后**重启 `dsh web`**。
-
-**桌面端**：在 **左侧菜单 → 插件** 页里卸载该插件，再重新安装最新版本（桌面端更新走可视化插件页）。**连接与凭据不会被重装清掉**——它们都在 `~/.dsh/storages/dsh-dbhub-live`，与模块目录无关。
-
-**不用自己记版本号**：配置页页头显示插件名与当前版本，检测到更新时会出现一行低调的「**↑ 可升级到 <latest>**」文字链接，**点开后在面板里点一下即可复制** `dsh-dbhub-live@<latest>`；旁边的「检查更新」按钮可以随时手动检查。打开页面时也会自动检查一次（有节流，不会每次打开都打网络）。检查以 **npm registry 为主、GitHub Releases 为兜底**，发布说明见 [GitHub Releases](https://github.com/mr-mihu/dsh-dbhub-live/releases)。
-
-> 版本与升级提示属于新界面，需要插件 5.2.0+ 且 DSH 0.2.1+；0.1.x 上不显示（见「配置页」）。
+没有 `dsh` 命令就在前面加 `npx @deepseek-ai/dsh`；桌面端也可以在 **左侧菜单 → 插件** 页里搜索安装。装完**重启 `dsh web`**，打开 **设置 → DBHub 数据库工具** 即可配置。
 
 ## 快速开始
 
-不用记任何命令，直接跟 AI 说：
+1. 配置页点「＋ 添加连接」，填类型 / 主机 / 端口 / 库名——工作区里已有 `mise env` 或 `.env` 的 `DSN` / `DB_*` 会自动发现，可以跳过这步。
+2. 点行内的测试按钮跑一次 `SELECT 1`，成功就可以用。
+3. 回到对话直接说：`查一下 orders 表最近 10 条`。
 
-```text
-你：mysql 192.0.2.10:3306 的 app 库，账号 ops
-AI：（弹出输入框，你在里面填密码）→ 已保存，source = myapp_1a2b3c_default
-你：查询 orders 表最近 3 条数据
-AI：…（返回查询结果）
-```
+> **别把密码粘进对话。** 插件自己不把密码交给模型，但你亲手粘进对话的内容一定会进入上下文。
 
-<details>
-<summary>📷 实际效果：向 AI 提问，直接拿到查询结果</summary>
+## 升级与回退
 
-![向 AI 提问并拿到查询结果](doc/images/chat-query.png)
-
-</details>
-
-密码全程只在你面前的输入框里敲。若你只说了一部分信息（比如「连一下 192.0.2.10 上的 mydb」），插件会**先用这些非敏感信息试连**：能连上就直接保存（不需要密码的库全程零输入），只差密码就只问你「账号（未知时）+ 密码」，信息不全才让你选完整方式（输入 DSN / 填写分项 / 授权扫描项目配置文件）。
-
-> **别把密码直接粘进对话。** 插件自己不把密码交给模型，但**你亲手粘进对话的内容一定会进入上下文**——这一条插件拦不住，也收不回来。
-
-工作区里已有 `mise env` 或 `.env`（`DSN` / `DB_*`）时，插件会自动发现，无需手动配置。
-
-## 工具
-
-| 工具 | 说明 |
-| --- | --- |
-| `dbhub_configure(...)` | 为工作区配置 / 修改连接。**不接受 `dsn` 参数**——密码与连接串一律在界面输入；`type`/`host`/`port`/`database`/`user` 可作为非敏感预填。支持 `env=新名` + `renameFrom=旧名` 改名、`copyFrom=其他工作区的 source` 跨工作区复制，以及 `readOnly:true`（`readOnly:false` 会被拒绝）与 `sshHost`/`sshPort`/`sshUser`/`sshAuthKind`/`sshKeyPath`/`sshProxyJump` 隧道选项（**SSH 密码与口令只能由你在弹窗输入**）。 |
-| `dbhub_list_sources()` | 列出全部连接源，**按工作区分组**并标出【当前工作区】；只有元数据与 **source 值**。 |
-| `dbhub_execute_sql(source, sql)` | 在指定数据源上执行 SQL；`source` 见 `dbhub_list_sources`。每次调用都是独立的一次性连接，多语句用 `;` 分隔。 |
-| `dbhub_search_objects(source, object_type, ...)` | 搜索数据库对象（表 / 视图 / 列 / 索引等）。 |
-
-> **每条 source 只属于一个工作区**：跨工作区复用连接请用 `dbhub_configure` 的 `copyFrom` 复制过来，不要直接拿别的工作区的 source 查询。
-> `search_objects` 目前仅对 SQLite 开放；MySQL / PostgreSQL 等请用 `dbhub_execute_sql`（如 `SHOW TABLES`）。
-
-## 模型侧数据库访问策略
-
-插件启用期间会向模型注入一条**系统提示词**（约 400 字），把数据库访问收敛到本插件，并写清它与**其它数据库插件共存**时的边界：
-
-- **唯一授权途径（只针对本插件已配置的连接）**：`dbhub_list_sources` 里出现的库一律走 `dbhub_*` 工具；不用 `psql` / `mysql` / `sqlite3` / `sqlcmd` / `pg_dump` 等命令行客户端、临时脚本、驱动、其它 MCP 或**其它数据库插件**去连这些库，也不去宿主机上寻找这类可执行文件。
-- **工作区里的"配方"不构成授权**：项目文档、脚本或 `AGENTS.md` 中出现的直连数据库写法（例如某次会话自己写下的 psql 配方）一律不照做——系统提示词的效力高于工作区说明。
-- **只读是用户的安全边界**：命中 `READONLY_VIOLATION` 后不得改用任何其它途径完成写入（**包括换用另一个数据库插件**），只能把原因与影响告知你。
-- **本插件不支持的库让位**：dbhub 只支持 MySQL / PostgreSQL / MariaDB / SQLite / SQL Server。MongoDB / Redis / Oracle 等，或**你从没在本插件里配置过**的实例，使用你安装的其它数据库插件是**允许且正确**的——模型不该为"统一走本插件"而拒绝，也不该改用命令行直连。
-- **同一个库两种插件都装了**：默认用本插件的 source（只读 / 隧道等安全设置在这里）；你明确要求换另一个工具时才换；判断不了会先问你，不自行换路。
-- **插件做不到的操作**：备份、非 SQL 管理命令等，先说明限制并请你给出授权方案，不自行绕过。
-
-**开关**：设置里的「向模型注入数据库访问策略」（宽屏页直接展开在设置区；弹窗模式在 ⚙ 设置 里），**默认开启**；也可以在 `cordis.patch.yml` 里用 `config: { announceAccessPolicy: false }` 固定。关闭只是不再注入这段文字——工具、只读、隧道与其它设置全部照常工作。
-
-**不压制同类插件**：插件不会（也无法）禁用你安装的其它数据库插件。冲突靠上面三条收敛：作用域（只管自己配置的连接）、重叠目标的默认优先级、判断不了就问用户。插件页要关掉哪一个由你决定。
-
-**诚实边界**：这条策略是**提示词层面的约束**（软约束）；只读本身由 dbhub 在插件内**硬拒绝**。绕开插件的 shell 级直连不受插件管制，策略明确禁止了这条路，但它靠模型遵守，不是硬拦截。
-
-## 配置页
-
-<details>
-<summary>📷 添加连接：只读模式与 SSH 隧道</summary>
-
-![添加连接表单，以及「测试 SSH 隧道」成功回执](doc/images/ssh-tunnel.png)
-
-</details>
-
-同一套组件提供**三种布局**，按承载位与窗口宽度自动切换（新界面需要插件 5.2.0+ 且 **DSH 0.2.1+**；DSH 0.1.x 上保持旧版布局与行为，见本节末尾）：
-
-| 布局 | 进入方式 | 形态 |
-| --- | --- | --- |
-| 弹窗模式 | **设置 → DBHub 数据库工具** | 窄列弹窗，密度与旧版一致，设置收在状态行的「设置」折叠里 |
-| 宽屏模式 | 左侧菜单的 **DBHub** 入口 / 插件页该行的「配置」 | 整页宽列，页头带版本与升级入口，设置行直接展开 |
-| 小屏模式 | 手机浏览器，宽度 < ~700px | 纵向堆叠的紧凑布局，控件按触摸尺寸 |
-
-**页头：版本与升级入口**：标题是插件名，紧跟当前版本（灰色小字）；有更新时右侧出现一行低调的「**↑ 可升级到 <latest>**」文字链接，**点开才展开**更新说明——里面是 `dsh-dbhub-live@<latest>`（点击复制）、按部署方式给的更新命令 / 步骤，以及更新说明链接；「↻」按钮随时手动检查一次。打开页面时也会自动检查（有节流）。检查以 npm registry 为主、GitHub Releases 为兜底。**更新是中性提示，不会用报错红。**
-
-- **状态行**：只显示「运行中 / 已禁用 · N 个连接」。工具数量、一次性执行模式、dbhub 版本这类实现细节收进状态行下方的「ⓘ 说明」折叠区，默认不展开。
-- **连接列表**：按工作区组织。所有工作区都只有一个环境时用平铺卡片；任一工作区有多个环境时按工作区分组折叠（点组头展开，默认展开最近使用的那个）。每个连接只占一行：环境名 · 类型 / 主机 / 端口 / **库名** · **只读开关** · `source` 句柄（点它即复制） · 测试 / 修改 / 删除。窄窗口下先截断主机端口，**库名始终可见**。
-- **设置区（DSH 主体样式，刻意弱化）**：宽屏把四项收成**一行紧凑设置条**——`插件设置 · 启用插件[启用] · 侧边栏入口[显示] · 访问策略[开启] · 自动更新[7]天[保存] · ⓘ说明`；弹窗与手机是紧凑设置行。字号与开关都收小，让**连接列表**成为页面主体。控件用 DSH 自己的开关（跟随主题 / 皮肤，带汉字状态词）；解释性长文字都在「ⓘ 说明」里。
-- **只读开关（三种布局都在外面）**：每条连接行的数据源旁边就是该环境的「只读」小开关，点一下即改（开锁图标 + 「可写」= 可写；闭锁图标 + 「只读」= 已只读），不必打开编辑表单；弹窗 / 手机同样可用。编辑表单里的勾选也保留，两处是同一个状态。**连接串本身不再带锁形图标**——过去容易被误读成"需要密码"，也和只读锁冲突。
-- **增删改**：行内 ✏ 改连接串或环境名；「＋ 添加连接」支持中文环境名。**同名环境保存前会先问「是否覆盖」**，取消则一个字都不写。
-- **连接测试**：按该环境**真正会被使用的有效连接**（含只读 / 隧道）执行 `SELECT 1`，测试中显示已耗时。结果是一次性反馈，不持久化、不改变连接状态。
-
-**「在侧边栏显示入口」不是禁用插件**：关掉它只是隐藏左侧栏的快捷入口，插件照常工作、模型照常可以查询；想整体停用才用「禁用」（禁用后入口一律隐藏）。无论哪种状态，**设置页与插件页那行的「配置」始终能进**，随时可以撤销。
-
-**DSH 0.1.x 的兼容路径**：页头版本 / 升级提示、宽屏整页、行内只读开关与开关样式的设置区都只在 **DSH 0.2.1+**（含预发布版）渲染；0.1.x 上插件保持原有布局与行为，**不显示升级提示**——这是刻意保留的，不是缺陷。
-
-## 🔒 只读模式与 SSH 隧道
-
-两项都是**按环境**设置的连接选项，由 dbhub 原生能力执行。开启后，该环境的每次执行改用一份**临时生成的 dbhub 配置**（文件里只有 `${…}` 占位符、不含任何密码，真值只经子进程环境传入），用完即删；其余环境不受影响。
-
-**只读模式**：三种布局里，连接行数据源旁都有一个「只读」开关，点一下即改（也可以打开 ✏ 在编辑表单里勾选；模型也能为某环境开启）。开启后 dbhub 只放行只读语句（MySQL 实测为 `select/with/explain/show/describe/desc`），写操作直接返回 `READONLY_VIOLATION`；对象搜索照常可用。**关闭只读只能由你在配置页操作**——模型尝试关闭会被拒绝。只读环境的环境名后会多一个「只读」小标。
-
-**SSH 隧道**（手动配置，适用于库在跳板机后面的场景）：
-
-| 字段 | 说明 |
-| --- | --- |
-| SSH 主机 | **域名或 IP**（如 `203.0.113.10`）；不要填 `~/.ssh/config` 里的别名 |
-| 端口 | 默认 `22` |
-| SSH 用户 | 登录跳板机使用的账号 |
-| 认证方式 | **密钥**（填密钥路径；私钥有口令可再填口令；**留空 = 用默认 `~/.ssh/id_ed25519`**）或**密码** |
-| ProxyJump | 可选，**只支持一跳**，格式 `[user@]host[:port]` |
-| 密钥口令 / SSH 密码 | **只能在界面输入**、不回显；编辑时**留空 = 保持原值** |
-
-「高级：SSH 隧道」里有**两个**测试按钮：
-
-- **「测试 SSH 隧道」**只验证隧道这一层：先做 `ssh_host:ssh_port` 的 TCP 可达性探测（约 5 秒，失败会带 `ENOTFOUND` / `ECONNREFUSED` / `ETIMEDOUT` 等错误码），密钥认证时检查私钥文件存在可读，最后**故意**让 dbhub 对一个不可能在监听的地址建隧道，再按证据判定：报错带 **SSH 自身特征**（握手 / 认证 / 私钥）就是隧道断；带 **数据库层特征**（`PROTOCOL_CONNECTION_LOST`、`Connection lost`、`Access denied`、`Unknown database`、`ER_*`、`ECONNREFUSED` 等）就说明连接**已经穿过隧道**，结论是「SSH 隧道可用」；都没有才如实说「无法判定」并附输出末尾。
-- **「测试该配置」**按「隧道 + 只读」的**有效连接**实测。
-
-> **一句话记住**：报**数据库层**的错误 = 隧道已经通了，问题在隧道后面的数据库（认证 / 库名 / 目标地址），不必再怀疑 SSH。
->
-> **诚实边界**：SSH 层测试证明的是"网络通 + 密钥在 + SSH 层起得来"，不是一次带真实数据库的完整会话验证——隧道建起来不等于后面的库一定连得上，那一步由「测试该配置」回答。
-
-排查顺序：① 本机能 `ssh 用户@跳板机` 登录；② **连接串里的地址必须是"从跳板机看过去"的地址**（库就在跳板机本机时写 `127.0.0.1`）——这是最常见的原因；③ 密钥路径存在且可读（加密私钥记得填口令）；④ ProxyJump 只有一跳。
-
-**前提与限制**：需要 dbhub **1.4.0+**（版本过旧会明确报错，不会静默忽略）；**不支持**多跳、`ProxyCommand`、ssh-agent，也**不复用**任何其他插件（包括 DSH 自带的 SSH 工具）的 SSH 配置——隧道信息只来自你手动填写的内容。只读与 SSH 是两个独立开关，可以只开其中一个。
+升级：`dsh plugin --profile web up dsh-dbhub-live@<版本>`。**破坏性变更写在各版本的 [GitHub Releases](https://github.com/mr-mihu/dsh-dbhub-live/releases) 里**，升级前看一眼；更早的摘要见 [CHANGELOG](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/CHANGELOG.md)。**不支持回退到 6.0 之前**：数据库口令已迁到 DSH 凭据库，旧版本读不到。
 
 ## 数据位置
 
-所有配置与凭据都在模块目录之外，删掉该目录即完整清空：
+`~/.dsh/storages/dsh-dbhub-live/`（按 `DSH_HOME` 隔离，同一实例的多个 profile 共享）：`credentials.json` 是连接表（**不含口令**），`exports/` 是导出的结果文件。**口令都在 DSH 凭据库** `~/.dsh/.credentials.yaml`，连接表里只有引用名。要彻底清空就删掉上面整个目录。
 
-```
-~/.dsh/storages/dsh-dbhub-live/
-```
+## 故障排查
 
-按 `DSH_HOME` 实例隔离，同一实例的多个 profile 共享（与 dsh 自身 `workspace.json` 同一约定）。连接按「工作区 × 环境」存储；旧格式与手改遗留会在启动时自动清洗并一次性迁移，运行目录被误删或写入被拦截时不会崩溃。**没有常驻进程、没有共享配置文件**，同机多实例并发运行互不干扰。**升级、重装或卸载插件都不会动这里**——包括桌面端「卸载后重装最新版」的升级方式：连接、只读 / 隧道设置与凭据都原样保留。
+<details>
+<summary>首次使用最常见的几条（点开）</summary>
+
+| 现象 | 处理 |
+| --- | --- |
+| 面板一直「读取不到插件状态」或看不到连接 | 到 **设置 → 插件** 确认这一行是启用状态；刚升级过版本就重启一次 DSH。工具调用不受影响。 |
+| 某个连接认证失败 | 只影响该环境这一次调用：到配置页改口令（也可以让 AI 用 `dbhub_configure` 引导你在界面里填），其它连接照常。 |
+| 隧道配好了还是连不上 | 先点「测试 SSH 隧道」：报**数据库层**错误说明隧道已通，问题在后面的库（认证 / 库名 / 地址）；连接串里的地址必须是**从跳板机看过去**的地址——这是最常见的原因。 |
+| 导出失败 | 回执会给出错误码并改回内联结果，查询本身不失败；多半是 `exports/` 没写权限或磁盘满。 |
+| 提示 dbhub 版本过旧 | 只读与 SSH 隧道需要 dbhub 1.4.0+：升级 dbhub，或删掉 `~/.dsh/storages/dsh-dbhub-live` 让插件重装一个满足要求的版本。 |
+
+升级之后出现的问题（行为变化、兼容性、回退）见对应版本的 [GitHub Releases](https://github.com/mr-mihu/dsh-dbhub-live/releases)。
+
+</details>
 
 ## 卸载
 
 ```bash
-# web 端
-dsh plugin --profile web remove dsh-dbhub-live
-
-# 桌面端
-dsh plugin --profile desktop remove dsh-dbhub-live
+dsh plugin --profile web remove dsh-dbhub-live      # web 端
+dsh plugin --profile desktop remove dsh-dbhub-live  # 桌面端
 ```
 
-桌面端也可以在 **左侧菜单 → 插件** 页里直接卸载。卸载不会删除连接与凭据（见「数据位置」）；需要彻底清空时手动删除 `~/.dsh/storages/dsh-dbhub-live`。
-
-## 故障排查
-
-| 现象 | 处理 |
-| --- | --- |
-| 首次使用报「无法获取 dbhub」 | 确认本机有 npm 且能联网；离线可手动安装 `dbhub` 并加入 PATH。 |
-| 某个环境连接被拒 / 认证失败 | 该环境是独立一次性连接，只影响这一次调用。错误末尾会附指引：让 AI 调用 `dbhub_configure` 引导你在界面更新密码，或直接到配置页修改。 |
-| 工具显示「插件已禁用」 | 到 **设置 → DBHub 数据库工具** 点「启用」。 |
-| 禁用后左侧栏入口不见了 | 预期行为（禁用中的插件不贡献入口）。点「启用」后入口立即回来。 |
-| 开启只读后写操作报 `READONLY_VIOLATION` | 不是故障，是只读在生效。需要写入时在配置页取消该环境的「只读模式」（模型关不掉）。 |
-| 只读 / SSH 控件是灰的，或提示 dbhub 版本过旧 | 两项都需要 dbhub 1.4.0+：升级 dbhub，或删除 `~/.dsh/storages/dsh-dbhub-live` 让插件自动装一个满足要求的版本。 |
-| 连接测试失败，看不出原因 | 读提示的**末尾**（诊断给的是 dbhub 输出的尾部，会标出【SSH 层】/【数据库层】/【插件层】）。**报【数据库层】就说明隧道已经通了**；有隧道时先点「测试 SSH 隧道」把 SSH 层单独验一遍。 |
-| 看不到配置页 | 确认插件已安装：web 端重启过 `dsh web`；桌面端在「插件」页该行点「配置」，或从左侧菜单的 DBHub 入口进。配置页只在 Web / 桌面界面显示，终端环境下不影响工具使用。 |
-| 升级到新版本后仍是旧界面 | 新界面需要 **DSH 0.2.1+**（含其预发布版）且插件 5.2.0+；升级 dsh 后重启。DSH 0.1.x 上插件有意保持旧布局与行为，也不显示升级提示。 |
-| 页头没有出现「升级到 …」提示 | 可能已是最新版本，或这次检查没连上 npm registry / GitHub Releases；点「检查更新」重试即可。检查失败只是提示，不影响插件功能。 |
-| 桌面端怎么升级 | 在 **左侧菜单 → 插件** 页卸载后重装最新版本；连接与凭据在 `~/.dsh/storages/dsh-dbhub-live`，重装后仍在。 |
-| 升级 dsh 后提示插件与本版不兼容 | 升级插件到 5.0.0+（同时支持 0.1.x 与 0.2.x）；用 `allow-version` 强行豁免没有意义。 |
-| 不希望自动更新 dbhub | 配置页「自动更新间隔(天)」填 `0` 保存，或设环境变量 `DSH_DBHUB_UPDATE_DAYS=0`。 |
-
-**环境变量**（仅这两项，不在 UI 暴露）：`DSH_DBHUB_PACKAGE`（自动安装的包名，默认 `@bytebase/dbhub`）、`DSH_DBHUB_UPDATE_DAYS`（自动更新间隔种子，默认 `7`，被配置页保存的值覆盖）。
+桌面端也可以在插件页直接卸载。卸载不会删连接与凭据（见「数据位置」）。
 
 ## 许可证
 

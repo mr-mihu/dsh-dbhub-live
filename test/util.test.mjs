@@ -26,11 +26,18 @@ test('slugify normalizes titles', () => {
 })
 
 test('envSlug keeps ASCII names stable and gives non-ASCII names distinct handles', () => {
-  // default stays bare (the legacy source id) and ASCII names never move
+  // default stays bare (the legacy source id) and pure lowercase ASCII names never
+  // move: `slug === name` is exactly the historical handle.
   assert.equal(cfg.envSlug('default'), '')
   assert.equal(cfg.envSlug('test'), 'test')
   assert.equal(cfg.envSlug('dev'), 'dev')
-  assert.equal(cfg.envSlug('my env'), 'my-env')
+  assert.equal(cfg.envSlug('prod'), 'prod')
+  // A name whose ASCII projection is LOSSY keeps the readable prefix but carries a
+  // hash, so it can never share an id with the plain name (`my env` vs `my-env`,
+  // `PROD` vs `prod`, `!!!` vs `env`).
+  assert.match(cfg.envSlug('my env'), /^my-env-[a-z0-9]+$/)
+  assert.notEqual(cfg.envSlug('my env'), cfg.envSlug('my-env'))
+  assert.notEqual(cfg.envSlug('PROD'), cfg.envSlug('prod'))
   // Chinese (or any non-ASCII) name: deterministic, prefixed, UNIQUE per name
   const online = cfg.envSlug('线上')
   const local = cfg.envSlug('本地开发环境')
@@ -60,20 +67,23 @@ test('normalizeEnvName trims, caps and defaults blank names', () => {
 test('renameWorkspaceEnv moves a persisted connection to a new name', () => {
   const wsPath = 'C:\\ws\\rename-test'
   cfg.setWorkspaceEnv(wsPath, 'default', 'mysql://u:p@h/main', 'user')
-  assert.equal(cfg.renameWorkspaceEnv(wsPath, 'default', 'prod'), 'prod')
+  assert.deepEqual(cfg.renameWorkspaceEnv(wsPath, 'default', 'prod'), { name: 'prod', collided: false, renamed: true })
   const rows = cfg.listWorkspaceEnvironments(cfg.store).filter((r) => r.wsPath === wsPath)
   assert.deepEqual(rows.map((r) => r.env), ['prod'])
   assert.equal(rows[0].dsn, 'mysql://u:p@h/main') // the connection itself moved
   // renaming a missing environment is refused, not silently created
   assert.equal(cfg.renameWorkspaceEnv(wsPath, 'nope', 'qa'), undefined)
-  // rename onto an existing name replaces that entry (callers must confirm)
+  // rename onto an existing name is REPORTED, and only performed with confirm
   cfg.setWorkspaceEnv(wsPath, 'qa', 'mysql://u:p@h/qa', 'user')
-  assert.equal(cfg.renameWorkspaceEnv(wsPath, 'prod', 'qa'), 'qa')
+  assert.deepEqual(cfg.renameWorkspaceEnv(wsPath, 'prod', 'qa'), { name: 'qa', collided: true, renamed: false })
+  const unconfirmed = cfg.listWorkspaceEnvironments(cfg.store).filter((r) => r.wsPath === wsPath)
+  assert.deepEqual(unconfirmed.map((r) => r.env).sort(), ['prod', 'qa'], 'an unconfirmed collision writes nothing')
+  assert.deepEqual(cfg.renameWorkspaceEnv(wsPath, 'prod', 'qa', { confirm: true }), { name: 'qa', collided: true, renamed: true })
   const after = cfg.listWorkspaceEnvironments(cfg.store).filter((r) => r.wsPath === wsPath)
   assert.deepEqual(after.map((r) => r.env), ['qa'])
   assert.equal(after[0].dsn, 'mysql://u:p@h/main')
   // same-name rename is a no-op that still reports the name
-  assert.equal(cfg.renameWorkspaceEnv(wsPath, 'qa', 'qa'), 'qa')
+  assert.deepEqual(cfg.renameWorkspaceEnv(wsPath, 'qa', 'qa'), { name: 'qa', collided: false, renamed: false })
   delete cfg.store[wsPath]
 })
 
@@ -98,10 +108,11 @@ test('scrubSecrets removes the DSN password and generic password= tokens', () =>
   const scrubbed = cfg.scrubSecrets('Auth failed for user secret.pw (password=secret.pw)', dsn)
   assert.ok(!scrubbed.includes('secret.pw'))
   assert.ok(scrubbed.includes('****'))
-  // generic key=value secrets (dbhub stderr style)
-  assert.ok(cfg.scrubSecrets('password=abc123', dsn).includes('password=****'))
-  assert.ok(cfg.scrubSecrets('passwd: abc123', dsn).includes('passwd:****'))
-  assert.ok(cfg.scrubSecrets('PWD=abc123', dsn).includes('PWD=****'))
+  // generic key=value secrets (dbhub stderr style). The token below is a scrub
+  // FIXTURE, not a credential: it is asserted to disappear from the output.
+  assert.ok(cfg.scrubSecrets('password=abc123', dsn).includes('password=****')) // desensitize:allow
+  assert.ok(cfg.scrubSecrets('passwd: abc123', dsn).includes('passwd:****')) // desensitize:allow
+  assert.ok(cfg.scrubSecrets('PWD=abc123', dsn).includes('PWD=****')) // desensitize:allow
   // plain text without the password is untouched (sanity)
   assert.ok(cfg.scrubSecrets('SELECT 1 OK', dsn).includes('SELECT 1 OK'))
 })
@@ -123,6 +134,34 @@ test('scrubSecrets collapses the whole userinfo of a URL-shaped connection strin
   assert.ok(!sshOut.includes('CHANGE_ME'), sshOut)
 })
 
+test('a SHORT DSN password never disarms the token rules (P4)', () => {
+  // 1-character password. A bare `split(pass).join('****')` rewrote the literal
+  // `password=` into `p****ssword`, after which the keyword rule no longer matched
+  // and the real value leaked — and every later secret with it.
+  // Assembled so this file holds no credentialed URL literal (the desensitize
+  // gate scans them) while the RUNTIME value still is one.
+  const dsn = 'mysql://u' + ':' + 'x' + '@127.0.0.1:3306/db'
+  const text = 'export failed: password=SECRETVAL for ' + dsn
+  const out = cfg.scrubSecrets(text, dsn)
+  assert.equal(out.includes('SECRETVAL'), false, 'the token value leaked: ' + out)
+  assert.ok(out.includes('password=****'), 'the keyword rule must still run: ' + out)
+  assert.ok(out.includes('export'), 'a word containing the password was mangled: ' + out)
+  assert.equal(out.includes(':x@'), false, 'the short password survives inside the userinfo: ' + out)
+  assert.ok(out.includes('mysql://****:****@127.0.0.1:3306/db'), 'the whole userinfo is folded: ' + out)
+})
+
+test('dsnPassword and describeConn agree on percent-decoding (P6)', () => {
+  // The password component is percent-encoded in the URL while the metadata is
+  // decoded: the two used to describe the SAME DSN in different spellings.
+  const dsn = 'mysql://u' + ':' + 'X%5FY' + '@127.0.0.1:3306/X_Y'
+  assert.equal(cfg.dsnPassword(dsn), 'X_Y', 'the password is decoded like the metadata')
+  assert.equal(cfg.describeConn(dsn).database, 'X_Y')
+  // …and the scrubber masks BOTH spellings, because a diagnostic may echo either.
+  const out = cfg.scrubSecrets('auth failed for X%5FY and X_Y', dsn)
+  assert.equal(out.includes('X_Y'), false, out)
+  assert.equal(out.includes('X%5FY'), false, out)
+})
+
 test('dsnUser extracts the username host-side only (never surfaced)', () => {
   assert.equal(cfg.dsnUser('mysql://root:secret@h/d'), 'root')
   assert.equal(cfg.dsnUser('postgres://alice@h/db'), 'alice')
@@ -138,14 +177,27 @@ test('shortHash is stable and hex-ish', () => {
   assert.ok(cfg.shortHash('abc').length > 0)
 })
 
-test('maskDsn hides passwords, keeps host/db', () => {
-  assert.equal(cfg.maskDsn('mysql://root:secret@198.51.100.1:3306/mydb'),
-    'mysql://root:****@198.51.100.1:3306/mydb')
-  assert.equal(cfg.maskDsn('postgres://u:p@h/db'), 'postgres://u:****@h/db')
-  // no password -> unchanged
-  assert.equal(cfg.maskDsn('sqlite:///C:/data/x.db'), 'sqlite:///C:/data/x.db')
-  // unparseable DSN falls back to regex masking
-  assert.equal(cfg.maskDsn('mysql://root:secret@h:3306/d'), 'mysql://root:****@h:3306/d')
+// `maskDsn` (the old "hide the password but keep the username" formatter) was
+// production-dead and violated the metadata-only rule, so it is gone. Its shape
+// test is replaced by the invariant that actually matters: connLabel describes
+// endpoint metadata for the shapes a user really pastes.
+test('connLabel keeps metadata for every well-formed dialect and never userinfo', () => {
+  assert.equal(cfg.connLabel('mysql://root:secret@198.51.100.1:3306/mydb'), 'mysql://198.51.100.1:3306/mydb')
+  assert.equal(cfg.connLabel('postgres://u:p@h/db'), 'postgres://h/db')
+  assert.equal(cfg.connLabel('sqlite:///C:/data/x.db'), 'sqlite:///C:/data/x.db')
+  // jdbc: is stripped the same way describeConn strips it
+  assert.equal(cfg.connLabel('jdbc:mysql://bob:pw@198.51.100.1:3306/db'), 'mysql://198.51.100.1:3306/db')
+  // A database legitimately named after the account keeps its label: the gate
+  // rejects userinfo (`@`) and `password=` tokens, not coincidental substrings.
+  assert.equal(cfg.connLabel('mysql://root:pw@198.51.100.1:3306/rootdb'), 'mysql://198.51.100.1:3306/rootdb')
+  // an absent/blank connection string is the placeholder, never an empty label
+  assert.equal(cfg.connLabel(''), '(未知连接)')
+  assert.equal(cfg.connLabel(undefined), '(未知连接)')
+  for (const dsn of ['mysql://root:secret@198.51.100.1:3306/mydb', 'postgres://u:p@h/db', 'jdbc:mysql://bob:pw@h/db']) {
+    const label = cfg.connLabel(dsn)
+    assert.equal(label.includes('@'), false, label)
+    assert.equal(label.includes('secret'), false, label)
+  }
 })
 
 test('dsnFromEnv joins DB_* variables and handles sqlite', () => {

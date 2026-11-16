@@ -16,7 +16,7 @@ import { run } from '../release-test/lib/proc.mjs'
 import { packageMeta } from '../release-test/lib/artifact.mjs'
 import { gitInfoAsync, dirtyFilesAsync } from '../release-test/lib/git.mjs'
 import { loadMatrix, matrixClaimWarnings, matrixHash } from '../release-test/lib/matrix.mjs'
-import { latestRun, runPath } from '../release-test/lib/runs.mjs'
+import { latestRun, latestRunOfMode, runPath } from '../release-test/lib/runs.mjs'
 import { checkRun } from '../release-test/lib/verdict.mjs'
 import fs from 'node:fs'
 
@@ -54,21 +54,46 @@ async function main() {
   facts.dirty = git.dirty
   facts.matrixHash = currentMatrixHash
 
+  // A PRERELEASE of the plugin may ship BEFORE the full matrix has run: that is
+  // what "preview" means here, and the matrix is then run against the PUBLISHED
+  // package (doc/RELEASE.md). A STABLE version may not — for `x.y.z` every
+  // evidence problem below stays hard. The safety checks that do not depend on
+  // evidence (dirty tree, red report, failed verdict) stay hard for both.
+  const isPreview = String(pkg.version).includes('-')
+  facts.preview = isPreview
+  /** Evidence gap: blocking for a stable version, a loud warning for a preview. */
+  const evidence = (message) => {
+    if (!isPreview) {
+      problems.push(message)
+      return
+    }
+    warnings.push(`预览版放行（发布后必须用 npm 包跑全量矩阵）：${message}`)
+  }
+
   // 1. A run must exist at all.
   const explicit = arg('run')
-  const resolved = explicit ? runPath(String(explicit)) : latestRun()?.dir ?? null
+  // Prefer the newest COLD-INSTALL run: an upgrade run starts from an older
+  // artifact and can never justify releasing this version (see the rule below).
+  const resolved = explicit ? runPath(String(explicit)) : (latestRunOfMode('install') ?? latestRun())?.dir ?? null
   if (!resolved) {
-    problems.push('没有找到任何发布测试报告 —— 先跑 `npm run test:release`')
+    evidence('没有找到任何发布测试报告 —— 先跑 `npm run test:release`')
     return finish()
   }
   const reportDir = path.resolve(resolved)
   const report = readJson(path.join(reportDir, 'report.json'))
   facts.run = report.runId
   facts.reportStatus = report.status
+  // The upgrade tier proves an OLD install can be upgraded in place; it starts
+  // from somebody else's artifact, so it can never prove that THIS version
+  // installs cleanly on a fresh profile. Release evidence must come from the
+  // cold-install tier. (Reports written before the tier existed carry no mode.)
+  if (report.mode === 'upgrade') {
+    evidence('这份报告是升级档（mode: upgrade）—— 正式发版必须有一份全新安装档（--tier declared）的报告')
+  }
 
   // 2. The report must be about THIS version, built from THIS commit, recently.
   if (report.plugin?.version !== pkg.version) {
-    problems.push(`报告测的是 ${report.plugin?.version}，当前 package.json 是 ${pkg.version} —— 版本变了，必须重跑`)
+    evidence(`报告测的是 ${report.plugin?.version}，当前 package.json 是 ${pkg.version} —— 版本变了，必须重跑`)
   }
   // Compare TREE hashes: that is exactly the set of files the artifact was packed
   // from. A squash/merge that lands the same content is fine; any real change is not.
@@ -87,9 +112,9 @@ async function main() {
     if (changed && changed.length && changed.every(isAllowedDiff)) {
       warnings.push(`报告之后只有生成文档变化（${changed.join(', ')}）—— 视为同一产物，有效`)
     } else if (report.git?.commit !== git.commit) {
-      problems.push(`报告对应的提交是 ${String(report.git?.commit).slice(0, 8)}（tree ${String(report.git?.tree).slice(0, 8)}），当前 HEAD 是 ${String(git.commit).slice(0, 8)}（tree ${String(git.tree).slice(0, 8)}）—— 内容变了，必须重跑`)
+      evidence(`报告对应的提交是 ${String(report.git?.commit).slice(0, 8)}（tree ${String(report.git?.tree).slice(0, 8)}），当前 HEAD 是 ${String(git.commit).slice(0, 8)}（tree ${String(git.tree).slice(0, 8)}）—— 内容变了，必须重跑`)
     } else {
-      problems.push('无法确认报告与当前工作树一致（缺少 tree 记录）—— 用当前版本的 harness 重跑')
+      evidence('无法确认报告与当前工作树一致（缺少 tree 记录）—— 用当前版本的 harness 重跑')
     }
   } else if (report.git?.commit !== git.commit) {
     warnings.push(`tree 相同但提交不同（报告 ${String(report.git?.commit).slice(0, 8)} → HEAD ${String(git.commit).slice(0, 8)}）：内容一致，视为有效`)
@@ -100,12 +125,12 @@ async function main() {
   const ageHours = (Date.now() - Date.parse(report.generatedAt)) / 3_600_000
   facts.reportAgeHours = Math.round(ageHours * 10) / 10
   if (!(ageHours <= MAX_AGE_HOURS)) {
-    problems.push(`报告已过期：${Math.round(ageHours)} 小时前（上限 ${MAX_AGE_HOURS}）—— 重跑 \`npm run test:release\``)
+    evidence(`报告已过期：${Math.round(ageHours)} 小时前（上限 ${MAX_AGE_HOURS}）—— 重跑 \`npm run test:release\``)
   }
 
   // 3. The support matrix must not have changed since the run.
   if (report.matrix?.hash !== currentMatrixHash) {
-    problems.push('matrix.json 在测试之后被改过 —— 矩阵变了旧报告不再有效，重跑')
+    evidence('matrix.json 在测试之后被改过 —— 矩阵变了旧报告不再有效，重跑')
   }
 
   // 4. Claim drift blocks the release even if tests are green.
@@ -113,14 +138,31 @@ async function main() {
     for (const claim of claims) problems.push(`声明偏差：${claim.detail}`)
   }
 
-  // 5. No failing declared target, and every declared target was actually run.
+  // 5. No failing declared target, and every declared target was actually run
+  //    WITH EXECUTED ASSERTIONS. `aggregate()` maps an all-skip target to `warn`,
+  //    so "every check was skipped because the environment was not ready" used to
+  //    satisfy this gate: skip is an assertion that did NOT run, not evidence.
   const declared = matrix.targets.filter((t) => t.tier === 'declared').map((t) => t.version)
   const tested = new Map((report.targets ?? []).map((t) => [t.version, t]))
   for (const version of declared) {
     const target = tested.get(version)
-    if (!target) problems.push(`声明支持的 ${version} 未出现在这次测试里（用了 --only/--tier 的局部运行不能作为发版依据）`)
-    else if (target.status === 'fail' || target.status === 'error') problems.push(`${version} 未通过：${target.status}${target.error ? ` — ${String(target.error).split('\n')[0]}` : ''}`)
-    else if (target.status === 'warn') warnings.push(`${version} 通过但有告警（见 AI 判定）`)
+    if (!target) {
+      evidence(`声明支持的 ${version} 未出现在这次测试里（用了 --only/--tier 的局部运行不能作为发版依据）`)
+      continue
+    }
+    if (target.status === 'fail' || target.status === 'error') {
+      problems.push(`${version} 未通过：${target.status}${target.error ? ` — ${String(target.error).split('\n')[0]}` : ''}`)
+      continue
+    }
+    const counts = target.checksCounts ?? {}
+    const pass = Number(counts.pass ?? 0)
+    const skip = Number(counts.skip ?? 0)
+    if (!(pass >= 1)) {
+      problems.push(`${version} 没有任何通过的检查（pass=${Number.isFinite(pass) ? pass : 0}）：整目标 skip/空报告不算证据，重跑该版本`)
+    } else if (skip > 0) {
+      problems.push(`${version} 有 ${skip} 项检查被跳过：声明版本必须全部实跑，跳过项证明不了支持`)
+    }
+    if (target.status === 'warn') warnings.push(`${version} 通过但有告警（见 AI 判定）`)
   }
   if (report.status === 'red') problems.push('报告总体为 red')
 
@@ -165,15 +207,48 @@ function finish() {
   process.exitCode = pass ? 0 : 1
 }
 
+// A log left behind by THIS or an older build of the gate takes part in nothing:
+// `changedPaths` below reads its own per-call file. Deleting the shared log keeps
+// a stale history from being mistaken for evidence and keeps `.release-test/`
+// honest. `diffSeq` is declared HERE (not next to `changedPaths` at the bottom)
+// because that function is hoisted and runs during `main`: a `let` down there
+// would still be in its temporal dead zone on the first diff.
+let diffSeq = 0
+try {
+  fs.unlinkSync(path.join(REPO_ROOT, '.release-test', 'preflight-git.log'))
+} catch {
+  /* absent is the normal case */
+}
+
 await main()
 
 /** Files that differ between two tree hashes (null when git refuses). */
 async function changedPaths(treeA, treeB) {
-  const logFile = path.join(REPO_ROOT, '.release-test', 'preflight-git.log')
+  // ONE FILE PER CALL. `run()` APPENDS a `===== … =====` section to whatever the
+  // log already holds; parsing that shared file meant the paths of every EARLIER
+  // diff came back on every later run, so a README-only change was reported as
+  // "content changed, rerun" because a long-gone `lib/` edit was still in the log
+  // (and `.release-test/` is machine-local, so this false red depended on history).
+  const logFile = path.join(REPO_ROOT, '.release-test', `preflight-git-${process.pid}-${++diffSeq}.log`)
   const result = await run('git', ['diff', '--name-only', treeA, treeB], { cwd: REPO_ROOT, logFile, timeoutMs: 30_000 })
+  let text = ''
+  try {
+    text = fs.readFileSync(logFile, 'utf8')
+  } catch {
+    text = ''
+  }
+  try {
+    fs.unlinkSync(logFile)
+  } catch {
+    /* best effort: a leftover log is debug output, never evidence */
+  }
   if (result.code !== 0) return null
+  // Defensive: only the LAST `===== ` section belongs to this call, so a future
+  // caller that reuses a log file still cannot read another command's output.
+  const start = text.lastIndexOf('===== ')
+  const body = start === -1 ? text : text.slice(start)
   // run() captures output into the log with framing lines; keep only path lines.
-  return fs.readFileSync(logFile, 'utf8')
+  return body
     .split('\n')
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('=====') && !line.startsWith('[') && !line.startsWith('$'))

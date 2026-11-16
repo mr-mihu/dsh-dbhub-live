@@ -32,33 +32,69 @@ test('client bundle exports name/inject/apply and returns module.exports', () =>
   assert.match(source, /exports\.inject = inject;/)
   assert.match(source, /exports\.apply = apply;/)
   assert.match(source, /return module\.exports;/)
-  // The transport is PROBED, never injected: a `settingsScope` injection is
-  // unsatisfiable on dsh 0.2.x and keeps the whole browser half pending (the
-  // page, the sidebar entry and the Plugins card all vanish silently).
+  // The transport is NOT injected: injecting `settingsScope` (removed in 0.2.x)
+  // would keep the whole browser half pending. Only `slots` is injected.
   assert.match(source, /var inject = \["slots"\];/)
   assert.doesNotMatch(source, /var inject = \[[^\]]*settingsScope/)
 })
 
-test('client bundle binds its host face through the runtime ladder', () => {
-  // 0.1.x keeps the settings namespace; every newer line reads the plugin's own
-  // authenticated bridge instead.
-  assert.match(source, /function legacyFace\(scope\)/)
+test('client bundle binds its host face through the plugin bridge only', () => {
+  // dsh 0.1.x is no longer supported, so there is exactly one face: the plugin's
+  // own authenticated bridge. The old `settingsScope` face must not come back.
   assert.match(source, /function httpFace\(\)/)
   assert.match(source, /var BRIDGE_BASE = "api\/dsh-dbhub-live";/)
-  assert.match(source, /var legacyScope = typeof ctx\.get === "function" \? ctx\.get\("settingsScope"\) : undefined;/)
-  assert.match(source, /var face = legacyScope && typeof legacyScope\.bind === "function" \? legacyFace\(legacyScope\) : httpFace\(\);/)
+  assert.match(source, /var face = httpFace\(\);/)
+  assert.doesNotMatch(source, /legacyFace/)
+  assert.doesNotMatch(source, /ctx\.get\("settingsScope"\)/)
 })
 
 test('client bundle writes options through the settings form when it can', () => {
-  // dsh 0.1.7+/0.2.x: `ctx.configForms.get(entryId).set(field, value)` — the
-  // entry id arrives in the Host view. POST /options is the fallback (0.1.x, or
-  // a deployment without the settings client).
+  // `ctx.configForms.get(entryId).set(field, value)` — the entry id arrives in
+  // the Host view. POST /options is the fallback (a deployment without the
+  // settings client, or a form that does not accept the field).
   assert.match(source, /var saveOptions = function \(patch\) \{/)
   assert.match(source, /var forms = typeof ctx\.get === "function" \? ctx\.get\("configForms"\) : undefined;/)
   assert.match(source, /form = forms\.get\(entryId\);/)
   assert.match(source, /return form\.set\(key, raw\)\.then/)
   assert.match(source, /return post\("\/options", patch\);/)
   assert.match(source, /saveConfig: function \(patch\) \{ return saveOptions\(patch \|\| \{\}\); \},/)
+})
+
+test('client bundle accepts a settings-form write only on an explicit true', () => {
+  // `ok !== false` read a `set()` that resolves `undefined` (several 0.2.x
+  // builds) as accepted, so the save went NOWHERE — zero POST, zero verification —
+  // while the page printed 已保存 ✓. Anything but `true` falls back to the bridge.
+  assert.match(source, /return form\.set\(key, raw\)\.then\(function \(ok\) \{ return ok === true; \}/)
+  assert.match(source, /if \(accepted !== true\) return post\("\/options", patch\);/)
+})
+
+test('client bundle keeps write answers out of the read watermark', () => {
+  // Two watermarks: reads are ordered by `appliedSeq`, write answers by
+  // `appliedWriteStamp`. One shared stamp let a read that answered first throw the
+  // write's own answer away (写先发 → 读后发 → 读先回 → 写后回).
+  assert.match(source, /var publishWrite = function \(stamp, next\) \{/)
+  assert.match(source, /publishWrite\(mine, \{ status: "ready", value: body\.value \}\);/)
+  // And a Host answer without a view is a FAILURE, never `value: {}` (R3).
+  assert.match(source, /var isView = function \(v\) \{/)
+  assert.match(source, /if \(!isView\(body\.value\)\) throw bridgeFail\(\);/)
+  // A non-JSON answer is a transport failure, not a raw parser trace (R4).
+  assert.match(source, /return Promise\.resolve\(\)\.then\(function \(\) \{ return res\.json\(\); \}\)\.then\(/)
+})
+
+test('client bundle bounds every write so a hung bridge cannot leave it pending', () => {
+  // Without a ceiling a hung bridge (a proxy that accepts and never answers) left
+  // every write pending FOREVER: no tick, no error, no retry — the click vanished.
+  // The ceiling must be LONGER than the probe watchdogs: a `{op:'test'}` POST may
+  // legitimately spend a whole SSH budget before it answers, and a write timeout
+  // must never turn a healthy slow probe into a "failed save".
+  assert.match(source, /var withWriteTimeout = function \(p\) \{/)
+  assert.match(source, /return withWriteTimeout\(request\(path, \{/)
+  const ms = (re) => Number((source.match(re) || [])[1])
+  const write = ms(/var WRITE_TIMEOUT_MS = (\d+);/)
+  const sshWatchdog = ms(/var PRETEST_WATCHDOG_SSH_MS = (\d+);/)
+  assert.ok(Number.isFinite(write) && write > 0, `WRITE_TIMEOUT_MS not found (${write})`)
+  assert.ok(write > sshWatchdog,
+    `the write ceiling (${write}ms) must stay above the SSH probe watchdog (${sshWatchdog}ms)`)
 })
 
 test('client bundle registers the plugins.row.config page keyed to package#row', () => {
@@ -73,7 +109,13 @@ test('client bundle registers the plugins.row.config page keyed to package#row',
 
 test('client bundle renders both owner views (summary one-liner + page)', () => {
   assert.match(source, /var isPage = props\.view !== "summary";/)
-  assert.match(source, /if \(!isPage\)/)
+  // The view is chosen at the RETURN, after every hook has run: an early return
+  // for `summary` made the two views consume a different number of hooks, and
+  // switching a mounted instance between them threw
+  // "Rendered more hooks than during the previous render".
+  assert.doesNotMatch(source, /if \(!isPage\)/)
+  assert.match(source, /return isPage \? h\("div", \{ className: innerClass/)
+  assert.match(source, /: summaryNode;/)
   assert.match(source, /h\("span", \{ className: "dbh-summary" \}/)
 })
 
@@ -93,21 +135,25 @@ test('client bundle owns a sidebar entry gated by enabled AND the user switch', 
   assert.match(source, /slots\.inject\("main"/)
   assert.match(source, /name: "main",\s*\n\s*key: "dbhub"/)
   // Two independent conditions: the user's "hide the shortcut" switch and the
-  // plugin's enabled state. Hiding the entry is NOT disabling the plugin.
-  assert.match(source, /return v\.enabled !== false && v\.showSidebarEntry !== false;/)
+  // plugin's enabled state. Hiding the entry is NOT disabling the plugin. An
+  // UNKNOWN state (a read that has not answered, or one that failed) registers
+  // nothing: `enabled` must be literally true, not "not false".
+  assert.match(source, /return v\.enabled === true && v\.showSidebarEntry !== false;/)
   assert.match(source, /var syncSidebar = function/)
   assert.match(source, /face\.subscribe\(syncSidebar\)/)
-  // The switch itself is back on the settings strip and applies immediately.
-  assert.match(source, /"cfg\.sidebar": "在侧边栏显示入口"/)
-  assert.match(source, /"cfg\.sidebar": "Show the sidebar entry"/)
+  // The switch itself sits in the settings rows/bar and applies immediately.
+  assert.match(source, /"row\.sidebar": "侧边栏入口"/)
+  assert.match(source, /"row\.sidebar": "Sidebar entry"/)
   assert.match(source, /var toggleSidebar = function \(next\)/)
   assert.match(source, /props\.saveConfig\(\{ showSidebarEntry: next \}\);/)
-  assert.match(source, /showSidebarEntry: draft\.showSidebarEntry !== false,/)
+  // Every settings write carries ONE field: the form-wide 保存 button is gone, so
+  // there is no payload that could re-assert (and silently revert) the others.
+  assert.match(source, /var payload = \{\};\s*\n\s*payload\[field\] = parsed;/)
+  assert.doesNotMatch(source, /t\("btn\.save"\)/, 'the settings 保存 button is gone')
   // The settings section and the Plugins row never depend on either condition, so
   // no combination can lock the user out of the configuration.
   assert.match(source, /slots\.inject\("settings\.section"/)
-  assert.match(source, /"cfg\.disabledHint":/)
-  assert.match(source, /t\("cfg\.enabledHint"\) : t\("cfg\.disabledHint"\)\) \+ " " \+ t\("cfg\.sidebarHint"\)/)
+  assert.match(source, /"cfg\.sidebarHint":/)
 })
 
 test('client bundle exposes the config editor (saveConfig + editable options)', () => {
@@ -152,7 +198,14 @@ test('client bundle folds workspaces per group, with click-to-expand groups', ()
   assert.match(source, /var toggleGroup = function \(g\)/)
   assert.match(source, /"aria-expanded": open/)
   assert.match(source, /className: "dbh-chev" \+ \(open \? " open" : ""\)/)
-  assert.match(source, /t\("grp\.envs", \{ n: String\(g\.envs\.length\), m: String\(g\.saved\) \}\)/)
+  // The group's meta line is a COUNT, plus the auto-discovered share only when
+  // there is one ("N 已保存" used to read as "so some are not saved?").
+  assert.match(source, /t\("grp\.envsAuto", \{ n: String\(g\.envs\.length\), k: String\(g\.envs\.length - g\.saved\) \}\)/)
+  assert.match(source, /: t\("grp\.envs", \{ n: String\(g\.envs\.length\) \}\)/)
+  assert.match(source, /"grp\.envs": "\{n\} 个数据源"/)
+  assert.match(source, /"grp\.envsAuto": "\{n\} 个数据源 · \{k\} 个自动发现"/)
+  assert.match(source, /"grp\.envs": "\{n\} sources"/)
+  assert.match(source, /"grp\.envsAuto": "\{n\} sources · \{k\} auto-discovered"/)
   // a lone workspace opens by itself; otherwise the most recently used one does
   assert.match(source, /if \(groups\.length === 1\) return true;/)
   assert.match(source, /function recentWorkspacePath\(snapshot\)/)
@@ -165,9 +218,12 @@ test('client bundle folds workspaces per group, with click-to-expand groups', ()
 test('client bundle tiles single-environment workspaces instead of folding them', () => {
   assert.match(source, /var tileView = function \(g\)/)
   assert.match(source, /className: "dbh-tiles"/)
-  assert.match(source, /groups\.map\(tileView\)/)
+  // The list renders the SEARCHED + SORTED groups (`sortRows` / `filterRows`);
+  // the unfiltered `groups` stays the source of truth for the header count, the
+  // add-form datalist and the collision check behind every write.
+  assert.match(source, /visibleGroups\.map\(tileView\)/)
   // one row per connection: env chip + 🔒 metadata + actions
-  assert.match(source, /var envRow = function \(w\)/)
+  assert.match(source, /var envRow = function \(w, g\)/)
   assert.match(source, /className: "dbh-envrow"/)
   assert.match(source, /className: "dbh-conn", title: w\.conn/)
   // where a connection came from is identical on almost every row, so it is a
@@ -177,9 +233,10 @@ test('client bundle tiles single-environment workspaces instead of folding them'
   assert.match(source, /t\("ws\.source"\) \+ "：" \+ sourceLabelOf\(w, t\)/)
   assert.match(source, /if \(!w\.persisted\) text \+= " " \+ t\("ws\.autoHint"\);/)
   // the read-only flag is a per-row ATTRIBUTE that changes what a query may do,
-  // so it is visible on the chip (the source is a tooltip, this is not)
+  // so it has its own row control (the source is a tooltip, this is not)
   assert.match(source, /var envChip = function \(w\)/)
-  assert.match(source, /className: "dbh-ro", title: t\("ro\.title"\)/)
+  assert.match(source, /var roChip = function \(w\)/)
+  assert.match(source, /className: "dbh-rochip"/)
   assert.match(source, /if \(w\.ro === true\) text \+= " · " \+ t\("ro\.title"\);/)
   assert.match(source, /if \(w\.ssh\) text \+= " · " \+ t\("ro\.sshTitle"/)
   assert.doesNotMatch(source, /dbh-pill/)
@@ -194,7 +251,25 @@ test('client bundle localizes copy through ctx.locale (zh/en dictionaries)', () 
   assert.match(source, /"conn\.title": "Connections"/)
   assert.match(source, /"btn\.addEnv": "＋ 环境"/)
   assert.match(source, /"btn\.addEnv": "＋ Environment"/)
-  assert.match(source, /"cfg\.summary":/)
+  // The three global settings rows and their refusal copy exist in BOTH tables:
+  // a key that only ships in zh renders as the raw key (or as a Chinese line) for
+  // an en user. (The full key-set/en-purity check is the locale-tables test below.)
+  assert.match(source, /"row\.concurrency": "测试并发数"/)
+  assert.match(source, /"row\.concurrency": "Test concurrency"/)
+  assert.match(source, /"row\.rows": "默认返回行数"/)
+  assert.match(source, /"row\.rows": "Default row limit"/)
+  assert.match(source, /"row\.exportDir": "导出目录"/)
+  assert.match(source, /"row\.exportDir": "Export directory"/)
+  assert.match(source, /"cfg\.badConcurrency": "测试并发数必须是 1–8 之间的整数"/)
+  assert.match(source, /"cfg\.badConcurrency": "the test concurrency must be a whole number between 1 and 8"/)
+  assert.match(source, /"cfg\.badRows": "默认返回行数必须是不小于 0 的整数/)
+  assert.match(source, /"cfg\.badRows": "the default row limit must be a whole number of 0 or more/)
+  assert.match(source, /"cfg\.exportDirPh": "留空 = 默认位置/)
+  assert.match(source, /"cfg\.exportDirPh": "blank = default/)
+  // The version-too-old copy is GONE (engines.dsh owns the gate): leaving it in
+  // one dictionary would resurrect a warning nothing renders any more.
+  assert.doesNotMatch(source, /"dsh\.tooOld/)
+  assert.doesNotMatch(source, /"dsh\.tooOldShort/)
 })
 
 test('client bundle releases its locale dictionaries on disposal (hot reload)', () => {
@@ -248,7 +323,7 @@ test('client bundle asks before overwriting an existing environment', () => {
   assert.match(source, /t\("ovr\.title"\)/)
   assert.match(source, /t\("ovr\.bodyAmbiguous", \{/)
   assert.match(source, /t\("ovr\.confirm"\)/)
-  assert.match(source, /overwriteView \|\| pretestView,/)
+  assert.match(source, /overwriteView \|\| removeView \|\| pretestView,/)
 })
 
 test('client bundle keeps the source handle copyable instead of echoing it inline', () => {
@@ -287,6 +362,161 @@ test('client bundle keeps the database name visible when the row is narrow', () 
   assert.match(source, /className: "dbh-conn-db"/)
 })
 
+// Property names whose value paints a colour. Shadows, fills, strokes and
+// outlines colour the page just as much as `background` does, so they are in the
+// same set: a `box-shadow:0 0 8px #0d1117` is an opaque literal in a themed UI.
+// Custom properties (`--w:#0d1117`) and `filter` (`drop-shadow(…)`) are included
+// as well: a custom property becomes a paint the moment anything reads it, and a
+// drop-shadow paints an opaque silhouette — both used to be invisible here
+// because the property name was not in the list.
+const COLOR_PROP = /((?:--[a-z0-9-]+)|[a-z-]*(?:color|background|border|box-shadow|text-shadow|fill|stroke|outline|filter))\s*:\s*([^;"]+)/g
+
+// The ONLY literals allowed in a themed surface: the neutral translucent grey the
+// bundle uses as a token fallback (`rgba(127,127,127,α)` — inherits light/dark),
+// `transparent`/`none`, and the hairline card shadow. Everything else (hex, white,
+// black, named greys, saturated rgba) is an opaque literal.
+const NEUTRAL_COLOR_RE = /^\s*(?:transparent|none|rgba\(\s*127\s*,\s*127\s*,\s*127\s*,\s*(?:0?\.\d+|1|0)\s*\))\s*$/i
+const HAIRLINE_SHADOW = /^0 1px 2px rgba\(0,0,0,\.05\)$/
+// Modern colour FUNCTIONS pick a colour without ever writing `#`:
+// `oklch(0.7 0.2 30)`, `lab(52% 40 -20)`, `color(display-p3 1 0 0)`. A hex-only
+// pattern cannot see them, and neither can it see `color-mix()` components.
+const COLOR_FN_NAMES = new Set(['rgb', 'rgba', 'hsl', 'hsla', 'hwb', 'lab', 'lch', 'oklab', 'oklch', 'color', 'light-dark'])
+const LITERAL_RE = /#[0-9a-f]{3,8}|\b(?:white|black|gray|grey|silver|whitesmoke)\b/i
+
+/**
+ * Split a declaration value into top-level pieces (commas and whitespace), so a
+ * function's arguments are judged as a unit and `rgba(0,0,0,.05)` stays whole.
+ */
+function topLevelPieces(value) {
+  const pieces = []
+  let depth = 0
+  let current = ''
+  for (const ch of value) {
+    if (ch === '(') depth += 1
+    if (ch === ')') depth = Math.max(0, depth - 1)
+    if (depth === 0 && (ch === ',' || /\s/.test(ch))) {
+      if (current) pieces.push(current)
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  if (current) pieces.push(current)
+  return pieces
+}
+
+/**
+ * The first opaque literal inside a paint value — `''` when every component is
+ * theme-safe.
+ *
+ * `color-mix()` is decided by its ARGUMENTS (`in oklab` names the interpolation
+ * space, percentages are amounts), every other colour function is a picked
+ * colour, and every other function (`drop-shadow`, `linear-gradient`, `blur`) is
+ * structural, so the walk looks inside it — that is how `drop-shadow(0 0 2px
+ * #0d1117)` still names its hex.
+ */
+function opaqueColorOf(value) {
+  const raw = String(value || '').trim()
+  if (!raw) return ''
+  for (const piece of topLevelPieces(raw)) {
+    const text = piece.trim()
+    if (!text) continue
+    const call = text.match(/^([a-z-]+)\((.*)\)$/is)
+    if (call) {
+      const name = call[1].toLowerCase()
+      const inner = call[2]
+      // A runtime reference and an arithmetic wrapper carry no colour of their own.
+      if (name === 'var' || name === 'env' || name === 'calc' || name === 'clamp' || name === 'min' || name === 'max') continue
+      if (name === 'color-mix') {
+        for (const arg of topLevelPieces(inner)) {
+          const part = arg.trim()
+          if (!part) continue
+          if (/^in\s+[a-z0-9-]+(?:\s+[a-z0-9-]+)*$/i.test(part)) continue // interpolation space
+          if (/^(?:shorter|longer|increasing|decreasing)\s+hue$/i.test(part)) continue
+          const bad = opaqueColorOf(part)
+          if (bad) return bad
+        }
+        continue
+      }
+      if (COLOR_FN_NAMES.has(name)) {
+        // The neutral grey fallback is the one colour this bundle may name.
+        if (NEUTRAL_COLOR_RE.test(text)) continue
+        return text
+      }
+      const inside = opaqueColorOf(inner)
+      if (inside) return inside
+      continue
+    }
+    if (text === 'TOKEN') continue // a `var(--dsw-alias-…)` reference
+    if (NEUTRAL_COLOR_RE.test(text)) continue
+    // Named colours BEFORE the generic keyword rule: `white` is a keyword too,
+    // and the old order let `outline:1px solid white` pass as "just a keyword".
+    const hit = text.match(LITERAL_RE)
+    if (hit) return hit[0]
+    if (/^[-+]?(?:\d*\.)?\d+(?:[a-z%]+)?$/i.test(text)) continue // length / angle / number
+    if (/^[a-z-]+$/i.test(text)) continue // keyword: solid, center, auto, currentColor
+  }
+  return ''
+}
+
+/**
+ * Split a declaration value into its `var(--dsw-alias-…)` references and the
+ * literal text around them, honouring nested parens so a fallback such as
+ * `var(--dsw-alias-bg-primary,rgba(255,255,255,.95))` is seen whole.
+ *
+ * The old gate exempted the ENTIRE declaration as soon as the substring
+ * `var(--dsw-alias-` appeared, so anything hidden in the fallback was invisible.
+ * @returns `{ rest, fallbacks }` — `rest` has every token reference replaced.
+ */
+function splitAliasVars(value) {
+  let rest = ''
+  const fallbacks = []
+  let i = 0
+  for (;;) {
+    const start = value.indexOf('var(--dsw-alias-', i)
+    if (start === -1) {
+      rest += value.slice(i)
+      return { rest, fallbacks }
+    }
+    rest += value.slice(i, start)
+    let depth = 0
+    let j = start
+    for (; j < value.length; j++) {
+      if (value[j] === '(') depth += 1
+      else if (value[j] === ')') {
+        depth -= 1
+        if (depth === 0) {
+          j += 1
+          break
+        }
+      }
+    }
+    const inner = value.slice(start + 'var('.length, j - 1) // `--dsw-alias-x,<fallback>`
+    const comma = inner.indexOf(',')
+    if (comma !== -1) fallbacks.push(inner.slice(comma + 1))
+    rest += ' TOKEN '
+    i = j
+  }
+}
+
+/** @returns the offending literal(s) of a declaration value, '' when theme-safe. */
+function literalColorOf(value) {
+  const { rest, fallbacks } = splitAliasVars(value)
+  const badFallback = fallbacks.find((fallback) => opaqueColorOf(fallback))
+  if (badFallback) return opaqueColorOf(badFallback)
+  const stripped = rest.replace(/\b(?:transparent|none)\b/gi, ' ').trim()
+  if (HAIRLINE_SHADOW.test(stripped.replace(/\s+/g, ' '))) return ''
+  return opaqueColorOf(stripped)
+}
+
+/** @returns declarations that paint an opaque literal colour. */
+function colorOffenders(css) {
+  return [...css.matchAll(COLOR_PROP)]
+    .map((m) => ({ prop: m[1], value: m[2] }))
+    .filter((decl) => literalColorOf(decl.value))
+    .map((decl) => `${decl.prop}:${decl.value}`)
+}
+
 test('client bundle styles stay theme-safe (tokens only, no opaque literals)', () => {
   // A themed or translucent skin may redefine the tokens or leave some
   // undefined: surfaces must inherit the page background instead of painting a
@@ -296,17 +526,68 @@ test('client bundle styles stay theme-safe (tokens only, no opaque literals)', (
   const end = source.indexOf('].join("");', start)
   assert.ok(start > 0 && end > start, 'CSS_TEXT block must exist')
   const css = source.slice(start, end)
-  const offenders = [...css.matchAll(/([a-z-]*(?:color|background|border))\s*:\s*([^;"]+)/g)]
-    .map((m) => `${m[1]}:${m[2]}`)
-    .filter((decl) => {
-      const value = decl.slice(decl.indexOf(':') + 1)
-      if (value.includes('var(--dsw-alias-')) return false
-      // a literal colour is the problem; `transparent`/`none`/lengths are fine
-      return /#[0-9a-f]{3,8}|(?:rgba?|hsla?)\(|\b(?:white|black|gray|grey|silver)\b/i.test(value)
-    })
-  assert.deepEqual(offenders, [])
+  // Compare as text so a failure names the offending declarations instead of
+  // printing `actual: [Array]`.
+  const offenders = colorOffenders(css)
+  assert.equal(JSON.stringify(offenders), '[]', `opaque literals in the stylesheet: ${offenders.join(' | ')}`)
   // the only literal left is the (theme-neutral) hairline card shadow
   assert.match(css, /box-shadow:0 1px 2px rgba\(0,0,0,\.05\)/)
+})
+
+test('the token-only rule actually rejects literals (fallbacks, shadows, svg paints)', () => {
+  // Every shape below used to be PERMITTED by this gate: the substring
+  // `var(--dsw-alias-` exempted the whole declaration (so a literal in the
+  // fallback was invisible), the property set stopped at border/background, and
+  // `#0d1117` in a shadow or a stroke was never inspected at all.
+  const bad = [
+    'background:var(--dsw-alias-bg-primary,#0d1117)',
+    'background:var(--dsw-alias-bg-layer-2,rgba(255,255,255,.95))',
+    'box-shadow:0 0 8px #0d1117',
+    'stroke:#0d1117',
+    'fill:#fff',
+    'text-shadow:0 0 2px rgba(0,0,0,.8)',
+    'outline:1px solid white',
+    'border-color:var(--dsw-alias-border-l1,#d0d7de)',
+    // Modern colour functions pick a colour without a `#`; a hex-only pattern
+    // (and a property list that stopped at the layout properties) let every one
+    // of these through — including a custom property and a drop-shadow.
+    'background:oklch(0.7 0.2 30)',
+    'color:oklch(0.7 0.2 30)',
+    'background:lab(52% 40 -20)',
+    'background:lch(52% 50 30)',
+    'background:color(display-p3 1 0 0)',
+    'background:color-mix(in oklab, var(--dsw-alias-bg-primary) 50%, #0d1117)',
+    'filter:drop-shadow(0 0 2px #0d1117)',
+    '--w:#0d1117',
+    '--surface-color:oklch(0.7 0.2 30)',
+  ]
+  for (const declaration of bad) {
+    assert.deepEqual(colorOffenders(declaration), [declaration], `must be rejected: ${declaration}`)
+  }
+  // ... while the neutrals the bundle actually uses stay allowed: token
+  // references with translucent-grey fallbacks, transparent/none, lengths and
+  // the hairline card shadow.
+  const good = [
+    'background:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.1))',
+    'border:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.3))',
+    'background:var(--dsw-alias-bg-layer-3,transparent)',
+    'background:transparent',
+    'outline:none',
+    'border:0',
+    'box-shadow:0 1px 2px rgba(0,0,0,.05)',
+    'stroke:var(--dsw-alias-label-secondary)',
+    // The new coverage must not swallow the theme-safe shapes: a custom property
+    // holding a token reference, `filter:none`, and a colour mix whose only
+    // components are a token and `transparent`.
+    '--w:var(--dsw-alias-bg-layer-2,rgba(127,127,127,.1))',
+    'filter:none',
+    '--w:transparent',
+    'background:color-mix(in oklab, var(--dsw-alias-bg-primary) 50%, transparent)',
+    'border-color:transparent',
+  ]
+  for (const declaration of good) {
+    assert.deepEqual(colorOffenders(declaration), [], `must stay allowed: ${declaration}`)
+  }
 })
 
 test('client bundle manages workspace connections through configOp', () => {
@@ -335,12 +616,12 @@ test('client bundle folds the add form behind an explicit entry point', () => {
   assert.match(source, /id: "dbh-ws-list"/)
 })
 
-test('client bundle folds status/options into the header + a settings strip', () => {
-  assert.match(source, /className: "dbh-statustext", title: modeLabel/)
+test('client bundle folds status/options into the header + DSH-style settings rows', () => {
+  assert.match(source, /className: "dbh-titlebar"/)
+  assert.match(source, /className: "dbh-statusline"/)
   assert.match(source, /var toggleSettings = function \(\)/)
-  assert.match(source, /className: "dbh-strip"/)
-  assert.match(source, /t\("cfg\.summary", \{/)
-  assert.match(source, /className: "dbh-cfgsum"/)
+  assert.match(source, /className: "dbh-settings"/)
+  assert.match(source, /className: "dbh-settings dbh-settingsbar"/)
   // view state survives remounts within the page session
   assert.match(source, /var uiMemory = \{ expanded: \{\}, addOpen: false, addTarget: "", settingsOpen: false, advOpen: false \};/)
 })
@@ -362,10 +643,10 @@ test('client bundle keeps the pre-test gate before saving a connection', () => {
   assert.match(source, /className: "dbh-pretest"/)
 })
 
-test('client bundle injects only slots and probes the host transport', () => {
-  // Regression gate for the 0.2.x failure: a never-satisfied `settingsScope`
-  // injection left the plugin pending forever, so nothing rendered and nothing
-  // logged. Only `slots` may be injected; the face probes for the rest.
+test('client bundle injects only slots (the removed settingsScope stays out)', () => {
+  // A never-satisfied `settingsScope` injection left the plugin pending forever,
+  // so nothing rendered and nothing logged. Only `slots` may be injected; the
+  // bridge needs no service at all.
   assert.match(source, /var inject = \["slots"\];/)
   assert.doesNotMatch(source, /inject = \[[^\]]*"settingsScope"/)
   // The live poll belongs to a rendered page, not to the plugin scope: an idle
@@ -432,25 +713,33 @@ test('client bundle disables what the installed dbhub cannot do', () => {
   assert.match(source, /disabled: !roSupported,/)
 })
 
-test('client bundle gates every modern surface on the Host dsh version', () => {
-  // 5.2 surfaces (title/version header, update prompt, wide settings block,
-  // inline read-only toggle, switch-style controls) exist only on dsh >= 0.2.1.
-  // On 0.1.x the bundle must render the OLD DOM — the offscreen gate's legacy
-  // groups pin that, so the flag is read, never inferred from a slot existing.
-  assert.match(source, /var modern = value\.dshModern === true;/)
+test('client bundle renders every surface unconditionally and no longer warns about an old dsh', () => {
+  // 6.0: the plugin no longer judges the host version at all. `engines.dsh` in
+  // package.json declares the range and DSH refuses to load the plugin on an
+  // unsupported runtime, so there is nothing left for the card to warn about —
+  // the surfaces below are the ONLY ones, for every supported host.
+  assert.doesNotMatch(source, /dshModern/)
+  assert.doesNotMatch(source, /dbh-tooold/, 'the version warning card is gone')
+  assert.doesNotMatch(source, /dshTooOld|dshMinVersion/, 'no host-side version verdict survives')
+  assert.doesNotMatch(source, /dsh\.tooOld/, 'nor its copy')
   assert.match(source, /var pluginVersion = typeof value\.pluginVersion === "string"/)
   assert.match(source, /var dshVersion = typeof value\.dshVersion === "string"/)
   assert.match(source, /var runtime = value\.runtime === "desktop"/)
-  // The three mounts are named, not guessed: settings dialog vs full pages.
+  // The three mounts are named, not guessed: settings dialog vs full pages. All
+  // three stay registered unconditionally (no version gate, no enabled gate for
+  // the settings/Plugins entries).
   assert.match(source, /function SettingsSectionPanel\(props\)/)
   assert.match(source, /function MainPanel\(props\)/)
   assert.match(source, /surface: "modal"/)
   assert.match(source, /surface: "main"/)
   // Layout follows the measured column, with the phone check on the VIEWPORT
-  // (a narrow settings dialog on a desktop is not a phone).
-  assert.match(source, /function useMeasuredWidth\(ref\)/)
-  assert.match(source, /var isMobile = modern && \(viewportWidth > 0/)
-  assert.match(source, /var isWide = modern && !isMobile && surface !== "modal"/)
+  // (a narrow settings dialog on a desktop is not a phone). The observer is
+  // attached by a callback ref, never by an effect that reads `ref.current` —
+  // that measured once and was never re-armed (see the measurement test).
+  assert.match(source, /function attachMeasuredWidth\(state\)/)
+  assert.match(source, /var innerRefCb = widthCbRef\.current;/)
+  assert.match(source, /var isMobile = viewportWidth > 0 \? viewportWidth < 700/)
+  assert.match(source, /var isWide = !isMobile && surface !== "modal"/)
 })
 
 test('client bundle shows the plugin version and the quiet update prompt', () => {
@@ -460,12 +749,19 @@ test('client bundle shows the plugin version and the quiet update prompt', () =>
   // A text link by default; the instructions live in a panel opened on demand.
   assert.match(source, /className: "dbh-updatelink"/)
   assert.match(source, /className: "dbh-updatepanel"/)
-  assert.match(source, /t\("ver\.copySpec", \{ v: update\.latest \}\)/)
+  // The header link EXPANDS the detail panel, so its tooltip describes the
+  // expansion; only the copy button INSIDE the panel may advertise a copy.
+  assert.match(source, /title: t\("ver\.linkHint"\),/)
+  assert.match(source, /"ver\.linkHint": "展开升级说明与安装命令"/)
+  assert.match(source, /"ver\.linkHint": "Show the upgrade details and the install command"/)
+  // `ver.copySpec` survives on exactly one control: the panel's copy button.
+  assert.equal([...source.matchAll(/t\("ver\.copySpec"/g)].length, 1,
+    'ver.copySpec belongs to the copy button only — the upgrade link must not claim it')
   // the copy control copies the exact install spec; the web command is copiable too
   assert.match(source, /dsh-dbhub-live@" \+ update\.latest/)
   assert.match(source, /dsh plugin --profile web up dsh-dbhub-live@/)
   // opening the page asks the Host for a throttled check; the button forces one
-  assert.match(source, /op: "updateCheck", force: false/)
+  assert.match(source, /kickUpdateCheck\(false\)/)
   assert.match(source, /op: "updateCheck", force: force === true/)
   // Updating is neutral news, not an error: no red card/pill classes remain.
   assert.doesNotMatch(source, /dbh-latest/)
@@ -485,7 +781,7 @@ test('client bundle renders DSH-style settings rows, the harness Switch and row 
   assert.match(source, /className: "dbh-srow"/)
   // Non-modal pages always use the horizontal bar (a narrow desktop column gets
   // the compact variant instead of four stacked rows).
-  assert.match(source, /var useSettingsBar = modern && !isMobile && surface !== "modal"/)
+  assert.match(source, /var useSettingsBar = !isMobile && surface !== "modal"/)
   assert.match(source, /className: "dbh-settings dbh-settingsbar"/)
   // State words are two-character, current-state labels — never "已开启".
   assert.match(source, /"row\.enable": "启用插件"/)
@@ -512,4 +808,286 @@ test('client bundle renders DSH-style settings rows, the harness Switch and row 
   assert.match(source, /"note\.tools":/)
   assert.match(source, /className: "dbh-titlebar"/)
   assert.match(source, /className: "dbh-title"/)
+})
+
+test('client bundle contributes the composer `@` source (one message, many references)', () => {
+  // The `@` menu is the one surface where the USER names connections; every
+  // submitted chip serializes on its own, which is what makes several
+  // references in one message work. The source is registered through the
+  // OPTIONAL service, so it must never join the exported `inject` list.
+  assert.match(source, /ctx\.inject\(\["inputTriggers"\], function \(scope\) \{/)
+  assert.match(source, /scope\.inputTriggers\.registerSource\(dbhubInputSource\);/)
+  assert.match(source, /name: "dbhub",\s*\n\s*trigger: "@",/)
+  // The message marker is `@<alias>` (readable, same shape as a file reference),
+  // falling back to `@db:<handle>` only when no alias is known.
+  assert.match(source, /serialize: function \(ref\) \{/)
+  assert.match(source, /var alias = aliasOfHandle\(handle\);/);
+  assert.match(source, /return alias && alias !== handle \? "@" \+ alias : "@db:" \+ handle;/);
+  assert.match(source, /clipboardText: function \(ref\) \{ return "@" \+ aliasOfHandle\(ref\); \},/)
+  assert.match(source, /insert: \{\s*\n\s*source: "dbhub",/)
+  assert.match(source, /appearance: "file",/)
+  // Two levels: the current workspace's rows under ONE plugin-named group, then
+  // one drillable "other workspaces" folder row (chevron + short Tab hint).
+  assert.match(source, /"at\.group": "dbhub 数据库"/)
+  assert.match(source, /"at\.group": "DBHub database"/)
+  assert.match(source, /"at\.others": "其他工作区"/)
+  assert.match(source, /"at\.others": "Other workspaces"/)
+  assert.match(source, /"at\.othersHint": "按 Tab 进入"/)
+  assert.match(source, /"at\.othersHint": "Tab to open"/)
+  assert.doesNotMatch(source, /at\.currentSection/)
+  assert.match(source, /drill: true,/)
+  assert.match(source, /icon: "folder",/)
+  // A drill is a TEXT edit with `continue`; the breadcrumb root writes a bare @.
+  assert.match(source, /return \{ text: "@" \+ othersLabel\(\), continue: true \};/)
+  assert.match(source, /if \(value === "root"\) return \{ text: "@", continue: true \};/)
+  assert.match(source, /header: function \(projection, context\) \{/)
+  assert.match(source, /label: t\("at\.group"\), value: "root"/)
+  assert.match(source, /value: "others", current: true/)
+  // THE BUG gate: `drilled` is controller-wide (dsh's own file tree drills on
+  // the same controller), so the DRAFT TEXT decides whether the drill is ours.
+  assert.match(source, /var ownDrillRest = function \(query\) \{/)
+  assert.match(source, /if \(String\(query\)\.trim\(\) !== ""\) return \[\];/)
+  // The current workspace is read through the OPTIONAL sessions service; no
+  // session means a flat, deterministic list — never a guessed workspace.
+  assert.match(source, /var currentWorkspacePath = function \(projection\) \{/)
+  assert.match(source, /ctx\.get\("sessions"\)/)
+  assert.match(source, /var partitionRows = function \(groups, currentPath\) \{/)
+  assert.match(source, /var candidatesOf = function \(staged, section, fullName\) \{/)
+  assert.match(source, /if \(v\.enabled !== true\) return \[\];/)
+  // ... and the service stays out of the declared dependencies.
+  assert.match(source, /var inject = \["slots"\];/)
+  assert.doesNotMatch(source, /var inject = \[[^\]]*inputTriggers/)
+})
+
+test('the toolbar is text-first: a search box with a prefix, one plain sort control', () => {
+  // Search: a bordered WRAPPER holding the 搜索 prefix, the input and the ×, so
+  // the three read as one control. The placeholder is short because the prefix
+  // already says what the box is.
+  assert.match(source, /className: "dbh-search"/)
+  assert.match(source, /className: "dbh-searchlabel"/)
+  assert.match(source, /"search\.prefix": "搜索"/)
+  assert.match(source, /"search\.prefix": "Search"/)
+  assert.match(source, /"search\.ph": "输入关键字"/)
+  assert.match(source, /"search\.ph": "Type to filter"/)
+  assert.match(source, /className: "dbh-searchclear dbh-clearsearch"/)
+  assert.match(source, /\}, "×"\)/, 'the clear control is an × glyph')
+  // …and the × only exists while there is a query.
+  assert.match(source, /searchQuery\s*\n?\s*\? h\("button", \{/)
+  // Sort: ONE text control that cycles. No tabs, no dropdown, no button frame.
+  assert.match(source, /className: "dbh-sorttext" \+ \(sortMode \? " dbh-sorttext-on" : ""\)/)
+  assert.match(source, /var sortView = sortViewOf\(sortMode\);/)
+  assert.match(source, /var cycleSort = function \(\) \{ setSortMode\(nextSortMode\(sortMode\)\); \};/)
+  assert.doesNotMatch(source, /dbh-sortbtn/, 'the two fixed tabs are gone')
+  assert.doesNotMatch(source, /"sort\.nameHint"|"sort\.recentHint"/)
+  // The batch action stays the quiet secondary button, right of the sort text.
+  assert.match(source, /className: "dbh-btn dbh-batchbtn"/)
+})
+
+test('the export directory can be chosen through the platform, never through the plugin', () => {
+  // The picker is reached through the OPTIONAL, waiting injection form — never
+  // through the exported `inject` (a missing service must not leave the whole
+  // browser half pending). TWO injections, because the names are not equivalent:
+  // `remote` is the first-class service (the picker is a property of it) and
+  // `remote.directoryPicker` is only cordis's pseudo name — injecting THAT does
+  // not populate `scope.remote`, which is why the button never appeared on a real
+  // host while every mocked page showed it.
+  assert.match(source, /wirePicker\(\["remote"\], "remote"\);/)
+  assert.match(source, /wirePicker\(\["remote\.directoryPicker"\], "pseudo"\);/)
+  assert.match(source, /function probePicker\(scope\) \{/)
+  assert.match(source, /scope\.remote\.directoryPicker/)
+  assert.match(source, /scope\.get\("remote\.directoryPicker"\)/)
+  assert.match(source, /scope\.get\("remote"\)/)
+  assert.match(source, /typeof hit\.svc\.pick !== "function"/)
+  assert.doesNotMatch(source, /var inject = \[[^\]]*directoryPicker/)
+  // The card consumes the platform's answer and nothing else: no fs API, no path
+  // guessing. A cancelled pick (null / no value) changes NOTHING.
+  assert.match(source, /pickerRegistry\.pick = service && typeof service\.pick === "function"/)
+  assert.match(source, /if \(!res \|\| typeof res !== "object"\) return;/)
+  assert.match(source, /if \(res\.ok !== true\) \{/)
+  assert.match(source, /if \(!dir\) return;/)
+  assert.match(source, /commitField\("exportDir", dir\);/)
+  // No button when the service is absent, and the error goes through the existing
+  // alert slot (`setWriteError`) — no second error surface.
+  assert.match(source, /if \(!pickerAvailable\) return null;/)
+  assert.match(source, /setWriteError\(String\(\(res\.error && res\.error\.message\) \|\| t\("error\.write"\)\)\);/)
+  assert.doesNotMatch(source, /\brequire\("node:fs"\)|\breaddirSync\b|\bstatSync\b/)
+  // Both dictionaries name the affordances.
+  assert.match(source, /"btn\.chooseDir": "选择"/)
+  assert.match(source, /"btn\.chooseDir": "Browse…"/)
+  assert.match(source, /"btn\.defaultDir": "默认"/)
+  assert.match(source, /"btn\.defaultDir": "Default"/)
+})
+
+test('row ordering follows the store; drag, copy and the phone arrows share one op', () => {
+  // The stored order decides when no sort is active, and the auto-discovered rows
+  // (which are not in `order`) follow by name.
+  assert.match(source, /var visibleRows = sortMode\s*\n?\s*\? sortRows\(filteredRows, sortMode, wsUpdatedAt\)\s*\n?\s*: sortByStoredOrder\(filteredRows\);/)
+  assert.match(source, /function sortByStoredOrder\(rows\) \{/)
+  assert.match(source, /function orderMapOf\(rows\) \{/)
+  // Dragging is OFF while an explicit sort is active (the two orders would fight).
+  assert.match(source, /var orderMode = sortMode === "";/)
+  assert.match(source, /var canDragRow = function \(w\) \{ return orderMode && !!w && w\.persisted === true; \};/)
+  // One `move` op shape, used by the drop handler AND the phone buttons.
+  assert.match(source, /op: "move", env: from\.env, workspace: from\.path, toWorkspace: String\(g\.path \|\| ""\), index: index/)
+  assert.match(source, /op: "copy", env: String\(w\.env \|\| ""\), workspace: String\(w\.path \|\| ""\)/)
+  // The local list is never reordered by hand: every op is followed by a re-read.
+  assert.match(source, /var runOrderOp = function \(payload\) \{/)
+  assert.match(source, /setWriteError\(failureTextOf\(e\)\);\s*\n\s*retrySnapshot\(\);/)
+  assert.match(source, /var startDragRow = function \(w, key, e\) \{/)
+  assert.match(source, /var moveIndexFor = function|function moveIndexFor\(envs, sourceEnv, overEnv, after\) \{/)
+  // Auto rows are refused on purpose, and say why (edit once to persist them).
+  assert.match(source, /"drag\.autoHint": "自动发现的行需要先保存（编辑一次即可）才能排序或复制"/)
+  assert.match(source, /"drag\.autoHint": "Auto-discovered rows must be saved first/)
+  assert.match(source, /"drag\.copy": "复制数据源"/)
+  assert.match(source, /"drag\.copy": "Duplicate source"/)
+  assert.match(source, /"drag\.up": "上移"/)
+  assert.match(source, /"drag\.up": "Move up"/)
+  assert.match(source, /"drag\.sortHint": "先切回「排序：默认」才能拖动排序"/)
+  assert.match(source, /"drag\.sortHint": "Switch the sort back to Default to drag rows"/)
+  // No drag grip on a phone (HTML5 DnD is a mouse API): the arrows take over.
+  assert.match(source, /isMobile \? null : h\("span", \{\s*\n\s*className: "dbh-grip"/)
+})
+
+test('the bundle declares which build it is, and it matches package.json', () => {
+  // A desktop app that upgrades without restarting keeps serving the PREVIOUS
+  // bundle while /state already reports the new plugin version. The header
+  // compares the two, so this constant is not decoration — it is what lets the
+  // page say "界面待重启" instead of quietly looking current.
+  const pkg = JSON.parse(readFileSync(join(here, '..', 'package.json'), 'utf8'))
+  const declared = /var CLIENT_BUILD = "([^"]+)";/.exec(source)
+  assert.ok(declared, 'the bundle must declare CLIENT_BUILD')
+  // Byte-for-byte: a near miss (a `-rc.5` behind) is exactly the failure this
+  // gate exists for, so no semver comparison here.
+  assert.equal(declared[1], pkg.version,
+    `lib/client.js says CLIENT_BUILD = ${declared[1]} but package.json is ${pkg.version}`)
+  assert.match(source, /var staleUi = !!pluginVersion && pluginVersion !== CLIENT_BUILD;/)
+  assert.match(source, /"ver\.stale": "界面待重启"/)
+  assert.match(source, /"ver\.stale": "UI restart needed"/)
+})
+
+test('the update check reports itself: spinner while running, a named outcome after', () => {
+  // The reported bug: the button only went `disabled`, so a check that ran looked
+  // exactly like a check that never fired. Three things have to be in the source.
+  assert.match(source, /"ver\.checking": "检查中…"/)
+  assert.match(source, /"ver\.latest": "已是最新"/)
+  assert.match(source, /"ver\.found": "发现 v\{v\}"/)
+  assert.match(source, /"ver\.stateFailed": "检查失败"/)
+  assert.match(source, /"ver\.latest": "Up to date"/)
+  assert.match(source, /"ver\.found": "v\{v\} available"/)
+  assert.match(source, /"ver\.stateFailed": "Check failed"/)
+  // The spinner is a child span with a keyframe (so `disabled` cannot stop it),
+  // with a reduced-motion opt-out.
+  assert.match(source, /\.dbh-spin\{display:inline-flex;align-items:center;justify-content:center;animation:dbh-spin 900ms linear infinite;\}/)
+  assert.match(source, /@keyframes dbh-spin\{/)
+  assert.match(source, /@media \(prefers-reduced-motion: reduce\)\{\.dbh-spin\{animation:none;\}\}/)
+  // Busy state is announced, and the label follows the state.
+  assert.match(source, /"aria-busy": checking \? "true" : undefined/)
+  assert.match(source, /"aria-label": checking \? t\("ver\.checking"\) : t\("ver\.check"\)/)
+  // The outcome line is transient (2.5s) and cleaned up on unmount.
+  assert.match(source, /setCheckFlash\(outcome\);/)
+  assert.match(source, /\}, 2500\);/)
+  assert.match(source, /if \(checkFlashTimer\.current\) \{\s*\n\s*clearTimeout\(checkFlashTimer\.current\);/)
+})
+
+// ── locale tables ───────────────────────────────────────────────────────────
+// The bundle is hand-written and its dictionaries are plain object literals, so
+// a repeated key is SILENT: the later value wins and the earlier one becomes
+// dead text that a later edit can "fix" forever with no effect. The bundle also
+// exports no dictionary, so the source (the shipping artifact) is the contract.
+
+/**
+ * The `[key, value]` pairs of one locale object literal, in source order.
+ * Values are single-line double-quoted strings; that is true of every entry and
+ * a violation is caught here rather than silently skipped.
+ */
+function localeEntriesOf(name) {
+  const start = source.indexOf("var " + name + " = {")
+  assert.ok(start > 0, name + " not found in the bundle")
+  const end = source.indexOf("\n  };", start)
+  assert.ok(end > start, name + " has no closing brace")
+  const body = source.slice(start, end)
+  const entries = []
+  const re = /^ {4}(?:"([^"]+)"|([A-Za-z_$][\w$]*)):\s*"((?:[^"\\]|\\.)*)",?\s*$/gm
+  let m
+  while ((m = re.exec(body))) entries.push([m[1] || m[2], m[3]])
+  // Every non-comment line in the block must have been consumed: a multi-line or
+  // oddly formatted entry would otherwise drop out of the duplicate check.
+  const valueLines = body.split(/\r?\n/).filter((line) => line.trim() && !/^\s*(\/\/|var )/.test(line))
+  assert.equal(entries.length, valueLines.length,
+    name + " has lines this parser did not understand (the duplicate check would miss them)")
+  return entries
+}
+
+test('client locale tables define every key once and stay language-pure', () => {
+  const zh = localeEntriesOf('LOCALE_ZH')
+  const en = localeEntriesOf('LOCALE_EN')
+  for (const [name, entries] of [['LOCALE_ZH', zh], ['LOCALE_EN', en]]) {
+    const seen = new Set()
+    const dupes = []
+    for (const [key] of entries) {
+      if (seen.has(key)) dupes.push(key)
+      seen.add(key)
+    }
+    assert.deepEqual(dupes, [], name + ' defines a key twice (the literal silently keeps the last one)')
+    assert.ok(entries.length > 100, name + ' is unexpectedly small: ' + entries.length)
+  }
+  // Same keys, both languages: a key that exists on one side only renders as the
+  // raw key (or as the zh fallback) in the other locale.
+  assert.deepEqual(en.map(([k]) => k).sort(), zh.map(([k]) => k).sort(), 'zh/en key sets differ')
+  // No Chinese in the English table. A leftover zh example in a placeholder
+  // ("e.g. prod / dev / test / 线上") is what a user on an en host actually reads.
+  const leaked = en.filter(([, value]) => /[\u4e00-\u9fff]/.test(value)).map(([k]) => k)
+  assert.deepEqual(leaked, [], 'the en table embeds Chinese text')
+  // The SAME placeholders on both sides: a `{n}` that exists in one dictionary
+  // only is an unfilled `{n}` (or a silently lost number) for the other locale.
+  // The list controls are parameterized ("N / M", "X passed / Y failed / …"), so
+  // this is a real failure mode, not a theoretical one — and `check:ui` only
+  // renders the filtered/batch copy in zh.
+  const zhMap = new Map(zh)
+  const placeholders = (text) => [...String(text).matchAll(/\{([A-Za-z]+)\}/g)].map((m) => m[1]).sort().join(',')
+  const mismatched = en
+    .filter(([key, value]) => zhMap.has(key) && placeholders(value) !== placeholders(zhMap.get(key)))
+    .map(([key]) => key)
+  assert.deepEqual(mismatched, [], 'zh/en placeholders differ')
+})
+
+// ── measured column ─────────────────────────────────────────────────────────
+
+test('the measured column re-arms when the element mounts (no one-shot measure)', () => {
+  // The width effect used to read `ref.current` inside a `[]`-dependency effect:
+  // when the column was not attached yet (a surface switch, a remount, a host that
+  // defers the mount) it measured nothing and NEVER retried, so the layout fell
+  // back to the viewport for the rest of the mount. The observer is now created by
+  // the callback ref: attach, re-attach on a different node, disconnect on detach.
+  // No interval, no timer — either would keep the offscreen gate alive.
+  assert.match(source, /function attachMeasuredWidth\(state\)/)
+  assert.match(source, /if \(innerRef\.current === node\) return;/)
+  assert.match(source, /observerRef\.current = observer;/)
+  assert.doesNotMatch(source, /var el = ref && ref\.current;/, 'the ref-read form is the defect')
+  // Mount + unmount teardown is the ONLY effect left around the measurement.
+  assert.match(source, /react\.useEffect\(function \(\) \{\s*return function \(\) \{\s*if \(!widthObserver\.current\) return;/)
+  // The callback identity is frozen (a fresh function each render would
+  // detach/re-attach the node every pass).
+  assert.match(source, /ref: innerRefCb/)
+  assert.match(source, /if \(!widthCbRef\.current\) \{/)
+  const measure = source.slice(source.indexOf('function attachMeasuredWidth'), source.indexOf('function switchControl'))
+  assert.doesNotMatch(measure, /setInterval|setTimeout|requestAnimationFrame/)
+})
+
+// ── SSH-layer test form validation ──────────────────────────────────────────
+
+test('the ssh-layer test refuses a half-filled tunnel before it dispatches', () => {
+  // `connDraftOf` ALWAYS returns an object while the tunnel switch is on, so the
+  // old `if (!ssh)` guard was dead in the only state where the button exists: a
+  // blank host or user went to the Host and came back as a generic "missing user"
+  // instead of the form's own hint.
+  assert.match(source, /connDraftOf\(form\)/)
+  assert.match(source, /if \(!ssh \|\| !String\(ssh\.host \|\| ""\)\.trim\(\) \|\| !String\(ssh\.user \|\| ""\)\.trim\(\)\) \{/)
+  assert.match(source, /finishTest\(key, nonce, false, t\("adv\.testSshNeedFields"\)\);/)
+  // The guard runs BEFORE the watchdog is armed: an early return must not leave a
+  // timer behind (the gate fails the run on a leaked timer too).
+  const at = source.indexOf('var ssh = d.ssh && typeof d.ssh === "object" ? d.ssh : null;')
+  const guard = source.indexOf('finishTest(key, nonce, false, t("adv.testSshNeedFields"));', at)
+  const watchdog = source.indexOf('testTimers.current[nonce] = setTimeout(function () {', at)
+  assert.ok(at > 0 && guard > at && watchdog > guard, 'the field check must precede the watchdog')
 })

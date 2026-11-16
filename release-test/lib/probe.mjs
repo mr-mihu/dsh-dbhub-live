@@ -30,6 +30,11 @@ async function httpPost(url, payload, { cookie } = {}) {
   return { status: response.status, body }
 }
 
+// Exported for the upgrade tier, which drives the same bridge to seed old data
+// and to probe a migrated connection. One HTTP helper set keeps both tiers
+// talking to the plugin exactly the same way.
+export { httpGet, httpPost }
+
 /** Extract the `name=value` cookie the token exchange handed out. */
 export async function openSession(base, token) {
   const response = await fetch(`${base}/?token=${encodeURIComponent(token)}`, { redirect: 'manual', signal: AbortSignal.timeout(HTTP_TIMEOUT_MS) })
@@ -45,6 +50,7 @@ export async function openSession(base, token) {
 }
 
 const safeParse = (text) => { try { return JSON.parse(text) } catch { return null } }
+export { safeParse }
 
 /**
  * Run every probe for one booted target.
@@ -154,9 +160,9 @@ export async function runProbes(ctx) {
       )
 
       // The view carries the running build's identity on 5.2+. Asserting it is
-      // how a "tested the wrong artifact" or a broken dshModern gate gets caught.
+      // how a "tested the wrong artifact" or a broken version gate gets caught.
       if (value.pluginVersion === undefined) {
-        checks.push(check('state.version-fields', 'info', 'view has no pluginVersion/dshVersion/dshModern fields (artifact predates them)'))
+        checks.push(check('state.version-fields', 'info', 'view has no pluginVersion/dshVersion/dshTooOld fields (artifact predates them)'))
       } else {
         checks.push(
           value.pluginVersion === artifact.version
@@ -168,11 +174,15 @@ export async function runProbes(ctx) {
             ? check('state.dsh-version', 'pass', `plugin detects host ${value.dshVersion}`)
             : check('state.dsh-version', 'fail', `plugin detects host ${value.dshVersion}, expected ${version}`),
         )
-        const wantModern = target.ui === 'modern'
+        // The version floor is `package.json#engines.dsh` now: DSH refuses to
+        // activate an unsupported runtime, so a plugin that booted on this target
+        // proves the gate is satisfied. Assert the old in-card warning is GONE
+        // instead — a view that still carries it means the gate moved back into
+        // the plugin (the thing this check exists to prevent).
         checks.push(
-          value.dshModern === wantModern
-            ? check('state.ui-mode', 'pass', `dshModern=${value.dshModern} matches the matrix (${target.ui} face)`)
-            : check('state.ui-mode', 'fail', `dshModern=${value.dshModern}, but the matrix expects the ${target.ui} face for ${version}`),
+          value.dshTooOld === undefined && value.dshMinVersion === undefined
+            ? check('state.version-gate', 'pass', `no in-card version gate for ${version}; engines.dsh enforces the floor`)
+            : check('state.version-gate', 'fail', `view still carries a version gate: dshTooOld=${value.dshTooOld}, min=${value.dshMinVersion}`),
         )
       }
 

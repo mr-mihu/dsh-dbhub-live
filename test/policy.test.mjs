@@ -18,7 +18,10 @@
 //      one scope), and is a silent no-op where that service is absent
 //      (older dsh deployments);
 //   5. the text stays inside its token budget and stays zero-knowledge
-//      (no DSN-looking string, no `{{variable}}` that assembly would reject).
+//      (no DSN-looking string, no `{{variable}}` that assembly would reject);
+//   6. the `@` reference section documents BOTH spellings the composer may emit
+//      (`@<alias>` and `@db:<handle>`) and states that either one works
+//      directly as the tool's `source` argument.
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -68,6 +71,18 @@ test('the authority claim is scoped, and other plugins keep the databases this o
   assert.match(text, /先问用户/)
 })
 
+test('the policy pins the session-permission boundary next to the read-only one', () => {
+  state.setEnabled(true)
+  options.applyPatch({ announceAccessPolicy: true })
+  const text = policy.dbhubPolicyText()
+  // The composer's permission mode is a SECOND gate in front of a write, so the
+  // prompt must name it and must close the same "route around it" exit.
+  assert.match(text, /仅可查看/)
+  assert.match(text, /工作区内修改/)
+  assert.match(text, /弹窗/)
+  assert.match(text, /被拒绝后同样不得换途径写入/)
+})
+
 test('a disabled plugin, or the announcement switched off, contributes an EMPTY section', () => {
   options.applyPatch({ announceAccessPolicy: true })
   state.setEnabled(false)
@@ -85,12 +100,81 @@ test('the policy text stays inside its budget and its zero-knowledge frame', () 
   state.setEnabled(true)
   options.applyPatch({ announceAccessPolicy: true })
   const text = policy.dbhubPolicyText()
-  assert.ok(text.length <= 420, 'token budget: ' + String(text.length) + ' chars')
+  // The prose alone (no catalog) — the catalog is bounded separately below.
+  assert.ok(text.length <= 900, 'token budget: ' + String(text.length) + ' chars')
   // A real-looking DSN would leak a credential into the system prompt.
   assert.doesNotMatch(text, /[a-z]+:\/\/[^/\s]*:[^@\s]+@/)
   // `{{name}}` is interpolated strictly by prompt assembly: an unregistered
   // name would make every assembly throw, i.e. the model would get no prompt.
   assert.doesNotMatch(text, /\{\{[a-z_]+\}\}/)
+})
+
+test('the section explains the @db:<handle> marker and one-message-many-references', () => {
+  state.setEnabled(true)
+  options.applyPatch({ announceAccessPolicy: true })
+  const text = policy.dbhubPolicyText()
+  // The composer serializes every chip into this exact marker, so the model has
+  // to be told what it is and that several may appear in one message.
+  assert.match(text, /@db:<句柄>/)
+  assert.match(text, /一条消息可以出现多个标记/)
+  assert.match(text, /按标记出现的顺序/)
+  assert.match(text, /source 参数/)
+})
+
+test('the section covers BOTH reference forms: @<alias> and @db:<handle>', () => {
+  state.setEnabled(true)
+  options.applyPatch({ announceAccessPolicy: true })
+  const text = policy.dbhubPolicyText()
+  // The composer now inserts the readable alias (`@本地-技能树`); older drafts and
+  // hand-written text still carry `@db:<handle>`. The model must be told that
+  // both name a configured connection, that the alias can be converted through
+  // the catalog in this same section, and that either spelling works directly as
+  // the tool's `source` argument.
+  assert.match(text, /@<别名>/)
+  assert.match(text, /@db:<句柄>/)
+  assert.match(text, /两种写法/)
+  assert.match(text, /「别名→句柄」目录/)
+  assert.match(text, /source 参数/)
+  // Documenting the second form must not blow the prose budget (catalog aside).
+  assert.ok(text.length <= 900, 'token budget: ' + String(text.length) + ' chars')
+})
+
+test('the catalog lists alias→handle only, and truncates with a pointer to dbhub_list_sources', () => {
+  state.setEnabled(true)
+  options.applyPatch({ announceAccessPolicy: true })
+  const rows = [
+    { alias: 'app_prod', srcId: 'app_ab12_prod' },
+    { alias: 'billing_prod', srcId: 'billing_cd34_prod' },
+  ]
+  const text = policy.dbhubPolicyText(rows)
+  assert.match(text, /@ 标记目录（别名→句柄）：/)
+  assert.ok(text.includes('app_prod→app_ab12_prod'), text)
+  assert.ok(text.includes('billing_prod→billing_cd34_prod'), text)
+  // Sorted, so the prompt does not depend on the walk order.
+  assert.ok(text.indexOf('app_prod→') < text.indexOf('billing_prod→'))
+  // Zero knowledge: the catalog is handles and aliases only — never a DSN shape,
+  // a host, a user or a port.
+  assert.doesNotMatch(text, /:\/\//)
+  assert.doesNotMatch(text, /[a-z]+:\/\/[^/\s]*:[^@\s]+@/)
+  assert.doesNotMatch(text, /\b(?:host|user|password|passwd|dsn)\s*=/i)
+  // A row without the two required fields is skipped, not rendered as a hole.
+  assert.equal(policy.dbhubPolicyText([{ alias: 'x' }, { srcId: 'y' }]), policy.dbhubPolicyText())
+
+  const many = Array.from({ length: 40 }, (_, i) => ({ alias: 'env' + i, srcId: 'ws_ab' + i }))
+  const capped = policy.dbhubPolicyText(many)
+  const entries = capped.split('@ 标记目录（别名→句柄）：')[1] || ''
+  assert.equal(entries.split('、').length, policy.POLICY_CATALOG_MAX,
+    'the catalog is capped at POLICY_CATALOG_MAX entries')
+  assert.ok(entries.includes('其余用 dbhub_list_sources 查看'), entries)
+  // The whole section still stays inside a prompt-sized budget.
+  assert.ok(capped.length <= 1400, 'catalog budget: ' + String(capped.length))
+})
+
+test('no rows means no catalog line at all', () => {
+  state.setEnabled(true)
+  options.applyPatch({ announceAccessPolicy: true })
+  assert.equal(policy.dbhubPolicyText([]), policy.dbhubPolicyText())
+  assert.doesNotMatch(policy.dbhubPolicyText([]), /标记目录/)
 })
 
 test('registration injects the optional systemPrompt service and owns the section', () => {
@@ -124,6 +208,26 @@ test('registration injects the optional systemPrompt service and owns the sectio
   // The section is effect-owned, so a re-run of apply() disposes it instead of
   // throwing on the duplicate name.
   assert.deepEqual(effects, ['dsh-dbhub-live: access policy'])
+})
+
+test('the catalog provider is read per assembly (connections change at runtime)', () => {
+  const sections = []
+  const ctx = {
+    inject(deps, cb) {
+      cb({
+        systemPrompt: { section(def) { sections.push(def); return () => {} } },
+        effect(fn) { return fn() },
+      })
+    },
+  }
+  // The provider is handed in, not imported: `policy` may not depend on `mcp`.
+  let rows = []
+  policy.registerDbhubPolicy(ctx, () => rows)
+  assert.doesNotMatch(sections[0].text(), /标记目录/)
+  rows = [{ alias: 'app_prod', srcId: 'app_ab12_prod' }]
+  assert.match(sections[0].text(), /app_prod→app_ab12_prod/)
+  rows = []
+  assert.doesNotMatch(sections[0].text(), /标记目录/)
 })
 
 test('a deployment without systemPrompt registers nothing and does not throw', () => {

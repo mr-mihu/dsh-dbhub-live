@@ -6,13 +6,28 @@
 ## 零知识边界
 
 - 模型上下文就是泄露面：任何进 context 的字符串都会被摘要、日志和后续轮次复制。所以规则不是"少给"而是"永不给"——工具参数不接受 DSN（模型传 DSN 等于把密码写进对话），输出一律经 `connLabel` / `scrubSecrets`。
+- `connLabel` 的失败分支曾经**回显原串**：`describeConn` 解析不出类型时 `return String(dsn).trim()`。实测 `mysql:/u:<密码>@host:3306/db`（少一个斜杠，userinfo 落进 URL 的 **path**）被拼成 `mysql://localhost/u:<密码>@host:3306/db` 原样进入模型上下文，ADO（`Server=…;Password=…;`）/ Go 风格（`host=… password=…`）整条回显。现在的判据是**结构性的**，不是关键词表：
+  1. 只有 `new URL()` 真正解析成功的串才被信任（`parsed` 位）。解析失败 —— `Server=…;pass=…`（`pass` / `PASS` / `authToken` 任何拼法）、Go 驱动 `u:secret@tcp(…)`、`sqlserver://…;pass=…`、裸路径 —— 一律本地化占位。
+  2. 解析成功但**没有 authority**（`mysql:/u:…@host`）同样占位；sqlite 是唯一合法的无 host 方言。
+  3. 剩下的字段再当端点文本看：含 `@`（只可能是 userinfo），或含 key 命中 `/pass|pwd|secret|token|auth|cred/i` 的 `k=v` 对（属性串挤进了 path）→ 占位。
+  **为什么不是关键词表**：只认 `password|passwd|pwd` 时，`Server=…;user=u;pass=CANARY` 整条经 `connLabel` 进 `dbhub_list_sources` 回执（真实泄漏）。**为什么删掉"字段里 includes 密码"那条**：它把 `postgres://postgres:postgres@…/postgres`、`mysql://root:mysql@…/mysql` 这类正常连接打成「未知连接」——密码恰好等于库名时并没有任何新信息被回显。
+- `connLabel` 还必须**不抛**：`decodeURIComponent('bad%zz')` 抛 `URIError`，而 `setWorkspaceEnv` 不校验 DSN，所以 store 里一条坏行会让整份 `dbhub_list_sources` 收据失败——"解析不出 ⇒ 占位"的契约根本没机会生效。现在解码失败用原串（未解码的段本身不是秘密文本，是否可打印由闸门决定），`connLabel` 整体 try/catch 兜底为占位。
+- 同理两层曾被漏掉：`runAdhoc` 只清洗结果正文，首行 prefix（含调用方 `label`）不过清洗；卡片写命令把 `{dsn, ssh}` 塞进补丁，经 `/op` 响应体原样回给浏览器（浏览器半根本不读 `patches`）。现在 prefix 与正文一起过 `scrubSecrets`，补丁只带元数据，镜像要的真值由 `mirrorPatchOf` 从 store 回读。
+- child env 只传占位符真值（`DSH_DBHUB_SEC_*`）：宿主的 subprocess 服务会剔除 `*KEY|PASSWORD|SECRET|TOKEN*` 与 `DSH_*` 的 ambient 变量，但**显式 env 在清洗之后合并**，所以把 `process.env` 展开进额外 env 等于把宿主清洗作废（dbhub 及其依赖能读到 agent 自己的 API key）。
 - dbhub 的启动横幅**只把密码掩成 `****`，用户名原样打印**；而连接测试的诊断文本正是这段输出。所以清洗必须折叠任意 URL 形态连接串的整个 userinfo（`://user:pass@`、`://user@` → `://****:****@`），只掩密码不够。
+- 逐字替换已知秘密**必须带边界**：`text.split(pass).join('****')` 在短密码上会自毁——1 字符密码把 `password=` 改写成 `p****ssword`，随后 `password=` 规则不再命中，真实值（以及之后的每一个秘密）原样漏出。现在的替换要求秘密自成 token（前后不接 `[\w@:/.-]`），短密码即使被跳过也由无条件的 userinfo 折叠兜住。同理，`dsnPassword` 返回**解码后**的值，与 `describeConn` 解出的 database 同一拼写；清洗时解码态与百分号编码态都替换（诊断可能打印任一形态）。
 - 仓库被视为公开分发面：这些真实值曾随 npm 包与公开仓库分发过一次，公开即视为泄露、无法追回（详见 [DESENSITIZE.md](DESENSITIZE.md)）。
 
 ## 一次性进程的理由
 
 - 常驻 dbhub 服务器会带来一整套生命周期问题：端口/stdio 归属、配置变更重启、指纹与 mtime 监听、空闲回收、孤儿进程、多实例互杀——5.0 之前这些都真实出现过。最终选择"每次调用一条进程"：天然并发隔离、一条进程挂只坏它自己、多实例无共享状态、没有常驻资源可泄漏。
 - 代价是每次的启动延迟（spawn + initialize），换来的是可预测性。**不要以"优化启动"为名把常驻服务装回来。**
+- **请求级超时是挂死探测，不是查询预算**。一次性进程的取消源只有 `exec.signal`（用户取消 / 轮次中断），所以"dbhub 活着但不回包"没有任何东西能 settle：请求永久 pending，`finally` 里的 terminate / `waitForExit` / 删临时 TOML 全部不可达（实测 2.5s 后仍 PENDING），结果是**一整轮对话挂住 + 子进程与临时文件泄漏到会话结束**。现在每个 `request` 各自带 timer（`initialize` 15s / `tools/call` 120s），超时立刻杀进程并按 `result.mcpTimeout` 报告；120s 取得远高于任何正常 SQL，正是为了**不**把慢查询当成故障切断——它是"dbhub 完全不说话"的判据。
+- 同类"挂死"还有三种形态，同样必须从边界上堵住：
+  1. **解码**：`String(chunk)` 逐块解码，跨 64KiB 边界的中文会变成 `U+FFFD`（实测 "中文结果" → "���文结果"）→ 改用 `StringDecoder('utf8')` 累积解码，只在完整行上解析。
+  2. **内存**：`buf +=` 是二次方拷贝且没有上限（实测 32MB 单行 3.6s 纯同步时间，期间所有会话卡住；无换行垃圾可无限吃内存）→ 行的片段数组 + `MAX_LINE_BYTES = 8MiB` / `MAX_RESPONSE_BYTES = 64MiB`，超限 `MCP_TOO_LARGE` 并终止本次调用。
+  3. **管道**：`npm install` 的 stdout 无人读 → 64KiB 管道写满 → 安装进程永不退出 → 单飞的 `installingDbhub` 永不落 → 本会话 dbhub 永久不可用 → stdout 也 drain（尾部 4KB 只留作诊断）+ `DBHUB_INSTALL_TIMEOUT_MS = 180s` 总超时。
+- 还有两处"静默丢弃"：响应 id 只认 `number` 时，dbhub 回 `"3"` 会被丢掉而请求永久 pending（只有加上面的超时才能发现）→ pending 的 key 统一 `String(id)`；`stdin` 没有 `'error'` 监听时，写已关闭管道会逃成 uncaught → 挂监听并 `settleAll`。`waitForExit` 返回 `false`（signal 已 abort 但进程仍在）必须再 terminate 一次，否则会按"已退出"去删临时文件（Windows EBUSY）。
 
 ## 一次性TOML的由来
 
@@ -23,23 +38,49 @@
   3. source 级 `read_only` 写法会被**静默忽略**，比报错危险得多 → 绝不生成未实测的旧写法。1.4.0 是实测版本，`< 1.0.0` 明确拒绝。
 - Windows 上 dbhub 会 watch 这个临时文件，删除可能 EBUSY → `finally` 尽力删 + boot 时 `sweepTempToml()` 清残留。
 
+- **有界等待的两处**：请求有超时（挂死探测），退出也有上限（`EXIT_WAIT_MS = 5s`）——逃出受管进程组的后代能让 `waitForExit` 永不 settle，把刚加的超时又抵消掉。
+- **`MAX_RESPONSE_BYTES` 是每客户端累计**（64 MiB）：它保护宿主内存，代价是一次超过该上限的合法导出会被明确判 `MCP_TOO_LARGE`，而不是被悄悄截断。
 ## 环境选项与执行预算
 
 - 选项**没有版本号也没有迁移函数**是刻意的：`normalizeStore` 保留未知字段，给 env 条目加可选字段不需要迁移；旧文件读回来就是"无只读、无隧道"。别为了"规范"加迁移。
 - `setWorkspaceEnv` 的 opts **缺省必须保留**既有选项：`dbhub_configure` 只更新 DSN 的场景下，若默认清空就会把用户的安全开关静默关掉——这是"只读/隧道莫名丢失"的根因。
 - 安全不对称必须在**工具路径**拦截而不是 store：模型只能收窄不能放宽，但浏览器必须能自由关，否则用户永远关不掉自己开的只读。
 - 预算与看门狗的三角关系：客户端看门狗必须**严格大于**宿主探测预算，否则客户端先放弃、界面报"测试超时"，而宿主那条 dbhub 还在跑；宿主再加 +500ms 兜底，处理 spawn 本身永不 settle 的情况。三个数字必须一起改，`test/adhoc-toml.test.mjs` 会断言。
+- **行数上限为什么裁在插件侧**：dbhub 的 `max_rows` 属于 TOML 的 `[[tools]]`，是**静态**配置（一次生成的临时配置对应整次调用），无法被单次调用覆盖；而用户要的恰恰是"环境默认 + 单次覆盖"。既然插件本来就持有结果文本，就由插件裁：`capExecuteSqlText` 只切 `rows` 数组并加 `truncated`/`shown`，`count` 与其它字段原样保留，首行加一条本地化提示。取舍是**失败必须安全**：非 JSON / 结构不符一律原样返回——裁剪是锦上添花，绝不能把一条可用的结果变成坏结果。环境值 `0`/缺省 = 不限，所以存量用户行为逐字节不变。
+- **SSH 口令为什么搬进 DSH 凭据库、以及写入为何必须在命令层**：`credentials.json` 曾被当作 SSH 口令的保险箱，但它只是"同目录、0600、靠 profile ACL"——用户要的是 DSH 自己的密钥保存方式（`ctx.get('credentials')`，默认落 `$DSH_HOME/.credentials.yaml`，由 DSH 管理）。`config.mjs` 是纯模块（单测/边界都靠它同步读 store），凭据服务是异步的，所以**顺序被拆成两段**：命令层先 `creds.set(ref, value)`（成功才继续），再把只有 ref 的块交给同步的 store 写入器。反过来在写入器里 fire-and-forget 会出现"文件里已有 ref、凭据库里还没有值"的窗口，那条连接在窗口内必然认证失败——所以这个顺序不是风格，是正确性。凭据服务是可选的：缺失/抛错时保留明文（旧布局 + 一条警告）比"写不进去就丢失口令"安全；boot 迁移同样只搬不删——搬不动就留着。
+- **为什么执行/探连要重新解析、失败要显式报错**：DSH 的契约是每次操作重新 `resolve`（凭据文件可能被替换/删除），插件不能缓存明文；而"ref 在、值没了"若退化成空口令，dbhub 会报一个**看起来像密码错**的 SSH 认证失败，用户会去反复重输/换 key，真正的原因（凭据被删）永远不出现。所以 `resolveEnvSecrets` 在 spawn 之前抛 `sshSecretMissing`，探连也走同一句话。
+
+## 数据库口令为什么也拆进凭据库
+
+- **中间层只能由我们做**：dbhub 的 TOML `[[sources]]` 只有 `dsn` 一个连接字段，`dsn = "${VAR}"` 是官方推荐的插值写法；另一组进程级 `DB_*` 分项变量不能用——那会失去 `[[tools]] readonly` 与 `ssh_*` 隧道（只读环境必须靠 TOML 白名单）。所以存储层仍是 DSN，但**口令从 DSN 里拆出来存凭据库**，每次操作再拼回去。
+- **为什么拆分发生在写入侧、而且必须在命令层**：`config.mjs` 是纯同步模块（单测和边界都直接读 store），凭据服务是异步的。若在 store 写入器里 fire-and-forget 调 `set`，会出现"文件里已有 ref、凭据库里还没有值"的窗口——那条连接在窗口内必然认证失败；反过来先 `set` 成功再写 store，最坏情况只是一条孤儿凭据（随后被释放/覆盖）。这与 SSH 口令的顺序是同一条正确性要求。
+- **为什么必须逐字节还原（D-2）**：dbhub 只接受一个 DSN 串，所以拆分的唯一安全判据是 `join(split(dsn)) === dsn`。任何有损转换（解码后重新编码、把引号/转义规整掉、按 `;` 重新拼接属性）都可能改变**实际发送的字节**：口令里一个 `%2B` 被解码成 `+` 就是另一个口令，库名/端口被重排就是另一个目标。与其拼出一条"看起来对"的 DSN，不如不拆——所以拆分器在内部再做一次 round-trip 比较，不同就放弃，并 `warnOnce` 一条不含值/路径的提示。
+- **URL 形态为什么按原始文本切片**：`new URL()` 会解码 `u.password`、归一化协议/端口，重新拼回去未必与用户输入一致（大小写、`%40` vs `@`、空路径的斜杠……）。因此只在 authority 里找 `user:password@` 的**下标**，保留 `user@`，口令段（编码后的原样）交给凭据库；属性形态则把口令值的原始 token（连同引号）整体换成 `${DSH_DBHUB_DSN}` 占位符，join 时原样填回。
+- **降级与可见性**：凭据服务缺失、`set` 失败、或形态无法安全拆分时，连接**保持原样**（口令仍在 0600 的本地文件里）并且只警告一次；`/state` 行只多一个布尔 `passwordUnsplit`（卡片 env tooltip 说明），绝不把口令或 ref 放进 view/patch。迁移同理：先 `creds.set` 成功，再改**当前**行；已有 ref 的行跳过，因此重复启动不会重复搬。
+
+## 会话权限闸门
+
+> 需求：`dbhub_execute_sql` 要尊重会话输入框的权限模式（仅可查看 / 工作区内修改 / 完全权限），而插件的「环境只读」开关含义保持不变。两者的区别是**谁设的、存哪里**：环境只读是用户在配置页设的连接属性（持久化，dbhub 执行），会话权限是这一轮对话的临时策略（DSH 的 `sandboxPolicy`，不落本插件存储）。
+
+- **为什么位置只能在 `runSourceTool` 里、`runAdhoc` 之前**：闸门要先知道这条 source 的 `ro`（用户设了只读就什么都不做，保持 dbhub 的硬拒绝），所以必须等 `resolveSource` 完成；又必须在 spawn 之前，否则一次被拒的写仍会付出"一条进程 + 一份临时 TOML + 一次能力探测"的代价。放在 `base === 'execute_sql'` 分支里，`search_objects`（本身就是读）与 `dbhub_configure`（根本不经过 `runSourceTool`）自然不受影响——这也是选它而不是选"工具 execute 开头"的原因：后者拿不到已解析的行，还会把两个不相关的工具卷进来。
+- **为什么要自己判 SQL**：dbhub 的 `[[tools]] readonly` 在静态 TOML 里，是**连接级**的，回答不了"这一轮会话准不准写"；而闸门必须在 spawn 前回答。这就是 R59 警告的"插件自制分类"的边界，所以范围被钉死：分类器**只用来拒绝或询问**，绝不用来放行 dbhub 会拒绝的东西——环境只读开启时它根本不介入，环境关闭时它只会更严。另一个方向也钉死：**宁可判成写**（多问一次），因为把写判成读是这个功能唯一的失效方式。
+- **分类器的保守点**：只认"语句**开头**就是读关键词"；`WITH` 要找到主语句且必须是 `SELECT`；一条写 → 整次写；空/只有注释 → 读（dbhub 自己会报错，不该变成权限弹窗）。注释与引号都要按状态机处理（`;` 在 `'…'`、反引号、`--`/`#`/`/*…*/` 里不算分隔），`\'` 与 `''` 都要认。**MySQL 可执行注释 `/*!…*/` 是例外**：服务器会执行它的正文，所以只丢掉 `/*!` 与版本号、正文照常参与判定——否则 `/*! DROP TABLE t */` 就是一条真实绕过路径。
+- **两个服务都是可选的**：`sandboxPolicy` 缺失（headless / SDK 部署）就**不设闸**，行为与旧版逐字节一致；`resolve()` 抛异常（例如会话 cwd 不可用）同样不设闸，只 `warnOnce` 一次——权限探针坏掉不该把所有写入变成拒绝，这是刻意的降级方向。反过来 `approval` 侧**必须关死**：服务缺失、`request` 抛异常（不在开启的轮次里）都不是"放行"的理由。
+- **弹窗内容的取舍**：`reason` 会被写进会话日志（`approval/asked`），所以只给 source 句柄 + 语句类型 + 前 `APPROVAL_SQL_HEAD_MAX = 48` 字符，并过 `scrubSecrets`——整段语句可能含业务数据或字面量口令，不该进日志，也不该成为卡片标题。`displayReason` 用同一段本地化文案（客户端对字符串原样展示，不会当 key 解析）。
+- **`approval.request` 的 `'rejected'` 有两种来源**：用户点了拒绝，以及会话策略是"从不询问"（DSH 在 `decide()` 里直接返回 `'rejected'`，不弹窗）。因此拒绝文案写成"用户拒绝了本次写入（或取消了确认）"，另外为 `'unavailable'`（没有可用回答通道）单独保留一句——不假装知道到底是哪一种。
 
 ## envSlug事故
 
 - 早期实现把非 ASCII 环境名统一 slug 化成一个值，`线上` 与 `测试` 拿到同一个 source 句柄 → 解析时**静默查错库**（模型以为在测环境，实际打线上）。现在：`default` 裸值、纯 ASCII 保留原 slug（既有 source 不变）、非 ASCII 取 `env-<shortHash>`。这是回归红线，不是风格问题。
+- **补充规则（source 身份单射）**：只修非 ASCII 那一类还不够——ASCII 投影本身也是多对一的。实测 `envSlug('prod') === envSlug('PROD') === envSlug('Prod')`；`!!!` 的 slug 是空串，落回 `env`，与真的叫 `env` 的环境撞车；`normalizeEnvName` 又按 64 字符截断，两个只差在第 65 字符的长名共用同一个 store key。后果不是"名字难看"：同工作区两行拿到**同一个 srcId**，`resolveSource` 对任何写法都只能返回 `{ambiguous}`，模型对该工作区的连接**全部不可达**。因此 `envSlug` 只在「规范化后的名字就是 slug」时保留可读句柄（`prod`/`test`/`dev`/纯非 ASCII 的 `env-<hash>` 一个字节都不变），其余一律 `<slug>-<shortHash(原名)>`——可读前缀仍在，单射靠哈希，且 `prod-<hash>` 永不等于 `prod`。哈希取**原名**（不是截断后的名字），否则截断后仍会撞。
+- **截断冲突为什么在写入侧拒绝**：slug 层面已能区分，可 store key 仍是截断后的名字，两条连接会挤在同一行（后写覆盖前写 = 静默丢一条连接，且剩下那条会替另一个环境应答）。`setWorkspaceEnv` / `renameWorkspaceEnv` 因此在「长度上限改变了名字 且 目标 key 已存在」时抛 `code:'envNameTruncated'`（`{confirm:true}` 也不能绕过），并且**零写入**。只有长度上限受保护：`prod ` 与 `prod` 归一后仍是同一行——卡片回传的本来就是存储里的显示名，误判成冲突会让普通更新无法保存。已存在的超长行可以用截断后的名字继续更新，所以不会变成"改不动的行"。
 
 ## 状态通道与inject根因
 
-> **为什么不能改回 inject（5.0 移植的根因）**：dsh 0.1.7 用 Config 表单取代了 settings 命名空间，0.2.x 又删掉浏览器侧 `settingsScope`。旧客户端 `inject: ['slots', 'settingsScope']` 在 0.2.x 上永远等不到服务 → 整个浏览器半区 pending、**无任何报错**，表现就是「配置页 / 侧边栏 / 插件页卡片静默消失」。所以这一层必须做成运行时探测 + 双实现（`legacyFace` / `httpFace`），而不是声明式依赖。
+> **为什么不能改回 inject（5.0 移植的根因）**：dsh 0.1.7 用 Config 表单取代了 settings 命名空间，0.2.x 又删掉浏览器侧 `settingsScope`。旧客户端 `inject: ['slots', 'settingsScope']` 在 0.2.x 上永远等不到服务 → 整个浏览器半区 pending、**无任何报错**，表现就是「配置页 / 侧边栏 / 插件页卡片静默消失」。5.2 起这条状态通道只剩插件自己的 `connection.fetch` 桥（`/api/dsh-dbhub-live/*`）；0.1.x 的 settings 命名空间适配器随 0.1.x 支持一起删除（最低 DSH 0.2.1）。
 
 - 第二个静默失败面：**注入回调是独立作用域**。在回调里引用 `apply()` 的局部变量会 ReferenceError，而错误发生在发布链路上——页面只剩静态值、无任何可见报错。需要的服务必须 `ctx.get(...)` 就地获取。
-- 两条通道都发布同一个 view 是刻意的：客户端只写一份渲染逻辑，通道差异收敛在 `legacyFace` / `httpFace` 两个适配器里。
+- 唯一通道 = 一份渲染逻辑：客户端不再按宿主版本分叉，宿主版本只决定是否显示一条"需要升级 DSH"的警告。
 
 ## 诊断为什么取尾部
 
@@ -60,7 +101,7 @@
 
 - 行内只放图标、来源不做徽章、库名不截断，三条来自同一约束：每个连接只占一行，宽度是稀缺资源。文字按钮吃掉半行；"来源"徽章几乎每行相同却最抢眼；库名被截断是最高频的抱怨。
 - 三面布局的两个阈值（700 / 720）：实测出现过 710px 视口既不算手机（>= 700）也不够宽（< 720）的**空档**，布局判定落空。两阈值之间的窄桌面列必须走紧凑设置条，不能退回竖排。
-- 现代面与 legacy 面必须能同时存在：`render-check` 的旧断言写死了 0.1.x 的 DOM，新界面只能挂在 `dshModern` 下；否则一次"统一界面"就会让旧线渲染异常。
+- 0.1.x 已不再支持，所以只有一套界面：不再需要"现代面/legacy 面同时存在"的分叉，`render-check` 也只钉这一套 DOM（旧 DOM 断言随旧通道一起删除）。
 
 ## 覆盖门为什么先问
 
@@ -72,7 +113,7 @@
 
 ## 版本门与更新检查
 
-- `dshModern` 门（>= 0.2.1，含预发布）不是"只有新版本测过"，而是"新界面依赖的 slot/DOM 能力在这个版本才稳定"。运行版本解析不到时回退为 desktop=true / web=false——桌面端总是新版、旧 web 线保持 legacy，比猜一个值安全。
+- 最低支持版本是 DSH 0.2.1（`DSH_MIN_SUPPORTED`，含预发布：`0.2.1-rc.2` 算 0.2.1；0.1.x 与 0.2.0 一律不支持）。这不是功能门：桥接、工具、配置页都不看版本，`dshTooOld` 只驱动卡片上的一条中英双语警告 + 一条 `warnOnce` 日志（不含路径），让"版本太旧"变成用户能读懂的句子而不是空白卡片。版本解析不到时不判过旧——不能因为探测不到就冤枉一个未知运行时。
 - 更新检查**绝不抛错**：它只是页头一行提示，失败必须只体现为 `error` 字段，不得影响插件任何功能。
 
 ## 模块地图
@@ -80,25 +121,29 @@
 ```
 lib/
   index.mjs      入口：name/inject/apply、Config(volatile)、发布核心 createHostCore(walk/row-mirror/runOp/view)、
-                 双通道接线(0.1.x settings 命名空间 / connection.fetch HTTP 桥)、settings 表单策略与选项写回、configOp 命令处理
-  meta.mjs       插件版本(读 package.json)、DSH 运行时版本探测、semver 比较、dshModern 门
+                 connection.fetch HTTP 桥接线、settings 表单策略与选项写回、configOp 命令处理
+  meta.mjs       插件版本(读 package.json)、DSH 运行时版本探测、semver 比较、最低支持版本门(dshTooOld)
   update.mjs     最新版本检查：npm registry 为主 → GitHub Releases 兜底；内存节流、force、绝不抛错
   bridge.mjs     /api/dsh-dbhub-live 四条 exact Fetch 路由的请求/响应编解码（纯函数）
-  config.mjs     路径与原子持久化(store/runtime/prefs)、DSN 解析、工作区发现、环境选项(readOnly/ssh 归一化、默认密钥)、
-                 零知识助手(describeConn/connLabel/scrubSecrets)、configure 决策纯函数(decideConfigureStep/argsChangedEndpoint/emptyUserDenied)
+  config.mjs     路径与原子持久化(store/runtime/prefs)、DSN 解析、DSN 口令拆分/拼装(splitDsnPassword/joinDsnPassword)、工作区发现、
+                 环境选项(readOnly/ssh 归一化、默认密钥)、零知识助手(describeConn/connLabel/scrubSecrets)、configure 决策纯函数(decideConfigureStep/argsChangedEndpoint/emptyUserDenied)
   i18n.mjs       宿主侧文案表与插值
   state.mjs      运行时状态机 enabled/phase/toolCount/lastError/mode + 订阅发布
-  options.mjs    部署开关：updateIntervalDays / showSidebarEntry / announceAccessPolicy；层叠 Config > prefs.json > 0.1.x 设置文档 > 环境变量 > 内置默认
+  options.mjs    部署开关：updateIntervalDays / showSidebarEntry / announceAccessPolicy / exportDir；层叠 Config > prefs.json > 环境变量 > 内置默认；
+                 exportDir 保存时走 prepareExportDir 探针校验（不可写 → code:'badExportDir'，零写入）
   runtime.mjs    dbhub 可执行文件发现、按需自动安装、定期自动更新
   capability.mjs 上游能力探测（文件级，不 spawn）：[[tools]] readonly 与 ssh_* 需 1.4.0+
   toml.mjs       一次性 TOML 生成器 buildDbhubToml/writeTempToml/removeTempToml/sweepTempToml（文本绝不含秘密）
-  mcp.mjs        MCP JSON-RPC 客户端、工具注册表、来源发现 collectSources/resolveSource、摘要缓存、测试快路径 resolveTestDsn
+  mcp.mjs        MCP JSON-RPC 客户端、工具注册表、来源发现 collectSources/resolveSource、摘要缓存（每行含稳定别名 alias）、测试快路径 resolveTestDsn
   adhoc.mjs      唯一执行引擎：一次性 dbhub 进程（描述符 {dsn,ro,ssh}）、--dsn 或临时 TOML、stderr 清洗、
                  probeConnection、probeSshTunnel、diagnosticTail/DIAG_TAIL_MAX=600/failureLayerOf
-  collect.mjs    授权扫描项目配置文件(mise/.env)提取 DSN 候选，含 askUser 桥接
-  tools.mjs      4 个工具的定义与注册；configure 探连优先
-  policy.mjs     模型侧访问策略：唯一的 system prompt 段（order 8900）
-  client.js      Web 半（手写 lazy-CJS bundle，无构建）：settings.section + 侧边栏面板 + plugins.row.config(summary/page)
+  collect.mjs    授权扫描项目配置文件(mise/.env)提取 DSN 候选，含 askUser 桥接；连接别名 assignConnectionAliases（唯一实现点）
+  tools.mjs      4 个工具的定义与注册；configure 探连优先；SQL 写判定 classifySql + 会话权限闸门（sandboxPolicy/approval）；
+                 结果行数上限 capExecuteSqlText；结果导出 exportReceiptText（摘要回执 + fail-soft）
+  export.mjs     查询结果导出：CSV(RFC 4180)/JSON 载荷生成、可配置目录解析(~/ 展开、相对 = $DSH_HOME)与保存探针 prepareExportDir、
+                 文件名 ASCII 安全化与长度上限、exports/ 落盘（0o700/0o600、wx 不覆盖）；纯函数 + 可注入 fs 缝
+  policy.mjs     模型侧访问策略：唯一的 system prompt 段（order 8900，含 @db:<句柄> 语义与别名→句柄目录；取行函数由 index 传入）
+  client.js      Web 半（手写 lazy-CJS bundle，无构建）：settings.section + 侧边栏面板 + plugins.row.config(summary/page) + 输入框 `@` 输入源
 test/            node:test 单测（纯逻辑 + bridge/客户端契约 + 零知识泄漏门）
 scripts/         desensitize.config.mjs(槽位表=单一事实源) / desensitize-check.mjs / docs-check.mjs / render-check.mjs / release-preflight.mjs
 release-test/    版本矩阵实测：matrix.json(唯一声明) / run.mjs / support-matrix.mjs / mise.toml

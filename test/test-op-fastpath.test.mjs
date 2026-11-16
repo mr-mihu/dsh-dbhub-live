@@ -136,9 +136,11 @@ test('tier 3: nothing known returns null, then a real walk fills the cache', asy
   assert.equal(prod.from, 'cache')
   assert.equal(prod.dsn, DSN_PROD)
 
-  // The accessors describe the same row, with the env name normalized.
-  assert.equal(mcp.cachedRow(WS, ' prod ').dsn, DSN_PROD)
-  assert.equal(mcp.cachedRow('D:/work/other', 'prod'), undefined)
+  // The accessor describes the same row. (Name normalization is asserted through
+  // resolveTestDsn below, which is the only consumer left: the single-row
+  // `cachedRow` helper went with the dead-code batch.)
+  assert.equal(mcp.cachedRows().find((r) => r.wsPath === WS && r.env === 'prod').dsn, DSN_PROD)
+  assert.equal(mcp.cachedRows().some((r) => r.wsPath === 'D:/work/other'), false)
   // cachedRows() hands out a copy: a caller cannot corrupt the cache.
   const copy = mcp.cachedRows()
   copy.push({ wsPath: 'D:/work/injected', env: 'default', dsn: DSN_DEFAULT })
@@ -183,7 +185,7 @@ test('environment names are normalized on both sides of the match', () => {
 
 // ── the cache is per module instance ───────────────────────────────────────
 
-test('hasRowCache/cachedRows/cachedRow are empty in a fresh mcp.mjs instance', async () => {
+test('hasRowCache/cachedRows are empty in a fresh mcp.mjs instance', async () => {
   await mcp.collectSources(ctx, subprocess)
   assert.equal(mcp.hasRowCache(), true, 'the shared instance has walked')
 
@@ -193,7 +195,6 @@ test('hasRowCache/cachedRows/cachedRow are empty in a fresh mcp.mjs instance', a
   assert.notEqual(fresh, mcp, 'the query string must load a distinct instance')
   assert.equal(fresh.hasRowCache(), false, 'no walk has completed in the fresh instance')
   assert.deepEqual(fresh.cachedRows(), [], 'the fresh cache is empty')
-  assert.equal(fresh.cachedRow(WS, 'prod'), undefined)
   assert.equal(
     fresh.resolveTestDsn({ wsPath: WS, env: 'prod', storeRows: [], cachedRows: fresh.cachedRows(), hasCache: fresh.hasRowCache() }),
     null,

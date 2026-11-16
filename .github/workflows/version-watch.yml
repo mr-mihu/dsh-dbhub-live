@@ -1,0 +1,125 @@
+name: version-watch
+
+# Weekly drift check for THIS plugin's own release state: does `package.json` still
+# line up with the versions npm actually publishes? It intentionally does NOT look at
+# DSH releases — a plugin cannot know the harness's schedule, and a red job that blames
+# the runtime only teaches readers to ignore it.
+#
+# Two mistakes it is meant to surface:
+#   * the version was bumped and the release never happened  -> `ahead`
+#   * something was published that the branch never absorbed -> `behind`
+#
+# It NEVER publishes. `npm publish` stays a manual step with a human at the keyboard
+# (doc/RELEASE.md: preview tags vs `latest`, unpublished versions are never moved), so
+# the whole output of this job is an issue asking a maintainer to look.
+#
+# `scripts/version-watch.mjs` has no dependencies, so there is no install step.
+on:
+  schedule:
+    # Mondays 03:20 UTC — after the weekend, before the week's first release work.
+    - cron: '20 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'branch to compare against the npm dist-tags (default: dev)'
+        required: false
+        default: dev
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  # Never cancel a run that is about to open or comment on an issue.
+  group: version-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the branch under watch
+        uses: actions/checkout@v7
+        with:
+          # `dev` is the integration branch (the next version is prepared there); `main`
+          # only ever receives releases, so it would always look in sync.
+          ref: ${{ github.event.inputs.ref || 'dev' }}
+          # The issue body quotes the last 5 commits; the default depth of 1 has none.
+          fetch-depth: 10
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Compare package.json with the npm dist-tags
+        id: watch
+        # exit 0 = ok, exit 1 = drift (handled below), exit 2 = could not run (handled below)
+        # `--issue-dir` writes title.txt / body.md / comment.md for a non-ok status: the
+        # prose is built by the script (unit-tested in test/version-watch.test.mjs), so this
+        # file carries no text a maintainer has to reread and no shell quoting around it.
+        continue-on-error: true
+        run: |
+          node scripts/version-watch.mjs --json \
+            --github-output "$GITHUB_OUTPUT" \
+            --issue-dir "$RUNNER_TEMP/version-watch"
+
+      - name: Fail the job when the check could not run
+        # A watch that reports "ok" because it could not reach the registry is worse than
+        # no watch at all: a broken network must never look like a healthy release state.
+        # Anything that is not 0 (ok) or 1 (drift, handled below) fails the job — that
+        # includes 2 and an EMPTY value, i.e. a hard crash that never wrote its outputs.
+        if: steps.watch.outputs.exit_code != '0' && steps.watch.outputs.exit_code != '1'
+        env:
+          EXIT_CODE: ${{ steps.watch.outputs.exit_code }}
+        run: |
+          echo "::error::version-watch did not produce a verdict (exit '${EXIT_CODE:-none}') — network, registry or parse failure. This is NOT an 'ok'."
+          exit 1
+
+      - name: Show the verdict in the run summary
+        if: steps.watch.outputs.status != ''
+        env:
+          STATUS: ${{ steps.watch.outputs.status }}
+          REASON: ${{ steps.watch.outputs.reason }}
+          REPO_VERSION: ${{ steps.watch.outputs.repo_version }}
+          TAG_DEV: ${{ steps.watch.outputs.tag_dev }}
+          TAG_LATEST: ${{ steps.watch.outputs.tag_latest }}
+        run: |
+          {
+            printf '### version-watch: %s\n\n' "${STATUS}"
+            printf '| item | version |\n| --- | --- |\n'
+            printf '| repository `package.json` | `%s` |\n' "${REPO_VERSION:-?}"
+            printf '| npm `dev` | `%s` |\n' "${TAG_DEV:-not published}"
+            printf '| npm `latest` | `%s` |\n' "${TAG_LATEST:-not published}"
+            printf '| rule | `%s` |\n' "${REASON}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open or update the drift issue
+        # `gh` is the only part of this workflow that cannot run locally, so it stays as
+        # small as possible: pick the files the script wrote, then file or comment on one
+        # issue. Everything a reader would want to check lives in the script instead.
+        if: steps.watch.outputs.exit_code == '1'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/version-watch"
+
+          if [ ! -s "${dir}/title.txt" ] || [ ! -s "${dir}/body.md" ] || [ ! -s "${dir}/comment.md" ]; then
+            echo "::error::version-watch did not produce the issue files — nothing was filed."
+            exit 1
+          fi
+          title="$(cat "${dir}/title.txt")"
+
+          # Idempotent: one open issue per status. The first exact-title match is picked
+          # inside jq, not with `| head -n 1`: under `set -o pipefail` a pipeline that
+          # closes early can SIGPIPE `gh` and turn a successful search into a failed step.
+          existing="$(gh issue list --state open --limit 200 --json number,title \
+            --jq "[.[] | select(.title == \"${title}\")][0].number // empty")"
+
+          if [ -n "${existing}" ]; then
+            # Already open: append a dated re-check instead of opening a duplicate.
+            gh issue comment "${existing}" --body-file "${dir}/comment.md"
+          else
+            gh issue create --title "${title}" --body-file "${dir}/body.md"
+          fi

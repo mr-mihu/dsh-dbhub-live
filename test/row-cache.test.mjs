@@ -124,13 +124,21 @@ test('a patched row still summarizes to metadata only (no DSN, no credentials)',
   assert.equal(summaries.length, 1)
   assert.deepEqual(
     Object.keys(summaries[0]).sort(),
-    ['conn', 'env', 'path', 'persisted', 'ro', 'source', 'ssh', 'srcId', 'title'].sort(),
+    // `passwordUnsplit` is a BOOLEAN STATUS: this row still carries its
+    // password inside the DSN, so the card is allowed to say so (the status is
+    // not the password, and the ref itself is never published). There is NO
+    // `maxRows`: the row cap became one GLOBAL setting, so a dead per-row value
+    // on the wire would suggest it still does something. `updatedAt` is the
+    // per-row edit stamp the card's "recently updated" sort reads.
+    ['alias', 'conn', 'passwordUnsplit', 'env', 'path', 'persisted', 'ro', 'source', 'ssh', 'srcId', 'title', 'updatedAt'].sort(),
   )
   const text = JSON.stringify(summaries)
   assert.equal(text.includes('CHANGE_ME'), false)
   assert.equal(text.includes('mysql://user'), false, 'no credentialed URL shape survives')
   assert.equal(text.includes('"dsn"'), false)
+  assert.equal(summaries[0].passwordUnsplit, true, 'a row whose password was not split is flagged')
   assert.equal(summaries[0].conn, 'mysql://127.0.0.1:3307/app')
+  assert.equal(summaries[0].alias, 'prod', 'the unrivaled environment name is the alias')
   assert.equal(summaries[0].source, 'persisted(user)', 'provenance stays, credentials do not')
   assert.equal(summaries[0].ro, false)
   assert.equal(summaries[0].ssh, null)
@@ -165,18 +173,19 @@ test('the options patch flips a row in place and is idempotent', () => {
   assert.deepEqual(mcp.applyRowPatch(rows, { op: 'options', path: 'D:/work/none', env: 'prod', ro: true }), rows)
 })
 
-test('cachedRows/cachedRow expose the host-side rows the card is showing', async () => {
+test('cachedRows exposes the host-side rows the card is showing', async () => {
   // Earlier tests in this file already walked once, so the cache is warm; what
-  // matters is that the accessors track the cache AND the patch layer.
+  // matters is that the accessor tracks the cache AND the patch layer.
   assert.ok(Array.isArray(mcp.cachedRows()))
   const mirror = mcp.createRowMirror()
   mirror.patch({ op: 'add', path: 'D:/work/app', title: 'app', env: 'default', dsn: 'mysql://127.0.0.1:3306/app' })
-  const hit = mcp.cachedRow('D:/work/app', 'default')
-  assert.ok(hit, 'a patched row is visible through cachedRow')
+  const find = (wsPath, env) => mcp.cachedRows().find((r) => r.wsPath === wsPath && r.env === env)
+  const hit = find('D:/work/app', 'default')
+  assert.ok(hit, 'a patched row is visible through cachedRows()')
   assert.equal(hit.dsn, 'mysql://127.0.0.1:3306/app')
   assert.equal(mcp.cachedRows().filter((r) => r.env === 'default').length, 1)
   // A missing row is undefined, never a throw.
-  assert.equal(mcp.cachedRow('D:/work/none', 'prod'), undefined)
+  assert.equal(find('D:/work/none', 'prod'), undefined)
 })
 
 test('concurrent collectSources calls share ONE walk', async () => {

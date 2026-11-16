@@ -44,7 +44,15 @@ jobs:
         run: |
           node release-test/run.mjs selftest
           node release-test/run.mjs matrix
-          node release-test/support-matrix.mjs --check
+      # Structure: the generated documents must match the committed matrix and the
+      # committed evidence summary. This never reads .release-test/, so a clean
+      # checkout can always answer it.
+      - name: Support matrix structure (generated docs vs committed inputs)
+        run: node release-test/support-matrix.mjs --check
+      # Freshness: the committed evidence summary must still match the reports this
+      # job just produced. Self-skips when no .release-test/reports/ exists.
+      - name: Support matrix evidence table (local reports only)
+        run: node release-test/support-matrix.mjs --check-evidence
       - name: Run the declared matrix against real DSH releases
         run: node release-test/run.mjs --tier "${{ github.event.inputs.tier || 'declared' }}" --provision cli --cli-source mise
       - name: Upload evidence and report

@@ -5,10 +5,13 @@
 
 ## 原则
 
-真实主机 / 账号 / 密码 / 库名 / 项目名只允许存在于两处：
+真实主机 / 账号 / 密码 / 库名 / 项目名只允许存在于三处（都在仓库外）：
 
-1. `$DSH_HOME/storages/dsh-dbhub-live/credentials.json`（仓库外）；
-2. 本地 `.env` 的 `DSH_DBHUB_DESENSITIZE_RE`（`.gitignore` 排除、`package.json` 的 `files` 不含）。
+1. `$DSH_HOME/storages/dsh-dbhub-live/credentials.json`（连接元数据与**去口令的 DSN**）：自 6.0 起 SSH 隧道口令与**数据库口令**的**值**都不在这里，本文件只保存引用名（`ssh.passwordRef` / `ssh.passphraseRef` / `dsnPasswordRef`）与不含口令的 DSN；形态无法安全拆分或凭据服务不可用时才回退明文，并在日志里提示一次（`/state` 行只多一个布尔 `passwordUnsplit`，卡片 tooltip 说明）；
+2. DSH 凭据库（默认 `$DSH_HOME/.credentials.yaml`，由 DSH 管理）：SSH 登录密码 / 密钥口令，以及从 DSN 里拆出来的**数据库口令**的**值**。插件不读写该文件，只经 `ctx.get('credentials')` 服务读写；
+3. 本地 `.env` 的 `DSH_DBHUB_DESENSITIZE_RE`（`.gitignore` 排除、`package.json` 的 `files` 不含）。
+
+**查询结果导出不是仓库内容**：`dbhub_execute_sql` 的 `export` 把结果行写到 `$DSH_HOME/storages/dsh-dbhub-live/exports/`（仓库外、不进包），模型可见的只有摘要里的 **source 句柄 / 行数 / 路径**（文案在 `lib/i18n.mjs` 的 `result.export*`，JSON 载荷不含 DSN）。`lib/export.mjs` 是新增的模型可见文本出口（摘要拼装 + 文件头注释），已登记进 `host-copy` 槽位；导出文件的**内容**只在本机，**不得**被复制进仓库、测试夹具或文档示例。
 
 **仓库内一切内容都视为会公开分发**（含 `test/`——它被打进 npm tarball——以及工具描述文案）。这些值一旦公开即视为泄露、无法追回，所以门禁是硬门而不是提示。
 
@@ -26,7 +29,27 @@
    - `name`：本地 denylist。
 3. **本地 denylist（补充）**：pattern 抓不到的**裸名字**（项目 / 公司 / 库名）放在 `.env` 的 `DSH_DBHUB_DESENSITIZE_RE`（`|` 分隔、正则转义、多条取并集）。CI 里没有 `.env`，该层自动降级为提示，不影响其余两层。
 
-`SKIP_DIRS` 跳过 `.git`、`node_modules`、`.dsh-test`、`.release-test`、`dist`、`coverage`；两个本地开发文档（`doc/PLAN-*.md`、`doc/implementation-notes.md`）不进 git 也不进包，因此不扫。
+`SKIP_DIRS` 跳过 `.git`、`node_modules`、`.dsh-test`、**`.dsh-a` / `.dsh-b` / `.pnpm-store`**、`.release-test`、`dist`、`coverage`。后三个 `.` 目录是 [DEVELOPMENT.md](DEVELOPMENT.md) 让开发者建**在仓库里**的：`.dsh-a` / `.dsh-b` 是隔离 `DSH_HOME`（里面是真实本地凭据），`.pnpm-store` 是本机打包用的 store（`.gitignore` 也排除它，否则脏工作区会挡住 `release:preflight`）。扫它们只会把开发者自己的机器误报成泄漏。两个本地开发文档（`doc/PLAN-*.md`、`doc/implementation-notes.md`）不进 git 也不进包，因此不扫。
+
+本地 denylist 编译失败是**门禁失败**（`exit 1`），不是提示：这一层是唯一能看见裸项目名/库名的规则，坏了不能报 clean。
+
+## `password` 规则的判据（D1 / D2）
+
+`password` 规则匹配「关键字 + 赋值」：`password` / `passwd` / `pwd` / `secret` / `token` / `api_key` / `private_key` / `client_secret` … 后跟 `:` 或 `=`。
+
+1. **关键字两侧可以有引号**（D2）：`"password": "…"`、`'api_key': '…'` 与裸写法同等对待。JSON / JS 对象字面量就是这么写的，只认裸关键字等于整类漏检。
+2. **引号里的值永远是"写下来的值"**：带引号的字面量不享受任何裸标识符豁免，只接受显式占位（`CHANGE_ME` / `${VAR}` / `process.env.X` / `<password>` / `****` / 全大写下划线常量名 等）。
+3. **无引号的值只在"代码文件"里可能被豁免**（D1），并且只有三种形状：
+   - 全大写 + 下划线常量：`PASSWORD_FIELD`、`API_KEY_ENV`；
+   - 含点号的成员路径：`req.body.password`、`process.env.DB_PASSWORD`；
+   - 纯字母/下划线的单词（不含数字）：`auth`、`keep`、`undefined`、`pwdItem`——这是变量名或注释里的词。
+   带数字或标点（`hunter2`、`abc123`、`p@ss`）一律按字面量判。这就是**最真实的泄漏形状**：配置示例、文档、`.env` 里都这么写。
+4. **文档与配置类文件没有豁免**：`.md` / `.markdown` / `.yml` / `.yaml` / `.toml` / `.json` / 任意 `*.env*` 里的无引号值一律按字面量判（判据：`CONFIG_FILE_RE`，见 `scripts/desensitize-check.mjs`）。人人都这么写，所以这里不能有豁免。
+5. **配置形状的文件自动获得 `password` 规则**：未登记进槽位表的新 `.yml` / `.env` 也要查——规则集按「文件形状」而不是只按槽位表决定，否则判据再严也跑不到那个文件上（这正是 D1 第一次修完仍然漏的地方）。
+6. **`.env` 的键名常把关键字嵌在中间**（`DB_PASSWORD=`），而 `_` 是词字符，`\bpassword\b` 永远匹配不到。所以配置类文件额外整行匹配 `KEY=value`（`ENV_SECRET_LINE_RE`），并把值交给同一套判据；`DB_PASSWORD=`、`DB_PASSWORD=${DB_PASSWORD}`、`DB_PASSWORD=CHANGE_ME` 分别按「空值 / 引用 / 占位」放行。
+5. **占位词不区分大小写**：`Password` / `PASSWORD` 作为**值**出现的 UI 标签（`"adv.auth.password": "Password"`）是占位词，不是口令。
+
+新增/修改这块判据必须同步跑 `node test/gates.test.mjs`：`D1/D2` 用例逐个文件类型（code / doc / yml / toml / json）钉住"坏样本 exit 1"，并反向钉住 `req.body.password`、`PASSWORD_FIELD`、`CHANGE_ME` 仍然 clean。
 
 ## 写法约定（新增内容一律照此）
 
