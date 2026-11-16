@@ -1,29 +1,29 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-16T03:20:55.966Z",
+  "generatedAt": "2026-11-16T03:28:47.178Z",
   "pluginVersion": "6.0.0-rc.10",
   "matrixHash": "34be607694e6f525fb529409a749224aaaef8a1c95afbe41ad3babd5617ea947",
   "fullRun": {
-    "runId": "20261115-124749-34be60",
-    "generatedAt": "2026-11-15T04:50:12.530Z",
+    "runId": "20261116-112218-34be60",
+    "generatedAt": "2026-11-16T03:28:36.940Z",
     "status": "green"
   },
   "verdict": {
     "state": "complete",
     "overall": "pass",
     "reviewer": "dsh-agent (lead)",
-    "reviewedAt": "2026-11-15T04:50:20.675Z"
+    "reviewedAt": "2026-11-16T03:28:46.611Z"
   },
   "targets": {
     "0.2.1-rc.2": {
-      "runId": "20261115-124749-34be60",
-      "generatedAt": "2026-11-15T04:50:12.530Z",
+      "runId": "20261116-112218-34be60",
+      "generatedAt": "2026-11-16T03:28:36.940Z",
       "status": "pass",
       "provisionMode": "cli",
       "cliSource": "mise",
-      "readyMs": 5361,
-      "pluginVersion": "6.0.0-rc.9",
-      "commit": "f0cb8add",
+      "readyMs": 43241,
+      "pluginVersion": "6.0.0-rc.10",
+      "commit": "d516458d",
       "counts": {
         "pass": 21,
         "fail": 0,
@@ -33,14 +33,14 @@
       }
     },
     "0.2.1-rc.5": {
-      "runId": "20261115-124749-34be60",
-      "generatedAt": "2026-11-15T04:50:12.530Z",
+      "runId": "20261116-112218-34be60",
+      "generatedAt": "2026-11-16T03:28:36.940Z",
       "status": "pass",
       "provisionMode": "cli",
       "cliSource": "mise",
-      "readyMs": 5323,
-      "pluginVersion": "6.0.0-rc.9",
-      "commit": "f0cb8add",
+      "readyMs": 37536,
+      "pluginVersion": "6.0.0-rc.10",
+      "commit": "d516458d",
       "counts": {
         "pass": 21,
         "fail": 0,
@@ -50,14 +50,14 @@
       }
     },
     "0.2.2-rc.1": {
-      "runId": "20261115-124749-34be60",
-      "generatedAt": "2026-11-15T04:50:12.530Z",
+      "runId": "20261116-112218-34be60",
+      "generatedAt": "2026-11-16T03:28:36.940Z",
       "status": "pass",
       "provisionMode": "cli",
       "cliSource": "mise",
-      "readyMs": 5695,
-      "pluginVersion": "6.0.0-rc.9",
-      "commit": "f0cb8add",
+      "readyMs": 35400,
+      "pluginVersion": "6.0.0-rc.10",
+      "commit": "d516458d",
       "counts": {
         "pass": 21,
         "fail": 0,
@@ -67,14 +67,14 @@
       }
     },
     "0.2.2-rc.2": {
-      "runId": "20261115-124749-34be60",
-      "generatedAt": "2026-11-15T04:50:12.530Z",
+      "runId": "20261116-112218-34be60",
+      "generatedAt": "2026-11-16T03:28:36.940Z",
       "status": "pass",
       "provisionMode": "cli",
       "cliSource": "mise",
-      "readyMs": 5908,
-      "pluginVersion": "6.0.0-rc.9",
-      "commit": "f0cb8add",
+      "readyMs": 36886,
+      "pluginVersion": "6.0.0-rc.10",
+      "commit": "d516458d",
       "counts": {
         "pass": 21,
         "fail": 0,
