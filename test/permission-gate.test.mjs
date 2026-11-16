@@ -305,7 +305,10 @@ test('session workspace-write: reads run unanswered, writes ask exactly once', a
   assert.equal(req.toolName, 'dbhub_execute_sql')
   assert.equal(req.callId, 'call-1')
   assert.equal(req.displayReason, req.reason, 'the presentation copy is the localized reason')
-  assert.ok(String(req.reason).includes('gate'), 'the prompt names the source handle: ' + req.reason)
+  assert.ok(String(req.reason).includes('gate'), 'the prompt names the configured row: ' + req.reason)
+  // The ENDPOINT leads: "is this really the box I think it is?" must be
+  // answerable from the prompt itself, without opening the settings page.
+  assert.ok(String(req.reason).includes('127.0.0.1:3306/app'), 'the prompt names the endpoint: ' + req.reason)
   assert.ok(String(req.reason).includes('DROP'), 'the prompt names the statement type: ' + req.reason)
   assert.equal(String(req.reason).includes(DSN), false, 'no DSN in the prompt')
   assert.equal(String(req.reason).includes('CHANGE_ME'), false, 'no password in the prompt')
@@ -419,9 +422,11 @@ test('the session-permission copy exists in both locales and stays English in en
     assert.notEqual(i18n.tFor('en', key), key, 'missing en key: ' + key)
     assert.equal(/[\u4e00-\u9fff]/.test(i18n.tFor('en', key)), false, 'en copy must stay English: ' + key)
   }
-  const en = i18n.tFor('en', 'approval.writeReason', { where: 'app · prod', kind: 'DROP', head: 'DROP TABLE app' })
+  const en = i18n.tFor('en', 'approval.writeReason', { conn: 'mysql://127.0.0.1:3306/app', where: 'app · prod', kind: 'DROP', head: 'DROP TABLE app' })
   assert.ok(en.includes('app · prod') && en.includes('DROP'), en)
+  assert.ok(en.includes('127.0.0.1:3306/app'), 'the endpoint survives localization: ' + en)
   assert.equal(en.includes('{where}'), false, 'the placeholder is substituted: ' + en)
+  assert.equal(en.includes('{conn}'), false, 'the endpoint placeholder is substituted: ' + en)
 
   // The prompt names the connection the way the CARD does (title · environment),
   // not the opaque source id — a destructive prompt must be answerable without

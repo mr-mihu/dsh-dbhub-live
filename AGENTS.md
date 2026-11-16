@@ -104,7 +104,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - 写判定是**纯函数** `classifySql(sql)`：剥前导空白/注释 → 按顶层 `;` 拆语句（`'…'`/`"…"`/反引号/注释里的 `;` 不算；`\'` 与 `''` 要处理）→ 首关键词白名单 `SELECT/SHOW/DESCRIBE/DESC/EXPLAIN/VALUES/TABLE/PRAGMA`，`WITH` 向后扫过配平括号找主语句且必须 `SELECT`；其余（含无法识别的开头）一律写。**任一条写 → 整次写**；空/只有注释 = 读。**宁可误判成写**。MySQL 可执行注释 `/*!…*/` 的正文参与判定（只丢标记与版本号），否则是一条真实绕过。
 - 选项 **`sandboxPolicy`**（`ctx.get` 就地取）：`resolve({ session })` 取 `mode`。服务缺失（无头/SDK）**不设闸**；`resolve()` 抛异常同样不设闸并只 `warnOnce` 一次（文案不含 DSN/路径）。未知 mode 按「不设闸」处理（不替会话发明规则）。
 - 选项 **`approval`**：`request({ agent, toolName, ...(callId !== undefined ? {callId} : {}), reason, displayReason, signal })`。`rejected`/`cancelled` → 「用户拒绝」拒绝；`unavailable` → 「当前会话不允许弹窗确认（从不询问）」拒绝；服务缺失或 `request` 抛异常（不在开启的轮次里）→ **fail closed** + `warnOnce` 一次。拒绝路径**零 spawn / 零临时文件 / 零 store 写**。
-- 弹窗文案 `approval.writeReason`：**用卡片上的说法指认连接**（`approvalWhereOf`：`「<工作区标题> · <环境>」`，`default` 环境不重复；无标题才回退 source 句柄）+ **语句类型关键词** + 语句前 `APPROVAL_SQL_HEAD_MAX = 48` 字符（过 `scrubSecrets`）。**不许只给 source 句柄**——那是要求用户去设置页比对 id 才能回答一个破坏性操作；`reason` 同时进会话日志，所以**不得整段回显语句**，也不得出现 DSN/主机/账号。拒绝文案必须写明下一步，并禁止改用命令行/脚本/其它插件绕过。
+- 弹窗文案 `approval.writeReason`：**用卡片上的说法指认连接**（**先给端点 `connLabel(dsn)`**——`mysql://host:port/db`，用户判断"在哪执行"只靠这个——再用 `approvalWhereOf` 给 `「<工作区标题> · <环境>」`，`default` 环境不重复、无标题才回退句柄）+ **语句类型关键词** + 语句前 `APPROVAL_SQL_HEAD_MAX = 48` 字符（过 `scrubSecrets`）。**不许只给 source 句柄**——那是要求用户去设置页比对 id 才能回答一个破坏性操作；`reason` 同时进会话日志，所以**不得整段回显语句**，也不得出现**账号/口令**（主机与库名必须显示：那是用户确认"是不是这台库"的唯一依据，`connLabel` 已经剥掉 userinfo）。拒绝文案必须写明下一步，并禁止改用命令行/脚本/其它插件绕过。
 - 依赖图不变：两个服务都是 `ctx.get` 运行时取的**可选服务**，没有新增 import；`policy` 仍是叶子。门禁 `test/permission-gate.test.mjs`。
 
 ### source 身份
