@@ -22,8 +22,9 @@
 | --- | --- | --- |
 | 多连接 / 多工作区 | 一个工作区可挂多个环境（`default` / `prod` / `dev`…，名字支持中文），各自独立、不串库。 | [连接管理](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#三连接管理) |
 | 只读模式与 SSH 隧道 | 按环境开启：只读由 dbhub 原生拒绝写操作，隧道让跳板机后面的库也能连。 | [环境选项](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#十二环境选项与上游能力门槛) |
-| `@` 选数据源 | 输入框打 `@` 挑连接，一条消息可以选多个，各自落在自己的库上。 | [多选引用](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#十五输入框-数据源引用一条消息可多选) |
-| 结果行数上限 | 按环境限制每条语句返回多少行，免得一次 `select *` 把整张表灌进上下文。 | [上限与落点](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/CLIENT.md#环境选项的落点只读-ssh-结果行数上限) |
+| `@` 选数据源 | 打 `@` 列出当前工作区的连接；别的库按 Tab 进「其他工作区的连接」。一条消息可引用多个，各自落在自己的库上。 | [多选引用](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#十五输入框-数据源引用一条消息可多选) |
+| 结果行数上限 | 全局设一个默认上限（单次调用可用 `maxRows` 覆盖），免得一次 `select *` 把整张表灌进上下文。 | [上限与落点](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/CLIENT.md#环境选项的落点只读-ssh-结果行数上限) |
+| 排序与复制 | 行可拖拽排序、拖到别的工作区、一键复制；只有行首手柄能拖，行内文字照常选中复制。 | [排序与复制](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#二十一数据源拖拽排序跨工作区移动与复制) |
 | 结果导出 | 结果行多时写成 CSV / JSON 文件，对话里只回摘要和路径。 | [导出规则](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#二十查询结果导出csv-json) |
 | 连接列表与测试 | 连接多了能搜能排；单条或一键测试，测的是该环境真正生效的连接。 | [搜索 / 排序 / 批量测试](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#十七连接列表的搜索-排序-批量测试) |
 | 口令存 DSH 凭据库 | 数据库密码与 SSH 口令只存 DSH 凭据库，连接文件里只有引用名。 | [口令同源](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#十九数据库口令与-ssh-口令同源dsh-凭据库) |

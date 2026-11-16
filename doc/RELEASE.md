@@ -107,7 +107,9 @@ gh pr merge --merge
 # 3) main 的合并提交也要过闸门（tree 相同则复用 dev 的报告，否则重跑），然后打 tag
 npm run release:preflight
 git checkout main && git pull; git tag -a vX.Y.Z -m "..."; git push origin vX.Y.Z
-# 4) GitHub 正式发布（--latest，附 tarball）
+# 4) GitHub 正式发布（--latest，附 tarball，正文中英双语——英文段放在中文段后面）
+#    正文格式：新增 / 修改 / 修复 / 优化 各一行一条，不写长段落。
+#    tgz 必须作为资产附上（`npm pack` 产物），否则下载页只有一个裸 tag。
 gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> dsh-dbhub-live-X.Y.Z.tgz
 # 5) npm：把命令交给用户手动执行（代理不代发）
 #    npm publish --registry=https://registry.npmjs.org/    # 不带 --tag → latest 指向它
