@@ -38,7 +38,7 @@ const base = await import('../lib/config.mjs')
 const mcp = await import('../lib/mcp.mjs')
 const state = await import('../lib/state.mjs')
 const i18n = await import('../lib/i18n.mjs')
-const { registerCoreTools, classifySql, APPROVAL_SQL_HEAD_MAX } = await import('../lib/tools.mjs')
+const { registerCoreTools, classifySql, approvalWhereOf, APPROVAL_SQL_HEAD_MAX } = await import('../lib/tools.mjs')
 
 const DSN = 'mysql://user:CHANGE_ME@127.0.0.1:3306/app'
 const WS = 'D:/ws/gate'
@@ -419,6 +419,15 @@ test('the session-permission copy exists in both locales and stays English in en
     assert.notEqual(i18n.tFor('en', key), key, 'missing en key: ' + key)
     assert.equal(/[\u4e00-\u9fff]/.test(i18n.tFor('en', key)), false, 'en copy must stay English: ' + key)
   }
-  const en = i18n.tFor('en', 'approval.writeReason', { src: 'app_ab12', kind: 'DROP', head: 'DROP TABLE app' })
-  assert.ok(en.includes('app_ab12') && en.includes('DROP'), en)
+  const en = i18n.tFor('en', 'approval.writeReason', { where: 'app · prod', kind: 'DROP', head: 'DROP TABLE app' })
+  assert.ok(en.includes('app · prod') && en.includes('DROP'), en)
+  assert.equal(en.includes('{where}'), false, 'the placeholder is substituted: ' + en)
+
+  // The prompt names the connection the way the CARD does (title · environment),
+  // not the opaque source id — a destructive prompt must be answerable without
+  // opening the settings page to look ids up.
+  assert.equal(approvalWhereOf({ title: 'gate', env: 'w' }, 'gate_ab12_w'), 'gate · w')
+  assert.equal(approvalWhereOf({ title: 'gate', env: 'default' }, 'gate_ab12'), 'gate', 'the unnamed environment adds nothing')
+  assert.equal(approvalWhereOf({ env: 'w' }, 'gate_ab12_w'), 'w')
+  assert.equal(approvalWhereOf({}, 'gate_ab12_w'), 'gate_ab12_w', 'no title at all falls back to the id')
 })
