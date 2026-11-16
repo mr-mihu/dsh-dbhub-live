@@ -3577,9 +3577,16 @@ console.log('\n[51] row order from the store, drag & drop moves, copy')
     return chip ? toHtml(chip).replace(/<[^>]*>/g, '') : '?'
   })
   const rowEl = (wrap) => classed(wrap, 'dbh-envrow')[0]
+  // The drag lives on the GRIP, not on the row: a draggable row swallows text
+  // selection, and copying a host or a database name out of the list is a real
+  // daily need. The assertion follows the contract — and it would fail if the
+  // row went back to being draggable on its own.
+  const gripEl = (wrap) => classed(wrap, 'dbh-grip')[0]
   const dragStart = (wrap) => {
-    const el = rowEl(wrap)
-    check('the dragged row is draggable', el && el.props.draggable === true)
+    const row = rowEl(wrap)
+    const el = gripEl(wrap)
+    check('the row itself is NOT draggable (text stays selectable)', !row || row.props.draggable !== true)
+    check('the dragged row is draggable', !!(el && el.props.draggable === true))
     if (el && typeof el.props.onDragStart === 'function') {
       el.props.onDragStart({ dataTransfer: { setData() {}, effectAllowed: '' }, stopPropagation() {} })
     }
@@ -3765,7 +3772,9 @@ console.log('\n[51] row order from the store, drag & drop moves, copy')
   check('a group with only auto-discovered rows still has the append zone', !!soloEnd,
     toHtml(groupsOf(autoOnly.tree)[1]).slice(0, 300))
   const autoRowEl = classed(groupsOf(autoOnly.tree)[1], 'dbh-envrow')[0]
-  check('…and its auto row is still not draggable', autoRowEl.props.draggable !== true)
+  const soloGrip = classed(autoRowEl, 'dbh-grip')[0]
+  check('…and its auto row keeps a disabled drag handle', !!soloGrip && soloGrip.props.draggable !== true, JSON.stringify(soloGrip && soloGrip.props))
+  check('…and the auto row itself is not a drag source', autoRowEl.props.draggable !== true)
   autoOnly.dispose()
   p.dispose()
 
@@ -3779,9 +3788,9 @@ console.log('\n[51] row order from the store, drag & drop moves, copy')
   })
   expandAll(r)
   const rRows = (gi) => classed(groupsOf(r.tree)[gi], 'dbh-envwrap')
-  const rRowEl = rowEl(rRows(0)[0])
-  if (typeof rRowEl.props.onDragStart === 'function') {
-    rRowEl.props.onDragStart({ dataTransfer: { setData() {}, effectAllowed: '' }, stopPropagation() {} })
+  const rGrip = gripEl(rRows(0)[0])
+  if (rGrip && typeof rGrip.props.onDragStart === 'function') {
+    rGrip.props.onDragStart({ dataTransfer: { setData() {}, effectAllowed: '' }, stopPropagation() {} })
   }
   r.tree = r.renderAgain()
   const rTarget = rRows(1)[0]
