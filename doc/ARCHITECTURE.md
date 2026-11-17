@@ -68,6 +68,10 @@
 - **两个服务都是可选的**：`sandboxPolicy` 缺失（headless / SDK 部署）就**不设闸**，行为与旧版逐字节一致；`resolve()` 抛异常（例如会话 cwd 不可用）同样不设闸，只 `warnOnce` 一次——权限探针坏掉不该把所有写入变成拒绝，这是刻意的降级方向。反过来 `approval` 侧**必须关死**：服务缺失、`request` 抛异常（不在开启的轮次里）都不是"放行"的理由。
 - **弹窗内容的取舍**：`reason` 会被写进会话日志（`approval/asked`），所以只给 source 句柄 + 语句类型 + 前 `APPROVAL_SQL_HEAD_MAX = 48` 字符，并过 `scrubSecrets`——整段语句可能含业务数据或字面量口令，不该进日志，也不该成为卡片标题。`displayReason` 用同一段本地化文案（客户端对字符串原样展示，不会当 key 解析）。
 - **`approval.request` 的 `'rejected'` 有两种来源**：用户点了拒绝，以及会话策略是"从不询问"（DSH 在 `decide()` 里直接返回 `'rejected'`，不弹窗）。因此拒绝文案写成"用户拒绝了本次写入（或取消了确认）"，另外为 `'unavailable'`（没有可用回答通道）单独保留一句——不假装知道到底是哪一种。
+- **判定必须读「会话自己声明的档位」，不能只读 `resolve()`**（6.1 修的真 bug）：`sandboxPolicy.resolve()` 返回的是**折叠后的有效模式**（会话覆盖 ?? 部署默认），它和"用户在主输入框里选了什么"在正常情况下一致，但闸门要回答的是后者。更关键的是两者不一致时的后果不对称——「完全权限」在 DSH 里同时把授权策略 pin 成 `never`，所以 `resolve()` 说是 `workspace-write`（例如会话日志里只有 `permission/preset` + `approval/policy: never`，缺 `sandbox/mode`）时插件会去问，而 `ApprovalService.decide()` 在派发**之前**就返回 `'rejected'`（`packages/interaction/user-approval/src/index.ts`），于是用户看到的是"完全权限下所有写入都被拒绝"，且模型收到的是一句"你拒绝了"。所以顺序是 `overrideOf(session)` 优先，只有它为空（会话从未声明）才回落到 `resolve()`。
+- **子代理的档位是继承来的日志，不是父会话的实时状态**：`captureDelegatedPolicyOverrides()` 把父级的 `overrideOf(parent.session)` 取出来，`appendDelegatedPolicyOverrides()` 以 `source:'delegation'` 写进**子会话自己的日志**。这让"主输入框选完全权限 → 子代理也完全权限"变成一条纯日志事实：父轮次结束后依然成立，也不需要插件去猜。**不要**为了"继承"去读父会话的 `resolve()`。
+- **子代理弹窗只能挂在委派者身上**：DSH 对子会话有两道硬限制——`captureDelegatedPolicyOverrides()` 无条件把子级授权策略设成 `never`，`UserQuestionService.assertLiveRoot()` 对 `origin === 'subagent'` 直接抛 `DELEGATED_CALLER`。在子会话上调 `approval.request` 的结果是：卡片被登记进子会话的 pending 列表，而子会话在 Web 上没有可操作的界面，请求就一直挂到工具超时（实测 120s 后才拿到一句笼统的拒绝）。所以「工作区内修改」下的子代理写入把 `agent` 换成 `agents.get(header.parentSession)`，弹窗出现在主会话里，文案走 `approval.writeReasonDelegated` 说明这是子任务发起的。委派者查不到（父轮次已结束 / 已 detach）→ 立刻回 `result.writeDelegatedNoChannel`，**不空等**。
+- **对方策略是 `never` 时不要发请求**：`decide()` 对这种目标是同步 `'rejected'` 且**不派发**，所以发出去只会得到一个"用户拒绝了"的假答案。此时直接回"没有授权通道"（`result.writeNoApproval` / `result.writeDelegatedNoChannel`）——报告"没有人被问到"是事实，报告"用户拒绝"是在替用户编造决定。
 
 ## envSlug事故
 
@@ -102,6 +106,14 @@
 - 行内只放图标、来源不做徽章、库名不截断，三条来自同一约束：每个连接只占一行，宽度是稀缺资源。文字按钮吃掉半行；"来源"徽章几乎每行相同却最抢眼；库名被截断是最高频的抱怨。
 - 三面布局的两个阈值（700 / 720）：实测出现过 710px 视口既不算手机（>= 700）也不够宽（< 720）的**空档**，布局判定落空。两阈值之间的窄桌面列必须走紧凑设置条，不能退回竖排。
 - 0.1.x 已不再支持，所以只有一套界面：不再需要"现代面/legacy 面同时存在"的分叉，`render-check` 也只钉这一套 DOM（旧 DOM 断言随旧通道一起删除）。
+
+## dsh-Go 面板为什么只做有界选项
+
+- 手机端能改的设置，必须是「一个值 + 一组互斥选项」的形状。App 的视图协议在 v1 里**没有密码组件、没有文本框**，唯一能表达「点一下改一个值」的是 `options`（单选，值只能是字符串）。所以面板能碰的只有 `defaultMaxRows` / `batchConcurrency` / `updateIntervalDays` / `showSidebarEntry` / `announceAccessPolicy` 五项——它们各自的全部取值都是可枚举的。
+- **`exportDir` 被排除在外，不是漏了**：它的保存路径会 `mkdirSync` + 写探针文件证明目录可写，把这种「保存即产生副作用」的值搬到一个只能在选项里选的地方，要么得允许手机上填自由文本（v1 没有输入框），要么得跳过探针（等于让用户保存一个连不上的路径）。所以它仍然只出现在网页版，手机上面板里那一行只是**只读展示**（空 = 默认位置）。
+- **连接与密钥同理，而且更硬**：`role('secret')` 在 App 的原生设置表单里是只显示「已设置/未设置」的，视图协议根本没有承载密钥的字段。本插件注册了 `configure({auto:false})`（自己画网页版设置页），App 因此显示「在网页版设置」入口——这条路径才是填 DSN 和口令的地方。**这一条要等 dsh-Go 给出插件可用的密钥写入通道才能改**（见仓库内那份需求文档）。
+- **写路径只有一条**：面板动作 → `deps.setOption` → `commitOptionPatch`，和 `POST /options` 走同一个函数。理由与「写前先问」同源：第二条写路径就是第二个可能跳过验证的地方，而 `exportDir` 的验证是**带副作用**的，漏一次就会静默保存一个坏路径。
+- **被拒时必须弹回**：`options` 组件把用户点的那一项立刻画成选中，所以动作无论成功失败都回一份 `{patch:{sel}}`（宿主快照算出来的真实选择）。不回推的话，一次被拒的点击会让手机停在一个宿主从没接受过的值上，用户以为改成功了。
 
 ## 覆盖门为什么先问
 
@@ -143,6 +155,8 @@ lib/
   export.mjs     查询结果导出：CSV(RFC 4180)/JSON 载荷生成、可配置目录解析(~/ 展开、相对 = $DSH_HOME)与保存探针 prepareExportDir、
                  文件名 ASCII 安全化与长度上限、exports/ 落盘（0o700/0o600、wx 不覆盖）；纯函数 + 可注入 fs 缝
   policy.mjs     模型侧访问策略：唯一的 system prompt 段（order 8900，含 @db:<句柄> 语义与别名→句柄目录；取行函数由 index 传入）
+  native.mjs     dsh-Go(Android) 原生面板：视图树(协议 v1 组件)、数据模型(元数据+有效设置)、动作(toggle/refresh/set.<key>/test)、
+                 ctx.inject(['dshGo']) 注册与 panelFeed 推送；叶子模块（只依赖 i18n.mjs，宿主事实全由 deps 传入）
   client.js      Web 半（手写 lazy-CJS bundle，无构建）：settings.section + 侧边栏面板 + plugins.row.config(summary/page) + 输入框 `@` 输入源
 test/            node:test 单测（纯逻辑 + bridge/客户端契约 + 零知识泄漏门）
 scripts/         desensitize.config.mjs(槽位表=单一事实源) / desensitize-check.mjs / docs-check.mjs / render-check.mjs / release-preflight.mjs
