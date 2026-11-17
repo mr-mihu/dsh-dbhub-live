@@ -28,7 +28,7 @@ A database plugin for [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek
 | Result export | Large results are written to CSV / JSON files; the conversation only carries a summary and the paths. | [Export rules](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#%E4%BA%8C%E5%8D%81%E6%9F%A5%E8%AF%A2%E7%BB%93%E6%9E%9C%E5%AF%BC%E5%87%BAcsv-json) |
 | Connection list and tests | Search and sort once the list grows; test one row or all of them — over the connection that environment really uses. | [Search / sort / batch test](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#%E5%8D%81%E4%B8%83%E8%BF%9E%E6%8E%A5%E5%88%97%E8%A1%A8%E7%9A%84%E6%90%9C%E7%B4%A2-%E6%8E%92%E5%BA%8F-%E6%89%B9%E9%87%8F%E6%B5%8B%E8%AF%95) |
 | Secrets in the DSH credential store | The database password and the SSH passphrase live only in the DSH credential store; the connection file keeps reference names. | [Same store](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#%E5%8D%81%E4%B9%9D%E6%95%B0%E6%8D%AE%E5%BA%93%E5%8F%A3%E4%BB%A4%E4%B8%8E-ssh-%E5%8F%A3%E4%BB%A4%E5%90%8C%E6%BA%90dsh-%E5%87%AD%E6%8D%AE%E5%BA%93) |
-| Native phone panel (dsh-Go) | In DSH's Android client, the connection list and the common settings use the app's own UI: see the status, tap a connection to test it once, change five settings, enable or disable, refresh. Metadata only — no DSN, username or password. | [Phone](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#%E4%BA%8C%E5%8D%81%E4%BA%8Cdsh-go-%E6%89%8B%E6%9C%BA%E7%AB%AF%E5%8E%9F%E7%94%9F%E8%AE%BE%E7%BD%AE%E9%9D%A2%E6%9D%BF) |
+| Native phone panel (dsh-Go) | In DSH's Android client, the connection list and the common settings use the app's own UI: see the status, tap a connection to test it once, flip one connection read-only, change five settings, enable or disable, refresh. Metadata only — no DSN, username or password. | [Phone](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#%E4%BA%8C%E5%8D%81%E4%BA%8Cdsh-go-%E6%89%8B%E6%9C%BA%E7%AB%AF%E5%8E%9F%E7%94%9F%E8%AE%BE%E7%BD%AE%E9%9D%A2%E6%9D%BF) |
 
 The configure page adapts to **dialog / wide page / small screen**.
 
@@ -38,7 +38,8 @@ The configure page adapts to **dialog / wide page / small screen**.
 | On the phone | Notes |
 | --- | --- |
 | Status and connections | Whether the plugin is enabled, how many connections exist (with read-only and SSH-tunnel flags), and the plugin version |
-| Change a common setting | Result row cap (unlimited / 100 / 500 / 1000 / 5000 rows), parallel tests (1/2/4/8), update interval (never / 1/3/7/14/30 days), sidebar entry (shown/hidden), access policy (on/off) — one tap applies it, and it is the same value the web page shows |
+| Flip one connection read-only | One tap sets a single environment read-only or writable — the same value the web page shows. While read-only is on, dbhub refuses writes outright and the model cannot turn it off for you |
+| Change a common setting | Result row cap (unlimited / 100 / 500 / 1000 / 5000 rows), parallel tests (1/2/4/8), update interval (never / 1/3/7/14/30 days), sidebar entry (shown/hidden), access policy (on/off) — one tap applies it |
 | Tap a connection | Runs `SELECT 1` through a throwaway process and changes nothing; a failure's detail goes to the engine log and the phone only shows the verdict |
 | Enable / disable, refresh | Disabling stops the model from calling the `dbhub_*` tools; refresh re-scans the workspaces |
 | ❌ Adding or editing a connection | It needs a connection string and a password, and the phone UI has no password field — **do it on the web settings page** |

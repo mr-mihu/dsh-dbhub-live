@@ -348,10 +348,11 @@ test('registerNativePanel hands the bridge one panel with view, data and actions
   const def = registered[0].def
   assert.equal(typeof def.view, 'function')
   assert.equal(typeof def.data, 'function')
-  // Three verbs plus one writer per editable setting; the writers are derived
-  // from OPTION_CONTROLS, so a new control cannot ship without its action.
+  // Three verbs plus one writer per editable setting plus the per-connection
+  // read-only switch; the writers are derived from OPTION_CONTROLS, so a new
+  // control cannot ship without its action.
   assert.deepEqual(Object.keys(def.actions).sort(), [
-    'refresh', 'set.announceAccessPolicy', 'set.batchConcurrency', 'set.defaultMaxRows',
+    'refresh', 'ro', 'set.announceAccessPolicy', 'set.batchConcurrency', 'set.defaultMaxRows',
     'set.showSidebarEntry', 'set.updateIntervalDays', 'test', 'toggle',
   ])
   // Every control the view draws has a handler, and every handler has a control.
@@ -538,6 +539,79 @@ test('the option action survives a write that throws and one that returns nothin
   assert.match(missing['set.batchConcurrency']({}, { locale: 'en-US', value: { value: '4' } }).toast, /did not apply/)
 })
 
+test('panelData lists the read-only switch per connection, carrying the value it wants', () => {
+  const data = panelData(snapshot({
+    rows: [row(), row({ env: 'dev', alias: 'dev', ro: true }), row({ env: 'tmp', alias: 'tmp', path: '' })],
+  }), 'zh')
+  assert.equal(data.roRows.length, 3)
+  // The tap names the TARGET value, never "toggle": a stale view must not be able
+  // to invert the switch twice and land on the opposite of what the user saw.
+  assert.deepEqual(data.roRows[0].action, { id: 'ro', args: { path: 'C:\\ws\\demo', env: 'prod', ro: '1' } })
+  assert.deepEqual(data.roRows[1].action, { id: 'ro', args: { path: 'C:\\ws\\demo', env: 'dev', ro: '0' } })
+  // An unaddressable row is shown but inert (no workspace to write to).
+  assert.equal(data.roRows[2].action, undefined)
+  // State is text, never a security icon (the app's icon set has none on purpose).
+  assert.equal(data.roRows[0].trailing, '可写')
+  assert.equal(data.roRows[1].trailing, '只读')
+  assert.equal(data.roRows[1].tone, 'good')
+})
+
+test('panelData gives the read-only list its own empty and overflow lines', () => {
+  const empty = panelData(snapshot({ rows: [] }), 'en')
+  assert.equal(empty.roRows.length, 1)
+  assert.match(empty.roRows[0].title, /No connections/)
+  assert.equal(empty.roRows[0].action, undefined)
+
+  const many = []
+  for (let i = 0; i < MAX_ROWS + 2; i += 1) many.push(row({ env: 'e' + i, alias: 'a' + i }))
+  const data = panelData(snapshot({ rows: many }), 'en')
+  assert.equal(data.roRows.length, MAX_ROWS + 1)
+  assert.match(data.roRows[MAX_ROWS].title, /2 more connections/)
+  assert.equal(data.roRows[MAX_ROWS].action, undefined)
+})
+
+test('the read-only action writes the value the tap carried, not the inverse of the view', async () => {
+  const writes = []
+  const actions = actionsWith({
+    setReadOnly: (path, env, ro) => {
+      writes.push({ path, env, ro })
+      return { ok: true }
+    },
+  })
+  // The handler is async (the Host writer is): the bridge awaits it, so the test
+  // must too — a synchronous read would see a Promise and prove nothing.
+  assert.match((await actions.ro({}, { locale: 'zh-CN', value: { path: 'C:\\ws\\demo', env: 'prod', ro: '1' } })).toast, /只读/)
+  assert.match((await actions.ro({}, { locale: 'zh-CN', value: { path: 'C:\\ws\\demo', env: 'prod', ro: '0' } })).toast, /可写/)
+  assert.deepEqual(writes, [
+    { path: 'C:\\ws\\demo', env: 'prod', ro: true },
+    { path: 'C:\\ws\\demo', env: 'prod', ro: false },
+  ])
+})
+
+test('the read-only action refuses a tap it cannot act on, and reports a refused write', async () => {
+  const writes = []
+  const actions = actionsWith({
+    setReadOnly: (path, env, ro) => {
+      writes.push({ path, env, ro })
+      return { ok: true }
+    },
+  })
+  // No path, no value, a value that is neither 0 nor 1, an object: all refused
+  // before the write path, all answered with the same short verdict.
+  for (const value of [{}, { path: '' }, { path: 'p' }, { path: 'p', ro: 'yes' }, { path: 'p', ro: 2 }, { path: 'p', ro: {} }, null]) {
+    const effects = await actions.ro({}, { locale: 'en-US', value })
+    assert.match(effects.toast, /did not apply/, `value ${JSON.stringify(value)} must not reach the Host`)
+  }
+  assert.deepEqual(writes, [])
+
+  const refused = actionsWith({ setReadOnly: async () => ({ ok: false, error: 'unknownWorkspace' }) })
+  assert.match((await refused.ro({}, { locale: 'en-US', value: { path: 'p', env: 'e', ro: '1' } })).toast, /did not apply/)
+  const throwing = actionsWith({ setReadOnly: async () => { throw new Error('boom') } })
+  assert.match((await throwing.ro({}, { locale: 'en-US', value: { path: 'p', env: 'e', ro: '1' } })).toast, /did not apply/)
+  // An older Host wiring without `setReadOnly` is a refusal, not a crash.
+  assert.match((await actionsWith({}).ro({}, { locale: 'en-US', value: { path: 'p', env: 'e', ro: '1' } })).toast, /did not apply/)
+})
+
 test('every effect an action returns is on the whitelist the bridge accepts', () => {
   // A deferred result may only carry insert / copy / toast / patch; an immediate
   // one may add open / link / command / refresh. Anything else is dropped by the
@@ -554,6 +628,8 @@ test('every effect an action returns is on the whitelist the bridge accepts', ()
     actionsWith({}).refresh({}, {}),
     actionsWith({ setOption: () => ({ ok: true }) })['set.defaultMaxRows']({}, { locale: 'zh-CN', value: { value: '500' } }),
     actionsWith({ setOption: () => ({ ok: false }) })['set.defaultMaxRows']({}, { locale: 'zh-CN', value: { value: '500' } }),
+    actionsWith({ setReadOnly: () => ({ ok: true }) }).ro({}, { locale: 'zh-CN', value: { path: 'p', env: 'e', ro: '1' } }),
+    actionsWith({ setReadOnly: () => ({ ok: false }) }).ro({}, { locale: 'zh-CN', value: { path: 'p', env: 'e', ro: '1' } }),
   ]) {
     for (const key of shapeOf(effects)) {
       if (key === 'refresh') continue

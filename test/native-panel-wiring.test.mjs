@@ -25,14 +25,16 @@ test.after(() => {
 /**
  * The smallest context `apply()` accepts. `withDshGo` decides whether the
  * `dshGo` service exists at all — the two cases a real Host can be in.
+ * `workspaces` is what the workspace registry answers with (empty by default:
+ * a fresh Host has none, and the write paths must not invent one).
  */
-function host(withDshGo) {
+function host(withDshGo, workspaces = []) {
   const tools = []
   const panels = []
   const walked = { n: 0 }
   const ctx = {
     tools: { register: (def) => { tools.push(def.name); return () => {} } },
-    get: (name) => (name === 'workspaceRegistry' ? { list: async () => [] } : undefined),
+    get: (name) => (name === 'workspaceRegistry' ? { list: async () => workspaces } : undefined),
     effect: (fn) => { try { fn() } catch (e) { /* contained */ } return () => {} },
     on: () => {},
     inject: (names, callback) => {
@@ -61,7 +63,7 @@ test('apply() registers the native panel on a Host with the dshGo service', asyn
   assert.equal(typeof def.view, 'function')
   assert.equal(typeof def.data, 'function')
   assert.deepEqual(Object.keys(def.actions).sort(), [
-    'refresh', 'set.announceAccessPolicy', 'set.batchConcurrency', 'set.defaultMaxRows',
+    'refresh', 'ro', 'set.announceAccessPolicy', 'set.batchConcurrency', 'set.defaultMaxRows',
     'set.showSidebarEntry', 'set.updateIntervalDays', 'test', 'toggle',
   ])
   // The data feed survives the real snapshot shape (state + options flattened).
@@ -177,6 +179,36 @@ test('a tapped setting really lands in the Host options and persists', async () 
 
   // Clean up for any later test in this file (one process, one prefs file).
   optionsMod.applyPatch({ defaultMaxRows: before }, { persist: true })
+})
+
+test('the phone can flip one connection read-only, and the store really changes', async () => {
+  // This is the web card's `.dbh-rochip` write, reached from the phone. It must
+  // land in the SAME store field, not a parallel flag: the assertion reads the
+  // store back, so a second writer that only updated the view would fail here.
+  const { setWorkspaceEnv, listWorkspaceEnvironments, store } = await import('../lib/config.mjs')
+  const wsPath = 'D:/ws/ro'
+  const h = host(true, [{ path: wsPath, title: 'ro' }])
+  await index.apply(h.ctx, undefined)
+  const actions = h.panels[0].def.actions
+
+  // Seed through the store writer the Host itself uses.
+  setWorkspaceEnv(wsPath, 'prod', 'mysql://198.51.100.7:3306/appdb', 'user')
+  const rowOf = () => listWorkspaceEnvironments(store).find((r) => r.wsPath === wsPath && r.env === 'prod')
+  assert.equal(rowOf().ro, false, 'the seed must start writable or the test proves nothing')
+
+  const on = await actions.ro({}, { locale: 'en-US', value: { path: wsPath, env: 'prod', ro: '1' } })
+  assert.match(on.toast, /read-only/)
+  assert.equal(rowOf().ro, true, 'the store row turned read-only')
+
+  const off = await actions.ro({}, { locale: 'en-US', value: { path: wsPath, env: 'prod', ro: '0' } })
+  assert.match(off.toast, /writable/)
+  assert.equal(rowOf().ro, false, 'and back')
+
+  // A workspace this Host does not know is a refusal, never a write against the
+  // first workspace (the classic "wrong target" failure).
+  const unknown = await actions.ro({}, { locale: 'en-US', value: { path: 'D:/ws/nope', env: 'prod', ro: '1' } })
+  assert.match(unknown.toast, /did not apply/)
+  assert.equal(rowOf().ro, false, 'the refused tap changed nothing')
 })
 
 test('the phone cannot reach the one setting whose write needs a probe', async () => {
