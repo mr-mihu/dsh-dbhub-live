@@ -200,14 +200,17 @@ function fakeDbhub(receiptText) {
 }
 
 /**
- * Fake plugin ctx. `mode` is what `sandboxPolicy.resolve()` answers; the flags
- * remove a service or make it throw, so every degradation path is reachable.
+ * Fake plugin ctx. `mode` is what `sandboxPolicy.resolve()` answers; `declared`
+ * is what `overrideOf()` reports for a session (the composer preset actually
+ * recorded on that session's log). The flags remove a service or make it throw,
+ * so every degradation path is reachable.
  */
 function harness(opts) {
   const o = opts || {}
   const captured = {}
   const approvals = []
   const resolves = []
+  const overrides = []
   const services = {
     workspaceRegistry: { list: async () => [{ path: WS, title: 'gate' }] },
   }
@@ -218,6 +221,12 @@ function harness(opts) {
         if (o.policyThrows) throw new Error('unusable session cwd')
         return { mode: o.mode }
       },
+      // The composer preset recorded on the session itself. Defaults to "no
+      // override", so `mode` keeps driving the pre-existing cases.
+      overrideOf(session) {
+        overrides.push(session)
+        return typeof o.declared === 'function' ? o.declared(session) : o.declared
+      },
     }
   }
   if (!o.approvalMissing) {
@@ -227,6 +236,17 @@ function harness(opts) {
         if (o.approvalThrows) throw new Error('no open turn')
         return o.outcome === undefined ? 'allowed-once' : o.outcome
       },
+      overrideOf(session) {
+        return typeof o.approvalPolicy === 'function' ? o.approvalPolicy(session) : o.approvalPolicy
+      },
+    }
+  }
+  // A delegating agent is only resolvable when the registry is composed AND the
+  // case says who the parent is: `noAgentRegistry` models the parent already
+  // being gone (closed turn / detached session).
+  if (o.childOf !== undefined && !o.noAgentRegistry) {
+    services.agents = {
+      get: (id) => (id === o.childOf ? { session: parentSession } : undefined),
     }
   }
   const ctx = {
@@ -234,8 +254,11 @@ function harness(opts) {
     get: (name) => services[name],
     inject: () => {},
   }
-  return { captured, ctx, approvals, resolves }
+  return { captured, ctx, approvals, resolves, overrides }
 }
+
+/** The delegating ("parent") agent a child session resolves to. */
+const parentSession = { header: { cwd: WS }, id: 'session-parent' }
 
 const RECEIPT = JSON.stringify({ statements: [{ sql: 'x', rows: [{ n: 1 }], count: 1 }], source_id: 'default' })
 
@@ -251,8 +274,13 @@ async function runTool(sql, opts) {
   const { captured, ctx, approvals, resolves } = harness(o)
   registerCoreTools(ctx, subprocess)
   const sourceId = mcp.sourceIdOf({ title: 'gate', wsPath: WS, env })
+  const sessionHeader = { cwd: WS }
+  if (o.childOf !== undefined) {
+    sessionHeader.parentSession = o.childOf
+    sessionHeader.origin = 'subagent'
+  }
   const exec = {
-    agent: { session: { header: { cwd: WS } } },
+    agent: { session: { header: sessionHeader } },
     ...(o.noCallId ? {} : { callId: 'call-1' }),
     name: 'dbhub_execute_sql',
     signal: undefined,
@@ -357,6 +385,103 @@ test('session full access: a write runs without any prompt', async () => {
   assert.equal(r.out.ok, true)
   assert.equal(r.approvals.length, 0)
   assert.equal(r.calls.length, 1)
+})
+
+// The composer preset recorded ON THE SESSION decides, not just what the policy
+// service folds in. This is the "Full access rejects every write" regression: a
+// session that declared danger-full-access must never be asked, because DSH
+// pairs that preset with the `never` approval policy, so an ask resolves
+// `'rejected'` instantly and the model reports a refusal the user never gave.
+test('a session that DECLARED full access is never asked, whatever resolve() says', async () => {
+  for (const mode of ['danger-full-access', 'workspace-write']) {
+    const r = await runTool(WRITE_SQL, { mode, declared: 'danger-full-access' })
+    assert.equal(r.out.ok, true, 'declared full access must run: resolve()=' + mode)
+    assert.equal(r.approvals.length, 0, 'no prompt is ever raised: resolve()=' + mode)
+    assert.equal(r.calls.length, 1)
+  }
+})
+
+test('a session that DECLARED read-only is refused even when resolve() says otherwise', async () => {
+  const r = await runTool(WRITE_SQL, { mode: 'workspace-write', declared: 'read-only' })
+  assert.equal(r.out.ok, false)
+  assert.ok(String(r.out.text).includes('仅可查看'), r.out.text)
+  assert.equal(r.approvals.length, 0)
+  assert.equal(r.spawns, 0, 'a refused write spawns nothing')
+})
+
+test('a session that DECLARED workspace-write still asks when resolve() says full access', async () => {
+  const r = await runTool(WRITE_SQL, { mode: 'danger-full-access', declared: 'workspace-write', outcome: 'allowed-once' })
+  assert.equal(r.approvals.length, 1, 'the declared preset keeps the confirmation')
+  assert.equal(r.out.ok, true)
+})
+
+// Delegation: a child inherits the composer preset through its own logged
+// `sandbox/mode` (source:'delegation'), so Full access in the MAIN composer
+// opens writes for the child too — no prompt, and no dependence on the parent
+// still running.
+test('a child of a full-access session writes without a prompt', async () => {
+  const r = await runTool(WRITE_SQL, { mode: 'workspace-write', declared: 'danger-full-access', childOf: 'session-parent' })
+  assert.equal(r.out.ok, true)
+  assert.equal(r.approvals.length, 0)
+  assert.equal(r.calls.length, 1)
+})
+
+// …and a child of a workspace-write session asks on the DELEGATING session,
+// because the child's own prompt is unreachable (DSH pins children to `never`
+// and the human-interaction seam rejects a subagent caller).
+test('a child of a workspace-write session asks on the delegating session', async () => {
+  const r = await runTool(WRITE_SQL, { mode: 'workspace-write', declared: 'workspace-write', childOf: 'session-parent', outcome: 'allowed-once' })
+  assert.equal(r.approvals.length, 1, 'exactly one prompt, raised on the parent')
+  assert.equal(r.out.ok, true)
+  const req = r.approvals[0]
+  assert.equal(req.agent.session, parentSession, 'the request rides the DELEGATING agent, not the child')
+  assert.ok(String(req.reason).includes('子任务'), 'the prompt says a sub-task is asking: ' + req.reason)
+  assert.ok(String(req.reason).includes('127.0.0.1:3306/app'), 'the endpoint still leads: ' + req.reason)
+  assert.equal(String(req.reason).includes('CHANGE_ME'), false, 'no password in the delegated prompt')
+})
+
+test('a delegated write whose delegating session is gone fails at once, not at timeout', async () => {
+  const started = Date.now()
+  const r = await runTool(WRITE_SQL, {
+    mode: 'workspace-write', declared: 'workspace-write', childOf: 'session-parent', noAgentRegistry: true,
+  })
+  assert.equal(r.out.ok, false)
+  assert.ok(String(r.out.text).includes('子任务没有可用的授权通道'), r.out.text)
+  assert.ok(String(r.out.text).includes('不要改用'), 'the refusal still closes the bypass route')
+  assert.equal(r.approvals.length, 0, 'nothing is parked waiting for an answer')
+  assert.equal(r.spawns, 0)
+  assert.ok(Date.now() - started < 2000, 'the refusal is immediate, not a 120s timeout')
+})
+
+// DSH answers `'rejected'` WITHOUT dispatching when the target policy is
+// `never`, so asking would fabricate a decision the user never made. Report the
+// missing channel instead.
+test('a never-ask target is reported as no channel, not as a user rejection', async () => {
+  const delegated = await runTool(WRITE_SQL, {
+    mode: 'workspace-write', declared: 'workspace-write', childOf: 'session-parent', approvalPolicy: 'never',
+  })
+  assert.equal(delegated.out.ok, false)
+  assert.ok(String(delegated.out.text).includes('子任务没有可用的授权通道'), delegated.out.text)
+  assert.equal(delegated.approvals.length, 0, 'no request is dispatched to a never-ask target')
+
+  const root = await runTool(WRITE_SQL, { mode: 'workspace-write', approvalPolicy: 'never' })
+  assert.equal(root.out.ok, false)
+  assert.ok(String(root.out.text).includes('无法弹窗'), root.out.text)
+  assert.equal(root.approvals.length, 0)
+})
+
+test('a declined delegated write says it was declined on the delegating session', async () => {
+  const r = await runTool(WRITE_SQL, {
+    mode: 'workspace-write', declared: 'workspace-write', childOf: 'session-parent', outcome: 'rejected',
+  })
+  assert.equal(r.out.ok, false)
+  assert.ok(String(r.out.text).includes('主会话'), r.out.text)
+  assert.equal(
+    String(r.out.text).includes('没有可用的授权通道'), false,
+    'a plain refusal must not claim there was no channel: ' + r.out.text,
+  )
+  assert.equal(r.calls.length, 0, 'dbhub must not run')
+  assert.equal(r.spawns, 0)
 })
 
 test('no sandboxPolicy service: the plugin keeps its old behaviour (no gate)', async () => {
