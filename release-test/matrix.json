@@ -38,7 +38,7 @@
       "tier": "declared",
       "era": "modern",
       "ui": "modern",
-      "why": "npm dist-tag latest（用户默认装到的版本）",
+      "why": "0.2.2 线的第一个 rc：老宿主行为不能被后续 rc 覆盖后丢掉",
       "expect": { "bridge": "required", "settingsNamespace": "absent", "configForm": "optional" }
     },
     {
@@ -46,7 +46,15 @@
       "tier": "declared",
       "era": "modern",
       "ui": "modern",
-      "why": "npm dist-tag next：最新预发布版本，必须覆盖（新版本发布前最先被用户装到）",
+      "why": "0.2.2 线的中段 rc：沿用上一个版本的实测点，防止回归",
+      "expect": { "bridge": "required", "settingsNamespace": "absent", "configForm": "optional" }
+    },
+    {
+      "version": "0.2.2-rc.5",
+      "tier": "declared",
+      "era": "modern",
+      "ui": "modern",
+      "why": "npm dist-tag latest 与 next 都指向它：用户默认装到的版本，必须覆盖",
       "expect": { "bridge": "required", "settingsNamespace": "absent", "configForm": "optional" }
     },
     {

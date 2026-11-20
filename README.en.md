@@ -102,17 +102,18 @@ The full statement lives in [the policy section](https://github.com/mr-mihu/dsh-
 <!-- release-test:versions:begin -->
 ## Supported version range
 
-**From DSH 0.2.1 (lines 0.2.1 / 0.2.2, prereleases included)** — 4 declared versions verified (last verified 2026-11-17).
+**From DSH 0.2.1 (lines 0.2.1 / 0.2.2, prereleases included)** — 5 declared versions not all verified yet (last verified 2026-11-20).
 
 <details>
 <summary>Per-version verification details (expand)</summary>
 
 | DSH version | UI | Boot | Hard checks | Result | Last verified |
 | --- | --- | --- | --- | --- | --- |
-| `0.2.1-rc.2` | modern | 4.1s | 19 | ⚠️ pass with notes · manual | 2026-11-17 · 467f58b1 |
-| `0.2.1-rc.5` | modern | 4.1s | 19 | ⚠️ pass with notes · manual | 2026-11-17 · 467f58b1 |
-| `0.2.2-rc.1` | modern | 25.8s | 19 | ⚠️ pass with notes · manual | 2026-11-17 · 467f58b1 |
-| `0.2.2-rc.2` | modern | 23.8s | 19 | ⚠️ pass with notes · manual | 2026-11-17 · 467f58b1 |
+| `0.2.1-rc.2` | modern | 30.9s | 19 | ⚠️ pass with notes · manual | 2026-11-20 · cff3b041 |
+| `0.2.1-rc.5` | modern | 21.0s | 19 | ⚠️ pass with notes · manual | 2026-11-20 · cff3b041 |
+| `0.2.2-rc.1` | modern | 27.8s | 19 | ⚠️ pass with notes · manual | 2026-11-20 · cff3b041 |
+| `0.2.2-rc.2` | modern | 25.8s | 19 | ⚠️ pass with notes · manual | 2026-11-20 · cff3b041 |
+| `0.2.2-rc.5` | modern | — | — | — | 未验证 |
 
 </details>
 
