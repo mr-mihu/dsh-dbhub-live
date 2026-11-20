@@ -77,43 +77,81 @@ node release-test/run.mjs --tier upgrade --only 0.2.2-rc.2 `
 - 只有用户明确说「**合并主分支发布正式版**」（或等价明确指令）时才走正式版流程；并且**正式版的 npm 发布命令只输出给用户手动执行**——代理不代发（用户自己登录拿凭据）。仓库里没有 `NPM_TOKEN` secret，CI 也不会替你发。
 - **已发布的 tag 与 npm 版本绝不移动 / 删除 / unpublish**；发现缺陷就发下一个补丁版本（发布出去的东西收不回来）。
 - 测试版**必须** `--tag dev`（若发 npm）+ GitHub `--prerelease`；只有正式版才能用 `--latest` 与默认 dist-tag，否则 `latest` 会被指到测试版，普通用户直接中招。
-- 只有 CI（`gate`）绿的提交才能进 `main`；`pnpm pack` 的产物名必须与 `package.json` 版本一致。
+- 只有 CI（`gate`）绿的提交才能进 `main`；`npm pack` 的产物名必须与 `package.json` 版本一致。
+
+## 产物用 `npm pack`，不用 `pnpm pack`
+
+**GitHub 附件必须与 npm registry 上的产物是同一份字节**，所以打包统一用 `npm pack`：npm 发布时产出的就是 `npm pack` 的结果，用它打包两边天然一致。
+
+`pnpm pack` 的差异是实测出来的，不是传闻（同一个 `package.json`，只改打包命令）：
+
+| 打包方式 | 文件数 | `scripts` 条数 | `scripts.prepublishOnly` |
+| --- | --- | --- | --- |
+| `pnpm pack` | 24 | 13 | **被剥掉** |
+| `npm pack` | 24 | 14 | 保留 |
+| npm registry 上的包 | 24 | 14 | 保留 |
+
+`pnpm pack` 认为发布生命周期脚本不该进入被安装的产物，这是它的设计选择；但结果是**仓库里打出来的 tgz 与用户从 npm 装到的 tgz 不是同一份字节**（sha1 不同），"我测的就是你装的"这句话就不成立了。功能上没有区别（`prepublishOnly` 只在有人对包执行 `npm publish` 时触发，安装时 npm 只跑 `preinstall`/`install`/`postinstall`），但一致性必须靠构造保证，不能靠解释。
+
+`npm pack` 对同样的内容**可复现**：同一棵树连打两次，sha256 逐字节相同（实测）。所以"本地产物 == registry 产物"可以用哈希核对，而不是只凭信任。
+
+**不要**再在任何流程里用 `pnpm pack` 出发布产物；`.pnpm-store` 只服务于本地 `dsh plugin add` 的安装测试。`doc/` 里提到 `pnpm pack` 的历史文档（`PLAN-*.md`、`implementation-notes.md`）是当时的记录，不作为流程依据。
 
 ## 阶段一：测试版（在 dev 上）
 
+**测试版 = 预发布产物 = npm 的 `dev` 标签包**。三样必须一致：版本号带 `-dev.<N>` 或 `-rc.<N>`、`npm publish --tag dev`、GitHub Release `--prerelease`。
+
+**顺序是「先 npm，再 GitHub」**：npm 成功了才去发 Release，附件用**从 registry 取回的那份**。这样 GitHub 上的 tgz 就是用户装到的那一份，不需要"应该一致"的假设。
+
 ```powershell
 git checkout dev && git pull
-# 改代码；package.json 版本 = <目标正式版>-dev.<N>（N 不复用，如 5.3.0-dev.1）
+# 改代码；package.json 版本 = <目标正式版>-dev.<N>（N 不复用，如 5.4.0-dev.1）
 npm run check; npm run check:secrets; npm run check:ui     # 再按文件逐个跑单测
-$env:npm_config_store_dir = "<repo>/.pnpm-store"; pnpm pack  # dsh-dbhub-live-<ver>.tgz
+npm pack                                                   # dsh-dbhub-live-<ver>.tgz（不要用 pnpm pack）
 git add -A; git commit -m "..."; git push origin dev        # CI 在 dev 上跑 gate
 # ⚠ 发版闸门（必跑）：在干净提交上跑矩阵 + AI 判定，preflight 不过不许打 tag
 npm run test:release; npm run release:preflight
+# ① 先发 npm（用户手动执行，2FA；代理不代发）
+#    npm publish dsh-dbhub-live-<ver>.tgz --registry=https://registry.npmjs.org/ --tag dev
+# ② npm 成功后，把「registry 里那一份」取回来，核对与本地产物逐字节一致
+#    （--pack-destination 要求目录已存在，npm 不会替你建）
+New-Item -ItemType Directory .qa -Force | Out-Null
+npm pack dsh-dbhub-live@<ver> --pack-destination .qa
+#    核对：两份 sha256 必须相同（npm pack 可复现，不同就说明附件不是 registry 那份）
+Get-FileHash dsh-dbhub-live-<ver>.tgz, .qa/dsh-dbhub-live-<ver>.tgz -Algorithm SHA256
 git tag -a v<ver> -m "..."; git push origin v<ver>
-gh release create v<ver> --prerelease --title "v<ver>" --notes-file <notes> dsh-dbhub-live-<ver>.tgz
-# 可选（只在需要验证 npm 安装路径时）：npm publish --registry=https://registry.npmjs.org/ --tag dev
-# 安装验证（不碰 npm 也行）：dsh plugin --profile web add <tarball>（或 dsh-dbhub-live@dev）
+gh release create v<ver> --prerelease --title "v<ver>" --notes-file <notes> .qa/dsh-dbhub-live-<ver>.tgz
 ```
 
-预发布不会抢 Release 页的 "Latest" 徽章，普通用户 `dsh plugin add dsh-dbhub-live` 仍拿正式版。
+安装验证用 registry 上的包：`dsh plugin add dsh-dbhub-live@dev`（或直接给 `.qa` 里的 tarball）。预发布不会抢 Release 页的 "Latest" 徽章，普通用户 `dsh plugin add dsh-dbhub-live` 仍拿正式版。
+
+`.qa/` 是不进 git 的临时目录（`.gitignore` 已排除），只在发布当次使用。
 
 ## 阶段二：正式版（仅在用户明确要求时）
 
 ```powershell
-# 1) 在 dev 上把版本号转正（去掉 -dev.N），提交 "vX.Y.Z (release): ..."，push dev
+# 1) 在 dev 上把版本号转正（去掉 -dev.N / -rc.N），提交 "vX.Y.Z (release): ..."，push dev
 # 2) 开 PR 合入 main，等 CI 绿后合并
 gh pr create --base main --head dev --title "vX.Y.Z (release): ..." --body "..."
 gh pr merge --merge
 # 3) main 的合并提交也要过闸门（tree 相同则复用 dev 的报告，否则重跑），然后打 tag
 npm run release:preflight
 git checkout main && git pull; git tag -a vX.Y.Z -m "..."; git push origin vX.Y.Z
-# 4) GitHub 正式发布（--latest，附 tarball，正文中英双语——英文段放在中文段后面）
-#    正文格式：新增 / 修改 / 修复 / 优化 各一行一条，不写长段落。
-#    tgz 必须作为资产附上（`npm pack` 产物），否则下载页只有一个裸 tag。
-gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> dsh-dbhub-live-X.Y.Z.tgz
-# 5) npm：把命令交给用户手动执行（代理不代发）
-#    npm publish --registry=https://registry.npmjs.org/    # 不带 --tag → latest 指向它
+# 4) 打包（npm pack），把 npm 发布命令交给用户手动执行——代理不代发
+npm pack
+#    npm publish dsh-dbhub-live-X.Y.Z.tgz --registry=https://registry.npmjs.org/   # 不带 --tag → latest 指向它
+# 5) npm 成功后，取回 registry 里那一份，核对哈希，再用它发 GitHub 正式版
+#    （--pack-destination 要求目录已存在）
+New-Item -ItemType Directory .qa -Force | Out-Null
+npm pack dsh-dbhub-live@X.Y.Z --pack-destination .qa
+#    核对两份 sha256 相同后再发 Release：
+Get-FileHash dsh-dbhub-live-X.Y.Z.tgz, .qa/dsh-dbhub-live-X.Y.Z.tgz -Algorithm SHA256
+#    tgz 必须作为资产附上，否则下载页只有一个裸 tag。
+#    正文格式：新增 / 修改 / 修复 / 优化 各一行一条，不写长段落；中英双语——英文段放在中文段后面。
+gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> .qa/dsh-dbhub-live-X.Y.Z.tgz
 ```
+
+**顺序的理由**：npm 一旦发布不可撤回（tag 与版本号都不能移动/删除/unpublish）。先发 npm 可以用 GitHub Release 当"公告口"——npm 成功后才发公告，且公告里挂的就是用户真正装到的那份包；反过来先发 Release 再发现 npm 发不出去，就会出现"Release 说有、npm 上没有"的落差。
 
 **给代理的默认行为**：本仓库里代理只往 `dev` 提交/推送；`main` 只通过 PR 合入。需要动 `main` 或发 npm 时先停下来向用户确认。
 
@@ -122,8 +160,8 @@ gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> dsh-dbhu
 测试版（`6.0.0-rc.1` 这类）**允许在矩阵跑之前发布**，发到 `dev` tag，绝不覆盖 `latest`：
 
 1. 本地四门禁 + `test:unit` + 在**最新预发布 harness**（当前 `0.2.2-rc.x`）上跑一次真实浏览器回归；
-2. `npm publish --tag dev` —— `prepublishOnly` 会跑 `release:preflight`，证据类问题在预览版上只作警告；
-3. **发完立刻**用 npm 包安装到各声明版本上跑 `npm run test:release`，产出证据；
+2. `npm pack` 产物交给用户 `npm publish … --tag dev`（在目录里发时 `prepublishOnly` 会跑，证据类问题在预览版上只作警告）；成功后取回 registry 那一份，用 `gh release create --prerelease` 附上——**顺序仍是先 npm 后 GitHub**；
+3. **发完立刻**用 **registry 上的包**装到各声明版本上跑 `npm run test:release`，产出证据；
 4. 证据齐了再考虑 `x.y.z` 正式版（此时 `release:preflight` 对证据是硬阻断）。
 
 未跑矩阵就发正式版仍会被拦住，这条不能绕过。
@@ -155,7 +193,7 @@ gh release create vX.Y.Z --latest --title "vX.Y.Z" --notes-file <notes> dsh-dbhu
 
 ## 版本号策略（测试版本 → 发布版本）
 
-- **基线 = 代码库当前版本**（`package.json` 版本，即最近一次发布）。测试/调试迭代一律在基线上挂 `-dev.<序号>`，序号从 1 递增、不复用，`pnpm pack` 产物随之换名。
+- **基线 = 代码库当前版本**（`package.json` 版本，即最近一次发布）。测试/调试迭代一律在基线上挂 `-dev.<序号>`，序号从 1 递增、不复用，`npm pack` 产物随之换名。
 - 为什么要升版本：pnpm 对 `dsh plugin add <同名同版本 tarball>` 会判「Already up to date」跳过、**不换包**，只有换版本号才能保证调试包真正部署。
 - `dsh plugin add` 后务必用 `dsh plugin ls` 或核对 `node_modules/<pkg>/package.json` 的版本号确认已替换。
 - **测试完成要发版时，在基线上按「跨度和力度」决定升级幅度**（不以 dev 序号原号发布）：

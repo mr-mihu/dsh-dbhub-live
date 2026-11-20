@@ -222,5 +222,5 @@ Get-ChildItem test/*.test.mjs | ForEach-Object { node $_.FullName }
 - 产品文案中文、代码注释英文；零知识不可绕过；扫描必须经 `askUser` 授权。
 - 仓库内一切内容视为公开分发：不得出现真实主机/账号/密码/库名/项目名，也**不得出现本机绝对路径**；示例主机用回环或 RFC 5737、示例密码用 `CHANGE_ME`；新出口同次登记槽位表；发现新真实值只写本地 `.env`（详见 [doc/DESENSITIZE.md](doc/DESENSITIZE.md)）。
 - `state.*` 之外不要直接改持久化。
-- 发布：默认只往 `dev` 提交/推送；动 `main`、打 tag、发 npm 前先向用户确认（「可以了，发布」= dev 测试版）。流程见 [doc/RELEASE.md](doc/RELEASE.md)。
+- 发布：默认只往 `dev` 提交/推送；动 `main`、打 tag、发 npm 前先向用户确认（「可以了，发布」= dev 测试版）。**产物一律 `npm pack`**（不用 `pnpm pack`：它会剥掉 `scripts.prepublishOnly`，导致本地产物与 registry 产物不是同一份字节）。**顺序恒为「先 npm，后 GitHub」**：npm 发布成功后，把 registry 里那份取回来（`npm pack dsh-dbhub-live@<ver> --pack-destination .qa`）核对哈希，用它作 Release 附件。测试版 = 版本号带 `-dev.N`/`-rc.N` + `npm publish --tag dev` + `gh release --prerelease`。流程见 [doc/RELEASE.md](doc/RELEASE.md)。
 - 增加行为时同次更新本文件 + `doc/REQUIREMENTS.md` + README（双语，`README.md` 为唯一真源，`README.en.md` 由 AI 同次派生）。
