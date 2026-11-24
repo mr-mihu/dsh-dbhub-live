@@ -12,7 +12,7 @@ A database plugin for [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek
 <details>
 <summary>📷 Preview</summary>
 
-![DBHub Database Tools: connections grouped by workspace, with a successful connection-test receipt](https://raw.githubusercontent.com/mr-mihu/dsh-dbhub-live/dev/doc/images/test-success.png)
+![Ask the chat for last week's sales by city: the AI queries the database through the dbhub tools and answers with result tables](https://raw.githubusercontent.com/mr-mihu/dsh-dbhub-live/dev/doc/images/promo-6.1.0/08-chat-query.png)
 
 </details>
 

@@ -12,7 +12,7 @@
 <details>
 <summary>📷 界面预览</summary>
 
-![DBHub 数据库工具：按工作区分组的连接列表，以及一条连接测试回执](https://raw.githubusercontent.com/mr-mihu/dsh-dbhub-live/dev/doc/images/test-success.png)
+![在对话里问「最近 7 天各城市销售额」，AI 通过 dbhub 工具查库后直接给出结果表](https://raw.githubusercontent.com/mr-mihu/dsh-dbhub-live/dev/doc/images/promo-6.1.0/08-chat-query.png)
 
 </details>
 
