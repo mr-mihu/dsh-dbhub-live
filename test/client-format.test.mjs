@@ -158,10 +158,17 @@ test('client bundle owns a sidebar entry gated by enabled AND the user switch', 
 
 test('client bundle exposes the config editor (saveConfig + editable options)', () => {
   assert.match(source, /saveConfig:\s*function/)
-  assert.match(source, /updateIntervalDays/)
+  assert.match(source, /batchConcurrency/)
   assert.match(source, /保存配置/)
-  // the auto-install package is NOT a settings field anymore
+  // Neither the install package nor an auto-update interval is a settings field
+  // any more: the release is a Host-side constant (lib/runtime.mjs) and it is
+  // installed once, after an approval prompt — never on a schedule.
   assert.doesNotMatch(source, /dbhubPackage/)
+  assert.doesNotMatch(source, /updateIntervalDays/)
+  assert.doesNotMatch(source, /"row\.update"/)
+  // The card still reports the pinned runtime and whether it is present.
+  assert.match(source, /"note\.runtime":/)
+  assert.match(source, /function runtimeOf\(value\)/)
 })
 
 test('client bundle injects one scoped stylesheet built on theme tokens', () => {

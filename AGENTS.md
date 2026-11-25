@@ -30,19 +30,28 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - **每个请求都必须有请求级超时**：`MCP_INIT_TIMEOUT_MS = 15s`（`initialize`）/ `MCP_CALL_TIMEOUT_MS = 120s`（`tools/call`，**挂死探测不是查询预算**）。唯一其它取消源 `exec.signal` 只在用户取消/轮次中断时触发；超时 → `code:'MCP_TIMEOUT'`、立刻 `terminate()` 该条 dbhub、临时 TOML 照常删、回执走 `result.mcpTimeout`（错误文本只带方法名与毫秒数，不带参数）。
 - **上限与解码**：stdout 用 `StringDecoder('utf8')` 累积解码（`String(chunk)` 会把跨 64KiB 边界的中文切成 `U+FFFD`），行用片段数组而非 `buf +=`（32MB 单行 3.6s 同步拷贝）；超 `MAX_LINE_BYTES = 8 MiB`（单行）/ `MAX_RESPONSE_BYTES = 64 MiB`（累计）→ `code:'MCP_TOO_LARGE'` + 终止本次调用。
 - **pending 的 key 是字符串 id**（`String(msg.id)`，number 与字符串回包都能匹配）；`handle.stdin` 必须挂 `'error'` 监听（写已关闭管道 → `settleAll`，否则是 uncaught）；`waitForExit` 返回 `false` 要再 `terminate()` 一次并 `warnOnce`（不含路径）。
-- 自动安装 npm 也必须 drain stdout 且有总超时（`DBHUB_INSTALL_TIMEOUT_MS = 180s`）：stdout 无人读 → 64KiB 管道写满 → 安装永不退出 → `installingDbhub` 永不落 → 本会话 dbhub 永久不可用。
+- **运行时只有两条来源**：用户自装（PATH / mise）或**一次经用户同意**的固定版本安装（`DBHUB_PINNED_VERSION = '2.1.0'`，见「dbhub 运行时」）。任何路径都不得在用户未同意时启动安装：boot 只探测已有可执行文件，工具侧缺件时经 `approval.request` 问一次（`ensureDbhubRuntime`），拒绝就回可行动文案。安装 npm 也必须 drain stdout 且有总超时（`DBHUB_INSTALL_TIMEOUT_MS = 180s`）：stdout 无人读 → 64KiB 管道写满 → 安装永不退出 → `installingDbhub` 永不落 → 本会话 dbhub 永久不可用。
 - 能力探测按 `exe + mtimeMs` 进程内缓存（`lib/capability.mjs`）：每次 TOML 调用重扫 6 个候选 × 6 层 + `readFileSync` 是不必要的；命中返回**副本**，调用方改不动缓存。
 - `waitForExit` 的等待也是**有界**的（`EXIT_WAIT_MS = 5s`）：逃出受管进程组的后代会让它永不 settle，超时按 `false` 处理（再杀一次 + 只警告一次）。
 - `MAX_RESPONSE_BYTES` 是**每个客户端一生累计**：单次超过 64 MiB 的合法导出会被 `MCP_TOO_LARGE` 切断，这是有意的取舍（宁可明确失败，也不把宿主内存吃满）。
 - 工具恒 4 个：configure / list_sources / execute_sql / search_objects；不为工作区×环境注册工具。
 - `apply()` 只注册工具 + `startBackgroundBoot` bookkeeping；dbhub 解析发生在每次调用（`runtime.json` 缓存）；无数据源照常启动。
 
+### dbhub 运行时（固定版本 + 单次审批）
+- **版本是常量**：`lib/runtime.mjs` 的 `DBHUB_PINNED_VERSION = '2.1.0'` + `DBHUB_PACKAGE`，安装串 `DBHUB_INSTALL_SPEC` 恒为 `<包>@<版本>`。**没有任何开关能改它**（没有 `dbhubPackage` 选项、没有 `DSH_DBHUB_PACKAGE`），也没有 `latest`、没有 `^`/`~` 范围。升级 = 改常量 + 重跑实测，随插件发版。
+- **只有一次显式安装**：`ensureDbhubRuntime(ctx, subprocess, exec)`（tools.mjs）先 `resolveDbhubExe`（持久化路径 → mise → PATH），缺件才 `approval.request` 问**一次**（`approval.installReason` 写明包名、版本、体积），`allowed-once` 之后才 `installDbhub`。拒绝 / `unavailable` / `never` / 子代理无父会话 → 本地化拒绝文案（`result.installDenied` / `installNoApproval` / `installDelegatedNoChannel`），**零下载**。
+- **boot 不安装**：`startBackgroundBoot` 只 `resolveDbhubExe` 探测已有二进制（`DBHUB_NOT_INSTALLED` 只打一行日志），能力探测因此永远不触发网络。
+- **没有自动更新**：`maybeRefreshDbhub` 已删除，`updateIntervalDays` 选项与设置项一起删除；`runtime.json` 的 `dbhubInstallAt` 只作时间戳展示。
+- **安装形状**：`npm install @bytebase/dbhub@<固定版本> mysql2 pg mssql mariadb --prefix <RUNTIME_DIR> --no-save --omit=optional`。四个驱动是**直接根**，所以 `--omit=optional` 丢不掉它们；`oracledb` / `cpu-features` / AWS SDK 因此不进树——`cpu-features` 要 node-gyp，`oracledb` 有 install 脚本，而 pnpm 11+ 默认 `strictDepBuilds: true`，带脚本的依赖会让**插件安装**本身失败。
+- **状态可见**：`/state` 的 `dbhubRuntime`（`pinnedVersion` / `installSpec` / `present` / `managed`）由 `dbhubRuntimeInfo()` 只读计算；设置页的「技术详情」显示「固定在 {spec}；已安装 / 尚未安装（首次查询时会请求一次授权）」。读它不安装、不探测。
+- **用户自装优先**：PATH / mise 的 dbhub 永远先被采用，且永不被替换；`isAutoManagedExe()` 只用来判断「是不是我们装的那份」。
+
 ### 执行路径
 - `ro === true || ssh != null` → 临时 `--config`；其余走 `--dsn`。
 - TOML 里秘密只写 `${DSH_DBHUB_SEC_*}` 占位符，真值走子进程 env；**引用集合 == env 键集合**（`test/toml.test.mjs`）。
 - `tomlString` 转义**全部** TOML 禁止的字符：`\\ " \r \n \t` 之外还有 C0 控制符与 DEL（`\b`/`\f` 用短转义，其余 `\uXXXX`）。裸控制符让整份文档不可解析，而 dbhub 的报错不指名字段——一个控制符会伪装成「隧道坏了」（`test/toml.test.mjs`）。
 - `[[tools]]` 是白名单：只读必须写**两条** → [原因](doc/ARCHITECTURE.md#一次性toml的由来)。
-- 版本门槛：1.4.0 起实测；`< 1.0.0` 拒绝（`result.dbhubTooOld`）；不生成未实测写法。
+- 版本门槛：**本插件安装并实测的是 2.1.0**；自装的 1.4.0+ 仍可用（TOML 方言就按它写的），`< 1.0.0` 拒绝（`result.dbhubTooOld`）；不生成未实测写法。
 - 临时文件在 `$DSH_HOME/storages/dsh-dbhub-live/tmp/`：`finally` 尽力删 + boot 时 `sweepTempToml()`。
 
 ### 环境选项（只读 / SSH / 结果行数上限）
@@ -72,7 +81,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 
 ### 设置项（全局，经设置表单写入 prefs）
 - 三个数值/文本设置与既有开关同一条写路径（`POST /options` → `options.applyPatch`），非法值在 `validatePatch` 拒绝并**零写入**：`batchConcurrency`（1–8，默认 2，`badConcurrency`）、`defaultMaxRows`（≥0，默认 0，`badMaxRows`）、`exportDir`（字符串，默认 `''`，不可写时 `badExportDir`）。
-- 客户端在设置条**第二行**渲染（窄屏/弹窗是竖排行，同一个 `cfgField()` 工厂）；**没有"保存"按钮**——`onBlur` 与 `Enter` 各提交**该字段一个键**（「改完即生效」），旁边就地显示「保存中… / 已保存 ✓」（1.6s 自清），失败走既有 `.dbh-writefail` 并回滚到宿主值。本地预校验用 `parseConcurrency`/`parseGlobalRows`/`parseInterval`，非法时只显示一句 `cfg.badConcurrency`/`cfg.badRows`/`cfg.badInterval` 且**不发请求**；`exportDir` **不在客户端预判**（能不能写只有宿主的 `prepareExportDir` 探针说了算）。导出目录带 `?`（悬停/点击展开说明）、「默认」（写空串）、「选择」（走平台 `remote.directoryPicker.pick()`，服务缺失时按钮不渲染）。
+- 客户端在设置条**第二行**渲染（窄屏/弹窗是竖排行，同一个 `cfgField()` 工厂）；**没有"保存"按钮**——`onBlur` 与 `Enter` 各提交**该字段一个键**（「改完即生效」），旁边就地显示「保存中… / 已保存 ✓」（1.6s 自清），失败走既有 `.dbh-writefail` 并回滚到宿主值。本地预校验用 `parseConcurrency`/`parseGlobalRows`，非法时只显示一句 `cfg.badConcurrency`/`cfg.badRows` 且**不发请求**；`exportDir` **不在客户端预判**（能不能写只有宿主的 `prepareExportDir` 探针说了算）。导出目录带 `?`（悬停/点击展开说明）、「默认」（写空串）、「选择」（走平台 `remote.directoryPicker.pick()`，服务缺失时按钮不渲染）。
 - `batchConcurrency` 每次渲染读一次（`batchConcurrencyOf(value)`），批量测试跑起来后再改设置**不影响在途批次**。
 
 ### 结果导出（CSV / JSON）
@@ -124,7 +133,7 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 - **每条 summary 行带 `alias`**（`collect.mjs` 的 `assignConnectionAliases` 是唯一实现点，`summarizeRows` 把它写进 `/state` 的 `workspaces`）：环境名在**所有工作区**里唯一时就是它，否则 `<工作区>_<环境>`，仍撞名再确定性追加 `-2`/`-3`；按 `title+env+path` 排序分配，**与扫描顺序无关**；非空、不含空白、不含 `@`。别名只是显示/手打短名，身份仍是不可变的 `srcId`。
 - 客户端 `inject` **只能 `["slots"]`**；`settingsScope` 不注入也不探测（0.2.x 已删除该服务，注入它会让整个浏览器半区永久 pending）→ [为什么](doc/ARCHITECTURE.md#状态通道与inject根因)。
 - 注入回调内服务必须 `ctx.get(...)` 就地取。
-- view：`{enabled, phase, toolCount, lastError, mode}` + `{updateIntervalDays, showSidebarEntry, announceAccessPolicy, batchConcurrency, defaultMaxRows, exportDir, capabilities, workspaces, testResult, opNotice}` + `{pluginVersion, dshVersion, runtime, update}`。**DSN 只从浏览器流向 Host。**
+- view：`{enabled, phase, toolCount, lastError, mode}` + `{showSidebarEntry, announceAccessPolicy, batchConcurrency, defaultMaxRows, exportDir, capabilities, dbhubRuntime, workspaces, testResult, opNotice}` + `{pluginVersion, dshVersion, runtime, update}`。`dbhubRuntime` 是**只读状态**（`pinnedVersion`/`installSpec`/`present`/`managed`），卡片据此显示「运行时固定在哪一版、装没装」，读它不安装、不探测。**DSN 只从浏览器流向 Host。**
 
 ### 部署开关与连接管理
 - `lib/options.mjs` 唯一持有开关；Config 值经 `options.configValuesOf` → `applyPatch(..., {persist:true})`；`entryIdOf(ctx)` 运行时解析行 id；不绕过 `applyPatch`。
@@ -159,8 +168,8 @@ release-test/ 版本矩阵实测 | doc/ 文档 | .github/ CI | cordis.patch.yml 
 ### dsh-Go 手机端原生面板（`lib/native.mjs`，6.1 起）
 - **一份声明 + 一个注册**：`package.json` 的 `dshGo.contributes.panels`（id 恒为 `dbhub`）声明「有这个面板」；`index.mjs` 的 `wireNativePanel(ctx, core)` 通过 `registerNativePanel` 把视图/数据/动作交给桥接。**`ctx.inject(['dshGo'], …)` 是唯一正确写法**：写 `['dshGo?']`（cordis 没有可选依赖语法）回调永不执行，把 `dshGo` 放进顶层 `inject` 则让插件在没有桥接的主机上整个起不来。两者都由 `test/native-panel.test.mjs` 用**剥离注释后的源码**钉住（注释里举例了这两种错法，门禁不能命中自己的文档）。
 - **零知识靠构造，不靠过滤**：dsh-Go 的视图协议**根本没有密码组件**，所以面板不碰连接与密钥——那留在网页版（本插件注册了 `configure({auto:false})`，App 因此显示「在网页版设置」）。数据模型只带 `alias` / `env` / 工作区标题 / `connLabel`（`scheme://host:port/db`，整个 userinfo 段已被剥掉）/ 只读标记 / 有效设置值；**SSH 隧道只显示「经 SSH 隧道」，不发布 host/user**。`test/native-panel.test.mjs` 断言序列化结果里没有 userinfo、口令关键词与隧道身份，`test/native-panel-wiring.test.mjs` 再走一遍**真实摘链路**（`summarizeRows` → `connLabel` → `panelData`）——手工夹具挡不住摘要层以后多带一个字段。
-- **只用视图协议 v1 的组件**（`stack`/`callout`/`text`/`list`/`keyValue`/`options`/`actions`），不写 `v: 2`：v2 组件在老 App 上是灰色占位，而这个面板的价值恰恰是「任何能画面板的 App 都画得出来」。`options` 是 v1 里唯一能表达「点一下改一个值」的组件，所以可改的设置都做成**有界选项**（`OPTION_CONTROLS`：行数上限 / 并发 / 更新间隔 / 侧边栏 / 访问策略）。
-- **可改的只有「不需要探针、不需要密钥」的东西**：五项全局设置有界选项（`OPTION_CONTROLS`）+ **每个连接一个只读开关**（`roRows`，v1 `list` 行的 `action`，传目标值 `ro:'1'/'0'` 而不是「切换」）。`exportDir` 是自由文本且保存时要探针证明可写，**手机端不提供控件也不提供同名动作**（`OPTION_CONTROLS` 里没有它、`test/native-panel-wiring.test.mjs` 的「the phone cannot reach the one setting whose write needs a probe」钉住没有 `set.exportDir`）；连接/DSN/口令/SSH 隧道永远在网页版。
+- **只用视图协议 v1 的组件**（`stack`/`callout`/`text`/`list`/`keyValue`/`options`/`actions`），不写 `v: 2`：v2 组件在老 App 上是灰色占位，而这个面板的价值恰恰是「任何能画面板的 App 都画得出来」。`options` 是 v1 里唯一能表达「点一下改一个值」的组件，所以可改的设置都做成**有界选项**（`OPTION_CONTROLS`：行数上限 / 并发 / 侧边栏 / 访问策略）。
+- **可改的只有「不需要探针、不需要密钥」的东西**：四项全局设置有界选项（`OPTION_CONTROLS`：行数上限 / 并发 / 侧边栏 / 访问策略）+ **每个连接一个只读开关**（`roRows`，v1 `list` 行的 `action`，传目标值 `ro:'1'/'0'` 而不是「切换」）。`exportDir` 是自由文本且保存时要探针证明可写，**手机端不提供控件也不提供同名动作**（`OPTION_CONTROLS` 里没有它、`test/native-panel-wiring.test.mjs` 的「the phone cannot reach the one setting whose write needs a probe」钉住没有 `set.exportDir`）；连接/DSN/口令/SSH 隧道永远在网页版。
 - **只读开关是第二条写路径入口，但复用同一个写入器**：`deps.setReadOnly` → `applyOptionsOp(...)`（就是卡片 `.dbh-rochip` 发的 `{op:'options', readOnly}`）。**动作必须是 async 并 `await`**：这个写入器是异步的，同步处理器会把 Promise 当结果、把**已经落地**的写报成失败并弹出反向提示。
 - **每个连接两行、各一个动作**：v1 的 `list` 行只有一个 `action`，所以探测（`rows`，点按测连通性）与只读开关（`roRows`，点按切换）分成两个列表，不共用一行——两处的后果不同，混在一行里用户没法预期。
 - **写路径恒为一条**：面板动作 → `deps.setOption` → `commitOptionPatch`（= `POST /options` 用的同一个 `validatePatch → applyPatch(persist:true) → writeOptionsToForm`）。**不许在 native.mjs 里另写一条 `applyPatch`**：第二条写路径就是第二个能让 `exportDir` 跳过可写探针的地方。动作返回 `{patch:{sel}}` 把宿主真实选择推回去，所以被拒的点击在手机上会**弹回原值**而不是停在一个宿主没接受的值上。

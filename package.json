@@ -1,6 +1,6 @@
 {
   "name": "dsh-dbhub-live",
-  "version": "6.1.0",
+  "version": "6.2.0-dev.1",
   "description": "DSH 数据库 MCP 插件：把 DBHub 接入 DeepSeek Harness，让 AI 在对话里直接查询 MySQL / PostgreSQL / MariaDB / SQLite / SQL Server；在 dsh-Go 手机端提供原生设置面板。",
   "type": "module",
   "main": "lib/index.mjs",

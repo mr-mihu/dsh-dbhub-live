@@ -64,7 +64,7 @@ test('apply() registers the native panel on a Host with the dshGo service', asyn
   assert.equal(typeof def.data, 'function')
   assert.deepEqual(Object.keys(def.actions).sort(), [
     'refresh', 'ro', 'set.announceAccessPolicy', 'set.batchConcurrency', 'set.defaultMaxRows',
-    'set.showSidebarEntry', 'set.updateIntervalDays', 'test', 'toggle',
+    'set.showSidebarEntry', 'test', 'toggle',
   ])
   // The data feed survives the real snapshot shape (state + options flattened).
   const emitted = []
@@ -106,7 +106,7 @@ test('the panel data feed is secret-free over a REAL summarized row', async () =
   assert.match(rows[0].conn, /198\.51\.100\.7:3306\/appdb/)
   const data = panelData({
     enabled: true, phase: 'running', rows, pluginVersion: '6.1.0',
-    defaultMaxRows: 0, batchConcurrency: 2, updateIntervalDays: 7,
+    defaultMaxRows: 0, batchConcurrency: 2,
     showSidebarEntry: true, announceAccessPolicy: true, exportDir: '',
   }, 'zh')
   const json = JSON.stringify(data)

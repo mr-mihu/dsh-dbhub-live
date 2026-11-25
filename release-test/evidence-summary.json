@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-11-20T08:34:13.178Z",
-  "pluginVersion": "6.1.0",
+  "generatedAt": "2026-11-25T09:04:07.139Z",
+  "pluginVersion": "6.2.0-dev.1",
   "matrixHash": "39f0447fcb90a3182d1633444220b7c70dc18d8b523360373c653e9dd5f6c8b0",
   "fullRun": {
     "runId": "20261120-163159-39f044",

@@ -156,7 +156,8 @@ Upgrade with `dsh plugin --profile web up dsh-dbhub-live@<version>`. **Breaking 
 | One connection fails to authenticate | Only that environment's next call is affected: fix the password on the configure page (or ask the AI to run `dbhub_configure` and guide you), other connections keep working. |
 | A configured tunnel still does not connect | Run "Test SSH tunnel" first: a **database-layer** error means the tunnel is up and the problem is behind it (authentication / database name / address); the address in the connection string must be the one **the bastion sees** — that is the most common cause. |
 | An export fails | The receipt carries the error code and falls back to the inline result, so the query itself did not fail; usually `exports/` is not writable or the disk is full. |
-| dbhub is reported as too old | Read-only mode and SSH tunnels need dbhub 1.4.0+: upgrade dbhub, or delete `~/.dsh/storages/dsh-dbhub-live` so the plugin installs a version that satisfies it. |
+| dbhub is reported as too old | Read-only mode and SSH tunnels need dbhub 1.4.0+: upgrade dbhub, or delete `~/.dsh/storages/dsh-dbhub-live/dbhub-runtime` and let the plugin ask you to install again. |
+| The first query asks to "install the dbhub runtime" | That is the **only** place anything is downloaded: it installs the pinned `@bytebase/dbhub@2.1.0` (with four drivers, about 70 MB), once, and nothing updates automatically afterwards. Declining installs nothing and the query returns an actionable message; to install it yourself run `npm i -g @bytebase/dbhub@2.1.0` and the plugin will prefer the one on PATH. |
 
 Problems that appear after an upgrade (behaviour changes, compatibility, rollback) are recorded in the matching [GitHub Release](https://github.com/mr-mihu/dsh-dbhub-live/releases).
 

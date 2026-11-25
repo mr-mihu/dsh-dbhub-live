@@ -42,7 +42,6 @@ function snapshot(over) {
     mode: 'oneshot',
     // … and options.snapshot(), FLATTENED beside it (their keys do not overlap):
     // that is what index.mjs hands over.
-    updateIntervalDays: 7,
     showSidebarEntry: true,
     announceAccessPolicy: true,
     exportDir: '',
@@ -206,7 +205,7 @@ test('panelData reports the three phases, and only an error repeats the message'
 
 test('panelData splits the settings into the read-only block and the controls', () => {
   const data = panelData(snapshot({
-    defaultMaxRows: 0, batchConcurrency: 4, updateIntervalDays: 3,
+    defaultMaxRows: 0, batchConcurrency: 4,
     exportDir: '/tmp/exports', showSidebarEntry: false, announceAccessPolicy: false,
   }), 'en')
   // The read-only block keeps what the phone must not own: the probed directory
@@ -221,7 +220,6 @@ test('panelData splits the settings into the read-only block and the controls', 
   assert.deepEqual(data.sel, {
     defaultMaxRows: '0',
     batchConcurrency: '4',
-    updateIntervalDays: '3',
     showSidebarEntry: 'false',
     announceAccessPolicy: 'false',
   })
@@ -353,7 +351,7 @@ test('registerNativePanel hands the bridge one panel with view, data and actions
   // control cannot ship without its action.
   assert.deepEqual(Object.keys(def.actions).sort(), [
     'refresh', 'ro', 'set.announceAccessPolicy', 'set.batchConcurrency', 'set.defaultMaxRows',
-    'set.showSidebarEntry', 'set.updateIntervalDays', 'test', 'toggle',
+    'set.showSidebarEntry', 'test', 'toggle',
   ])
   // Every control the view draws has a handler, and every handler has a control.
   const drawn = new Set()
@@ -482,15 +480,13 @@ test('the option action decodes a tapped choice into a one-key patch', () => {
       return { ok: true }
     },
   })
-  // A number, a boolean and a day count: the three value shapes the controls
-  // offer. The app transports all of them as strings.
+  // A number and a boolean: the value shapes the controls offer. The app
+  // transports both as strings.
   assert.equal(actions['set.defaultMaxRows']({}, { locale: 'en-US', value: { value: '500' } }).toast, 'Saved')
   assert.equal(actions['set.showSidebarEntry']({}, { locale: 'en-US', value: { value: 'true' } }).toast, 'Saved')
-  assert.equal(actions['set.updateIntervalDays']({}, { locale: 'en-US', value: { value: '0' } }).toast, 'Saved')
   assert.deepEqual(written, [
     { defaultMaxRows: 500 },
     { showSidebarEntry: true },
-    { updateIntervalDays: 0 },
   ])
 })
 
