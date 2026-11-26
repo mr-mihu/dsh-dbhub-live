@@ -71,6 +71,19 @@ export function prepareHome(version, { clean = true } = {}) {
   }
   ensureDir(dir)
   ensureDir(workspaceDir(version))
+  // A machine that already HAS dbhub is the normal case, and the plugin only
+  // logs its capability line when a binary resolves. `RELEASE_DBHUB_EXE` points
+  // the run at a prepared install so the matrix exercises the with-dbhub path
+  // instead of reporting "no dbhub" on every target.
+  const fixture = process.env.RELEASE_DBHUB_EXE
+  if (fixture && fs.existsSync(fixture)) {
+    const storage = path.join(dir, 'storages', 'dsh-dbhub-live')
+    ensureDir(storage)
+    fs.writeFileSync(
+      path.join(storage, 'runtime.json'),
+      JSON.stringify({ dbhubExe: fixture, dbhubInstallAt: Date.now() }, null, 2),
+    )
+  }
   return dir
 }
 
