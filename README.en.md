@@ -90,11 +90,11 @@ The full statement lives in [the policy section](https://github.com/mr-mihu/dsh-
 
 | DSH version | UI | Boot | Hard checks | Result | Last verified |
 | --- | --- | --- | --- | --- | --- |
-| `0.2.1-rc.2` | modern | 27.8s | 21 | ✅ pass | 2026-11-27 · 1539d6c6 |
-| `0.2.1-rc.5` | modern | 20.3s | 21 | ✅ pass | 2026-11-27 · 1539d6c6 |
-| `0.2.2-rc.1` | modern | 21.1s | 21 | ✅ pass | 2026-11-27 · 1539d6c6 |
-| `0.2.2-rc.2` | modern | 21.5s | 21 | ✅ pass | 2026-11-27 · 1539d6c6 |
-| `0.2.2-rc.5` | modern | 8.7s | 21 | ✅ pass | 2026-11-27 · 1539d6c6 |
+| `0.2.1-rc.2` | modern | 4.5s | 21 | ✅ pass | 2026-11-27 · 155de49f |
+| `0.2.1-rc.5` | modern | 6.2s | 21 | ✅ pass | 2026-11-27 · 155de49f |
+| `0.2.2-rc.1` | modern | 4.7s | 21 | ✅ pass | 2026-11-27 · 155de49f |
+| `0.2.2-rc.2` | modern | 4.7s | 21 | ✅ pass | 2026-11-27 · 155de49f |
+| `0.2.2-rc.5` | modern | 6.1s | 21 | ✅ pass | 2026-11-27 · 155de49f |
 
 </details>
 
