@@ -198,14 +198,14 @@ export async function runProbes(ctx) {
         : check('http.auth', 'fail', `anonymous state request returned ${anonymous.status}, expected 401`),
     )
 
-    const probeDays = 3
-    const optionsResponse = await httpPost(`${base}/api/dsh-dbhub-live/options`, { updateIntervalDays: probeDays }, { cookie })
+    const probeRows = 7
+    const optionsResponse = await httpPost(`${base}/api/dsh-dbhub-live/options`, { defaultMaxRows: probeRows }, { cookie })
     const prefsFile = path.join(home, 'storages', 'dsh-dbhub-live', 'prefs.json')
     let persisted = null
     try { persisted = JSON.parse(fs.readFileSync(prefsFile, 'utf8')) } catch {}
     checks.push(
-      optionsResponse.status === 200 && persisted?.updateIntervalDays === probeDays
-        ? check('http.options.write', 'pass', `options write persisted (updateIntervalDays=${probeDays})`)
+      optionsResponse.status === 200 && persisted?.defaultMaxRows === probeRows
+        ? check('http.options.write', 'pass', `options write persisted (defaultMaxRows=${probeRows})`)
         : check('http.options.write', 'fail', `options write did not persist: HTTP ${optionsResponse.status}, prefs=${JSON.stringify(persisted)}`),
     )
 

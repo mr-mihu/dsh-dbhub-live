@@ -141,9 +141,9 @@ lib/
                  环境选项(readOnly/ssh 归一化、默认密钥)、零知识助手(describeConn/connLabel/scrubSecrets)、configure 决策纯函数(decideConfigureStep/argsChangedEndpoint/emptyUserDenied)
   i18n.mjs       宿主侧文案表与插值
   state.mjs      运行时状态机 enabled/phase/toolCount/lastError/mode + 订阅发布
-  options.mjs    部署开关：updateIntervalDays / showSidebarEntry / announceAccessPolicy / exportDir；层叠 Config > prefs.json > 环境变量 > 内置默认；
+  options.mjs    部署开关：showSidebarEntry / announceAccessPolicy / exportDir / defaultMaxRows / batchConcurrency；层叠 Config > prefs.json > 内置默认；
                  exportDir 保存时走 prepareExportDir 探针校验（不可写 → code:'badExportDir'，零写入）
-  runtime.mjs    dbhub 可执行文件发现、按需自动安装、定期自动更新
+  runtime.mjs    dbhub 运行时：可执行文件发现（持久化 → mise → PATH）、固定版本（DBHUB_PINNED_VERSION）的一次性安装、无自动更新
   capability.mjs 上游能力探测（文件级，不 spawn）：[[tools]] readonly 与 ssh_* 需 1.4.0+
   toml.mjs       一次性 TOML 生成器 buildDbhubToml/writeTempToml/removeTempToml/sweepTempToml（文本绝不含秘密）
   mcp.mjs        MCP JSON-RPC 客户端、工具注册表、来源发现 collectSources/resolveSource、摘要缓存（每行含稳定别名 alias）、测试快路径 resolveTestDsn

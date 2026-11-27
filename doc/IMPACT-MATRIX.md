@@ -17,6 +17,7 @@
 | 配置页布局 / 交互 / 文案 | `doc/CLIENT.md` + `scripts/render-check.mjs` 断言 + AGENTS.md「客户端半」 | `check:ui` + `test/client-format.test.mjs` |
 | 调试方式 / 隔离实例 / 验证清单 | `doc/DEVELOPMENT.md` | 无（人工） |
 | 发布流程 / 版本号 / 支持矩阵 | `doc/RELEASE.md` + `release-test/matrix.json` → `npm run support:matrix`（同时刷新 `release-test/evidence-summary.json` 并重生成 `doc/SUPPORT-MATRIX.md` + `release-test/mise.toml` + 两个 README 的版本段）+ `package.json` 的 `dsh.compatibility.dshReleases` | `support:check` + `support:evidence` + `release:preflight` |
+| 发布产物与发布顺序（`npm pack` 而非 `pnpm pack`；先 npm 后 GitHub；Release 附件取 registry 那份） | `doc/RELEASE.md`「产物用 `npm pack`」「阶段一/阶段二」+ `doc/DEVELOPMENT.md`「装包进隔离实例」+ AGENTS.md「约定」的发布条 + `.gitignore` 的 `.qa/` + `scripts/desensitize.config.mjs` 的 `SKIP_DIRS`（`.qa`） | `check:docs` + `check:secrets`（`.qa` 不进扫描） |
 | 脱敏规则 / 槽位 / 示例值 / 测试夹具 | `scripts/desensitize.config.mjs` + `doc/DESENSITIZE.md` | `check:secrets` |
 | 门禁脚本 / 闸门判定逻辑（`scripts/*.mjs`、`release-test/support-matrix.mjs`、`release-test/lib/report.mjs`） | `test/gates.test.mjs` 里加一条「坏样本必须红」的用例 + AGENTS.md「质量门」+ 本表 | `test:unit` + 对应门禁 |
 | npm 脚本 / 包内容（`files`、`exports`、`dsh.client`） | `package.json` + AGENTS.md「质量门」+ `doc/RELEASE.md`「包内容」+ `doc/REQUIREMENTS.md` R70 | `check:docs` |

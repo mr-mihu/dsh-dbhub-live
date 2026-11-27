@@ -74,13 +74,12 @@ node <dsh 安装目录>/lib/bin.js web --port 3082 --no-open
 ### 装包进隔离实例
 
 ```powershell
-# pnpm 需要可写 store（默认 store 在 workspace 外会被沙箱拒绝）
-$env:npm_config_store_dir = "<repo>/.pnpm-store"
-pnpm pack
+# 用 npm pack（与发布产物同一份字节，见 RELEASE.md「产物用 npm pack」）
+npm pack
 node <dsh>/lib/bin.js plugin --profile web add <打包目录>/dsh-dbhub-live-<ver>.tgz
 ```
 
-沙箱内 pnpm 可能因为事先被别处 store 链接过而报 `UNEXPECTED_STORE`；此时可手工替换 `.dsh-a/profiles/web/node_modules/dsh-dbhub-live/` 的目录内容（`file:` 依赖就是普通目录，不写 store、不动 lockfile）。**仅用于验证，不要当成发布流程。**
+`dsh plugin add` 内部走 pnpm，偶尔会因 store 冲突失败：沙箱内会被拒（`EPERM` / `UNEXPECTED_STORE`）。此时可手工替换 `.dsh-a/profiles/web/node_modules/dsh-dbhub-live/` 的目录内容（`file:` 依赖就是普通目录，不写 store、不动 lockfile）。**仅用于验证，不要当成发布流程**——`release-test` 的 `provision.mode: manual` 告警就是这个退化路径。
 
 ### 验证清单（0.2.x）
 

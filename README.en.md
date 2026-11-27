@@ -12,7 +12,7 @@ A database plugin for [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek
 <details>
 <summary>📷 Preview</summary>
 
-![DBHub Database Tools: connections grouped by workspace, with a successful connection-test receipt](https://raw.githubusercontent.com/mr-mihu/dsh-dbhub-live/dev/doc/images/test-success.png)
+![Ask the chat for last week's sales by city: the AI queries the database through the dbhub tools and answers with result tables](https://raw.githubusercontent.com/mr-mihu/dsh-dbhub-live/dev/doc/images/promo-6.1.0/08-chat-query.png)
 
 </details>
 
@@ -28,27 +28,8 @@ A database plugin for [DeepSeek Harness](https://github.com/deepseek-ai/DeepSeek
 | Result export | Large results are written to CSV / JSON files; the conversation only carries a summary and the paths. | [Export rules](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#%E4%BA%8C%E5%8D%81%E6%9F%A5%E8%AF%A2%E7%BB%93%E6%9E%9C%E5%AF%BC%E5%87%BAcsv-json) |
 | Connection list and tests | Search and sort once the list grows; test one row or all of them — over the connection that environment really uses. | [Search / sort / batch test](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#%E5%8D%81%E4%B8%83%E8%BF%9E%E6%8E%A5%E5%88%97%E8%A1%A8%E7%9A%84%E6%90%9C%E7%B4%A2-%E6%8E%92%E5%BA%8F-%E6%89%B9%E9%87%8F%E6%B5%8B%E8%AF%95) |
 | Secrets in the DSH credential store | The database password and the SSH passphrase live only in the DSH credential store; the connection file keeps reference names. | [Same store](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#%E5%8D%81%E4%B9%9D%E6%95%B0%E6%8D%AE%E5%BA%93%E5%8F%A3%E4%BB%A4%E4%B8%8E-ssh-%E5%8F%A3%E4%BB%A4%E5%90%8C%E6%BA%90dsh-%E5%87%AD%E6%8D%AE%E5%BA%93) |
-| Native phone panel (dsh-Go) | In DSH's Android client, the connection list and the common settings use the app's own UI: see the status, tap a connection to test it once, flip one connection read-only, change five settings, enable or disable, refresh. Metadata only — no DSN, username or password. | [Phone](https://github.com/mr-mihu/dsh-dbhub-live/blob/dev/doc/REQUIREMENTS.md#%E4%BA%8C%E5%8D%81%E4%BA%8Cdsh-go-%E6%89%8B%E6%9C%BA%E7%AB%AF%E5%8E%9F%E7%94%9F%E8%AE%BE%E7%BD%AE%E9%9D%A2%E6%9D%BF) |
 
 The configure page adapts to **dialog / wide page / small screen**.
-
-<details>
-<summary>What the phone panel does and does not do (dsh-Go)</summary>
-
-| On the phone | Notes |
-| --- | --- |
-| Status and connections | Whether the plugin is enabled, how many connections exist (with read-only and SSH-tunnel flags), and the plugin version |
-| Flip one connection read-only | One tap sets a single environment read-only or writable — the same value the web page shows. While read-only is on, dbhub refuses writes outright and the model cannot turn it off for you |
-| Change a common setting | Result row cap (unlimited / 100 / 500 / 1000 / 5000 rows), parallel tests (1/2/4/8), update interval (never / 1/3/7/14/30 days), sidebar entry (shown/hidden), access policy (on/off) — one tap applies it |
-| Tap a connection | Runs `SELECT 1` through a throwaway process and changes nothing; a failure's detail goes to the engine log and the phone only shows the verdict |
-| Enable / disable, refresh | Disabling stops the model from calling the `dbhub_*` tools; refresh re-scans the workspaces |
-| ❌ Adding or editing a connection | It needs a connection string and a password, and the phone UI has no password field — **do it on the web settings page** |
-| ❌ Changing a password, configuring an SSH tunnel | Same reason; the app offers a "set up on the web" entry |
-| ❌ Changing the export directory | The path is free text and saving it proves the directory writable; the phone shows the current value and points you to the web page |
-
-The panel appears only on hosts running the dsh-Go bridge; desktop and the web UI are unaffected. The native panel needs this plugin **6.1.0** or newer.
-
-</details>
 
 <details>
 <summary>Read-only mode and SSH tunnel (two tables)</summary>
@@ -102,18 +83,18 @@ The full statement lives in [the policy section](https://github.com/mr-mihu/dsh-
 <!-- release-test:versions:begin -->
 ## Supported version range
 
-**From DSH 0.2.1 (lines 0.2.1 / 0.2.2, prereleases included)** — 5 declared versions verified (last verified 2026-11-20).
+**From DSH 0.2.1 (lines 0.2.1 / 0.2.2, prereleases included)** — 5 declared versions verified (last verified 2026-11-27).
 
 <details>
 <summary>Per-version verification details (expand)</summary>
 
 | DSH version | UI | Boot | Hard checks | Result | Last verified |
 | --- | --- | --- | --- | --- | --- |
-| `0.2.1-rc.2` | modern | 4.3s | 19 | ⚠️ pass with notes · manual | 2026-11-20 · 7bac0d5d |
-| `0.2.1-rc.5` | modern | 4.3s | 19 | ⚠️ pass with notes · manual | 2026-11-20 · 7bac0d5d |
-| `0.2.2-rc.1` | modern | 4.1s | 19 | ⚠️ pass with notes · manual | 2026-11-20 · 7bac0d5d |
-| `0.2.2-rc.2` | modern | 4.1s | 19 | ⚠️ pass with notes · manual | 2026-11-20 · 7bac0d5d |
-| `0.2.2-rc.5` | modern | 5.9s | 19 | ⚠️ pass with notes · manual | 2026-11-20 · 7bac0d5d |
+| `0.2.1-rc.2` | modern | 4.5s | 21 | ✅ pass | 2026-11-27 · 155de49f |
+| `0.2.1-rc.5` | modern | 6.2s | 21 | ✅ pass | 2026-11-27 · 155de49f |
+| `0.2.2-rc.1` | modern | 4.7s | 21 | ✅ pass | 2026-11-27 · 155de49f |
+| `0.2.2-rc.2` | modern | 4.7s | 21 | ✅ pass | 2026-11-27 · 155de49f |
+| `0.2.2-rc.5` | modern | 6.1s | 21 | ✅ pass | 2026-11-27 · 155de49f |
 
 </details>
 
@@ -156,7 +137,9 @@ Upgrade with `dsh plugin --profile web up dsh-dbhub-live@<version>`. **Breaking 
 | One connection fails to authenticate | Only that environment's next call is affected: fix the password on the configure page (or ask the AI to run `dbhub_configure` and guide you), other connections keep working. |
 | A configured tunnel still does not connect | Run "Test SSH tunnel" first: a **database-layer** error means the tunnel is up and the problem is behind it (authentication / database name / address); the address in the connection string must be the one **the bastion sees** — that is the most common cause. |
 | An export fails | The receipt carries the error code and falls back to the inline result, so the query itself did not fail; usually `exports/` is not writable or the disk is full. |
-| dbhub is reported as too old | Read-only mode and SSH tunnels need dbhub 1.4.0+: upgrade dbhub, or delete `~/.dsh/storages/dsh-dbhub-live` so the plugin installs a version that satisfies it. |
+| dbhub is reported as too old | Read-only mode and SSH tunnels need dbhub 1.4.0+: upgrade dbhub, or delete `~/.dsh/storages/dsh-dbhub-live/dbhub-runtime` and let the plugin ask you to install again. |
+| I left the approval dialog open and forgot it — does it expire? | **No.** The write approval waits until you Allow, Decline, or interrupt the turn; only those count as your decision. Forgetting it never turns into "the AI was refused". |
+| The first query asks to "install the dbhub runtime" | That is the **only** place anything is downloaded: it installs the pinned `@bytebase/dbhub@2.1.0` (with four drivers, about 70 MB), once, and nothing updates automatically afterwards. Declining installs nothing and the query returns an actionable message; to install it yourself run `npm i -g @bytebase/dbhub@2.1.0` and the plugin will prefer the one on PATH. |
 
 Problems that appear after an upgrade (behaviour changes, compatibility, rollback) are recorded in the matching [GitHub Release](https://github.com/mr-mihu/dsh-dbhub-live/releases).
 
